@@ -1,39 +1,40 @@
 """
-AMTHERO24 OS v1.1 - Master Engineering Implementation
-Based on Master Brief: Mission Completion System, not chatbot
-Production-ready FastAPI + Groq + WhatsApp Cloud API
+AMTHERO24 OS v1.2 - Vision Edition
+- Reads images (Brief Scanner with OCR)
+- Text + Image support
+- Official docs: German only + explanation in user language
+- Everything else 100% in user's language
 """
 from fastapi import FastAPI, Request, BackgroundTasks, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
 import os
 import re
 import time
-from config import VERIFY_TOKEN, GROQ_MODEL, GROQ_API_KEY
+import base64
+import httpx
+from config import VERIFY_TOKEN, GROQ_MODEL, GROQ_API_KEY, WHATSAPP_TOKEN, PHONE_NUMBER_ID
 from data_store import add_message, get_store, add_user
 from whatsapp import send_whatsapp_message
 
-app = FastAPI(title="AmtHero24 OS", version="1.1")
+app = FastAPI(title="AmtHero24 OS", version="1.2")
+
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-90b-vision-preview")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
 # ===== HERO PROFILE & LANGUAGE DETECTION =====
-
 def detect_language(text: str) -> str:
-    """Simple GDPR-safe language detection without external APIs"""
     if not text:
         return "de"
     t = text.lower()
-    # Greek
     if re.search(r'[\u0370-\u03FF]', text):
         return "el"
-    # Arabic
     if re.search(r'[\u0600-\u06FF]', text):
         return "ar"
-    # Albanian keywords
-    if any(w in t for w in ["pershendetje", "çfarë", "faleminderit", "mire", "përshëndetje"]):
+    if any(w in t for w in ["pershendetje", "çfarë", "faleminderit", "përshëndetje"]):
         return "sq"
-    # English
-    if any(w in t for w in ["hello", "please", "thank you", "how can"]):
+    if any(w in t for w in ["hello", "please", "thank you"]):
         return "en"
-    # Default German
     return "de"
 
 def get_user_profile(phone: str) -> dict:
@@ -43,92 +44,101 @@ def get_user_profile(phone: str) -> dict:
 def save_user_profile(phone: str, updates: dict):
     add_user(phone, updates)
 
-# ===== MASTER OS SYSTEM PROMPT =====
+# ===== WHATSAPP MEDIA DOWNLOAD =====
+async def get_media_url(media_id: str) -> str:
+    """Get temporary URL for WhatsApp media"""
+    url = f"{GRAPH_BASE}/{media_id}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("url", "")
 
+async def download_media_bytes(media_url: str) -> bytes:
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(media_url, headers=headers)
+        r.raise_for_status()
+        return r.content
+
+# ===== MASTER OS PROMPT V1.2 - VISION EDITION =====
 MASTER_OS_PROMPT = """
-# AMTHERO24 OPERATING SYSTEM v1.1
-You are AmtHero24 - the most trusted WhatsApp-based AI companion for people living in Germany.
-You are NOT a chatbot. You are part of the founding team. Your job is mission completion.
+# AMTHERO24 OPERATING SYSTEM v1.2 - VISION EDITION
+You are AmtHero24 - the most trusted WhatsApp AI for bureaucracy in Germany.
 
-## COMPANY MISSION
-Help users understand, solve and complete German administrative tasks from start to finish.
-User should feel: "I have someone taking care of my German bureaucracy."
+## CORE IDENTITY
+- You are NOT a chatbot. You are mission completion system.
+- 70% supportive older brother: "Kein Stress, das kriegen wir hin."
+- 20% German admin expert: concrete steps, no guessing.
+- 10% light humor only when appropriate.
+- Never robotic, never overly enthusiastic, never invent facts.
 
-## PRODUCT PHILOSOPHY
-- Never build features, build outcomes. Every answer must remove a problem forever.
-- Product is mission completion system, not chat.
+## 7 MISSIONS
+1. Brief Scanner - explain German official letters (TEXT + IMAGE via OCR)
+2. Letter Generator - formal German letters
+3. Email Generator - formal emails
+4. Kündigung Generator - cancellations
+5. Contract Checker
+6. Refund Assistant
+7. Appointment Assistant
 
-## UX - 70/20/10 RULE
-- 70% supportive older brother: warm, calm, reassuring. "Kein Stress, das kriegen wir hin."
-- 20% German administrative expert: precise, concrete next steps, no guessing.
-- 10% light humor ONLY when appropriate, never about serious Amt problems.
-- Never robotic. Never overly enthusiastic. Never invent facts. Never pretend certainty.
-- If unsure, say it honestly and suggest official source.
+## LANGUAGE LAW - MOST IMPORTANT!
+1. GENERAL CHAT: Respond 100% in user's language. Detect from last message. NEVER mix languages in one paragraph.
+   - Greek → only Greek
+   - Albanian → only Albanian
+   - Arabic → only Arabic
+   - German/unclear → German
+   WRONG: "Γεια σας! Wie kann ich helfen?" (MIX VERBOTEN)
+   RIGHT: "Γεια σας! Πώς μπορώ να σας βοηθήσω;"
 
-## CORE PRODUCT - 7 MISSIONS ONLY
-You specialize in:
-1. Brief Scanner - explain German official letters
-2. Letter Generator - formal German letters (Widerspruch, Antrag, etc)
-3. Email Generator - formal emails to authorities
-4. Kündigung Generator - contract cancellations
-5. Contract Checker - explain contracts simply
-6. Refund Assistant - Geld zurück holen
-7. Appointment Assistant - Termine verstehen/vorbereiten
+2. OFFICIAL DOCUMENTS LAW:
+   When you generate ANY official document (Brief, Widerspruch, Kündigung, Antrag, Email to Behörde):
+   - PART 1: The document itself - PERFECT FORMAL GERMAN ONLY. No other language inside. Not even one word.
+   - PART 2: Separator line: "--- Erklärung / Explanation ---"
+   - PART 3: Explain what you wrote, what it means, what happens next - IN USER'S NATIVE LANGUAGE ONLY.
+   Example for Albanian user:
+   ```
+   Betreff: Kündigung meines Vertrags...
 
-If request is outside these 7, still help but bring it back to bureaucracy completion.
+   Sehr geehrte Damen und Herren,
+   hiermit kündige ich...
 
-## CONVERSATION RULES - CRITICAL FOR LANGUAGES
-1. LANGUAGE DETECTION: Detect user's language from last message. Respond 100% in SAME language. NEVER mix languages inside one paragraph.
-   - User writes Greek -> answer ONLY Greek
-   - Albanian -> ONLY Albanian
-   - Arabic -> ONLY Arabic
-   - German/unclear -> German
-   - WRONG: "Γεια σας! Wie kann ich helfen?" (MIX - VERBOTEN)
-   - RIGHT: "Γεια σας! Πώς μπορώ να σας βοηθήσω με κάποιο γερμανικό έγγραφο;"
+   Mit freundlichen Grüßen
+   [Name]
 
-2. OFFICIAL DOCUMENTS RULE:
-   Every official document (Brief, Email, Kündigung, Widerspruch) MUST be:
-   - First: The document itself in PERFECT FORMAL GERMAN ONLY (no other language inside)
-   - Second: Separate paragraph "--- Erklärung / Explanation ---" and then explain it in user's native language.
-   Never mix languages inside the official document.
+   --- Erklärung / Explanation ---
+   Këtu është letra juaj e anulimit në gjermanisht zyrtare. E dërgova...
+   Çfarë ndodh tani: ...
+   ```
 
-3. STYLE:
-   - Short: 2-5 sentences for normal chat, longer only for official documents.
-   - Always give concrete next steps: Welche Dokumente? Wo Termin? Welche Frist?
-   - Example good: "Das ist ein Anhörungsbogen vom Jobcenter. Frist: 2 Wochen. Du musst Anlage X und Y ausfüllen und per Einschreiben schicken."
-   - Example bad: "Es könnte sein, dass Sie vielleicht..."
+3. IMAGE HANDLING (Brief Scanner):
+   If user sent a photo of a letter/document:
+   - First do OCR: extract all German text from image accurately
+   - Then Brief Scanner: What type of letter? Who from? Deadline? What to do?
+   - Respond in USER'S language (except any official document you generate inside)
+   - Always give: Absender, Datum, Frist, Was wird verlangt, Nächste Schritte
 
-## LEGAL & COMPLIANCE
-- Never provide legal advice. You can explain rights and general process.
-- Reference German law conservatively: "Nach § ... SGB" only if sure, otherwise "In der Regel verlangt das Amt..."
-- Always mention: "Das ist keine Rechtsberatung. Bei Unsicherheit frag bei der Behörde oder Beratungsstelle nach."
-- Assume German GDPR. Never ask for unnecessary personal data.
-
-## MEMORY - HERO PROFILE
-You have access to Hero Profile: preferred_language, first_name, city, contracts, etc.
-Use it to personalize but never reveal full data. If user says "Ich heiße Ahmed", remember it.
-
-## MISSION SYSTEM
-Every user request = Mission.
-Think: Mission Created -> Understanding -> Generation -> Sent -> Waiting -> Completed
-Never stop after generating text. Think until mission is complete. Offer next step.
-
-## SECURITY
-Never leak secrets. Never hardcode credentials. Use env vars.
+## LEGAL
+- Never legal advice. Explain rights generally.
+- "Das ist keine Rechtsberatung."
+- GDPR safe.
 
 ## CURRENT USER CONTEXT
 - Phone: {sender}
-- Preferred language (from memory): {pref_lang}
-- Detected language now: {detected_lang}
-- Known name: {first_name}
-- User message: {text}
+- Preferred language: {pref_lang}
+- Detected now: {detected_lang}
+- Name: {first_name}
+- User caption/text: {text}
+- Has image: {has_image}
 
-Now respond according to ALL rules above. Remember: 100% same language as user, never mix!
+INSTRUCTION: If has_image=true, you MUST first describe what you see in the image (OCR), then continue.
+Remember: 100% user language, except official docs in German + explanation after separator!
 """
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": GROQ_MODEL, "phone_id": os.getenv("PHONE_NUMBER_ID","1264010770128749")}
+    return {"status": "ok", "model": GROQ_MODEL, "vision_model": GROQ_VISION_MODEL}
 
 @app.get("/webhook")
 async def verify_webhook(
@@ -140,78 +150,126 @@ async def verify_webhook(
         return PlainTextResponse(hub_challenge or "")
     return PlainTextResponse("Verification failed", status_code=403)
 
-async def process_incoming(sender: str, text: str, msg_id: str):
-    # GDPR: deletion / export handling
+async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = None, media_type: str = None, mime_type: str = "image/jpeg"):
     lower = (text or "").lower()
     profile = get_user_profile(sender)
-    
-    if any(k in lower for k in ["lösch meine daten", "daten löschen", "delete my data", "gdpr delete"]):
+
+    if any(k in lower for k in ["lösch meine daten", "daten löschen", "delete my data"]):
         from data_store import _load, _save_atomic
         store = _load()
         if sender in store.get("users", {}):
             del store["users"][sender]
             _save_atomic(store)
-        await send_whatsapp_message(sender, "Deine Daten wurden gelöscht. / Your data has been deleted. ✅")
+        await send_whatsapp_message(sender, "Deine Daten wurden gelöscht. ✅")
         return
 
-    # Detect language and update Hero Profile
     detected = detect_language(text)
-    pref_lang = profile.get("preferred_language", detected)
-    
-    # If user switched language, update memory
-    if detected != pref_lang:
-        pref_lang = detected
-    
-    # Save/update hero profile
+    # If text empty but image sent, use preferred language from memory
+    if not text and media_id:
+        detected = profile.get("preferred_language", "de")
+
     save_user_profile(sender, {
         "preferred_language": detected,
         "last_seen": time.time(),
-        "last_message": text[:200]  # only snippet for memory
+        "last_message": (text[:200] if text else f"[{media_type}]")
     })
-    
-    first_name = profile.get("first_name", "")
 
-    # Build prompt with Master OS
+    first_name = profile.get("first_name", "")
+    has_image = media_id is not None and media_type == "image"
+
+    # Download image if present
+    image_b64 = None
+    image_bytes = None
+    if has_image:
+        try:
+            media_url = await get_media_url(media_id)
+            if media_url:
+                image_bytes = await download_media_bytes(media_url)
+                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+                print(f"Image downloaded: {len(image_bytes)} bytes")
+        except Exception as e:
+            print(f"Media download error: {e}")
+            has_image = False
+
     prompt = MASTER_OS_PROMPT.format(
         sender=sender,
-        pref_lang=pref_lang,
+        pref_lang=profile.get("preferred_language", detected),
         detected_lang=detected,
         first_name=first_name or "unknown",
-        text=text or "Hallo"
+        text=text or "(kein Text, nur Bild)",
+        has_image=str(has_image).lower()
     )
 
     reply = ""
     try:
-        if GROQ_API_KEY and GROQ_MODEL:
-            from groq import Groq
-            client = Groq(api_key=GROQ_API_KEY)
-            chat = client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": prompt}
-                ],
-                max_tokens=800,
-                temperature=0.3,
-                top_p=0.85
-            )
-            reply = chat.choices[0].message.content.strip()
+        if has_image and image_b64:
+            # VISION PATH - try Groq Vision first
+            try:
+                from groq import Groq
+                client = Groq(api_key=GROQ_API_KEY)
+                # Groq vision format
+                chat = client.chat.completions.create(
+                    model=GROQ_VISION_MODEL,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": f"User message: {text or 'Bitte erkläre dieses Bild / diesen Brief'} - Extract text and do Brief Scanner."},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}}
+                        ]}
+                    ],
+                    max_tokens=1200,
+                    temperature=0.2
+                )
+                reply = chat.choices[0].message.content.strip()
+            except Exception as groq_err:
+                print(f"Groq Vision error: {groq_err}, trying OpenAI fallback")
+                # Fallback to OpenAI if available
+                if OPENAI_API_KEY:
+                    from openai import OpenAI
+                    oai_client = OpenAI(api_key=OPENAI_API_KEY)
+                    chat = oai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {"role": "system", "content": prompt},
+                            {"role": "user", "content": [
+                                {"type": "text", "text": f"User: {text or 'Erkläre diesen Brief'}"},
+                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}}
+                            ]}
+                        ],
+                        max_tokens=1200,
+                        temperature=0.2
+                    )
+                    reply = chat.choices[0].message.content.strip()
+                else:
+                    raise groq_err
         else:
-            reply = "Hallo! Ich bin AmtHero24. Technischer Fehler - API Key fehlt."
+            # TEXT ONLY PATH
+            if GROQ_API_KEY and GROQ_MODEL:
+                from groq import Groq
+                client = Groq(api_key=GROQ_API_KEY)
+                chat = client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=[{"role": "system", "content": prompt}],
+                    max_tokens=1000,
+                    temperature=0.3
+                )
+                reply = chat.choices[0].message.content.strip()
+            else:
+                reply = "Hallo! Ich bin AmtHero24. Technischer Fehler - API Key fehlt."
+
     except Exception as e:
-        print(f"Groq error: {e}")
-        # Fallback in detected language
+        print(f"AI error: {e}")
         fallbacks = {
-            "el": "Συγγνώμη, μικρό τεχνικό πρόβλημα. Προσπάθησε ξανά σε 30 δευτερόλεπτα.",
-            "sq": "Na falni, një problem teknik i vogël. Provo përsëri pas 30 sekondash.",
-            "ar": "عذراً، خطأ تقني بسيط. حاول مرة أخرى بعد 30 ثانية.",
-            "en": "Sorry, small technical issue. Please try again in 30 seconds.",
-            "de": "Entschuldigung, kurzer technischer Fehler. Bitte versuche es in 30 Sekunden nochmal."
+            "el": "Συγγνώμη, δεν μπόρεσα να διαβάσω την εικόνα. Στείλτε την ξανά πιο καθαρά.",
+            "sq": "Na falni, nuk munda të lexoj imazhin. Dërgojeni përsëri më qartë.",
+            "ar": "عذراً، لم أستطع قراءة الصورة. حاول إرسالها مرة أخرى بوضوح أكثر.",
+            "en": "Sorry, I couldn't read the image. Please send it again more clearly.",
+            "de": "Entschuldigung, ich konnte das Bild nicht lesen. Bitte sende es nochmal schärfer."
         }
         reply = fallbacks.get(detected, fallbacks["de"])
 
-    # Ensure no empty reply
     if not reply:
-        reply = "Ich bin da. Wie kann ich dir beim Amt helfen?"
+        reply = "Ich bin da. Wie kann ich dir helfen?"
 
     await send_whatsapp_message(sender, reply)
 
@@ -230,11 +288,37 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         for msg in messages:
             msg_id = msg.get("id","")
             sender = msg.get("from","")
-            text = msg.get("text",{}).get("body","") or msg.get("type","") or ""
+            
+            text = ""
+            media_id = None
+            media_type = None
+            mime_type = "image/jpeg"
+
+            if "text" in msg:
+                text = msg.get("text",{}).get("body","")
+                media_type = "text"
+            elif "image" in msg:
+                img = msg.get("image",{})
+                media_id = img.get("id","")
+                mime_type = img.get("mime_type","image/jpeg")
+                text = img.get("caption","")  # Caption as text
+                media_type = "image"
+            elif "document" in msg:
+                doc = msg.get("document",{})
+                media_id = doc.get("id","")
+                mime_type = doc.get("mime_type","application/pdf")
+                text = doc.get("caption","") or doc.get("filename","")
+                media_type = "document"
+            elif "audio" in msg or "voice" in msg:
+                text = f"[{msg.get('type','audio')} Nachricht - bald unterstützt]"
+                media_type = "audio"
+
             if msg_id and sender:
-                saved = add_message(msg_id, sender, text)
+                # Save snippet for dedup
+                saved = add_message(msg_id, sender, text or f"[{media_type}:{media_id}]")
                 if saved:
-                    background_tasks.add_task(process_incoming, sender, text, msg_id)
+                    background_tasks.add_task(process_incoming, sender, text, msg_id, media_id, media_type, mime_type)
+
     except Exception as e:
         print(f"webhook parse error: {e}")
 
