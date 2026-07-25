@@ -1,23 +1,15 @@
 """
-AMTHERO24 OS v1.3 ULTIMATE - Codex Professional Edition
-Fixes from user feedback:
-- Image recognition failing (German fallback) -> Fixed with robust vision + multilingual fallback
-- Arabic fusha robotic -> Fixed with human older brother style, Syrian mindset, detailed
-- Not asking name, forgetting -> Fixed with Hero Profile + name extraction + asking
-- Generic answers like "كيف يمكنني مساعدتك اليوم" -> BANNED, replaced with human contextual
-- Must be special, not normal bot -> Ultimate personality
-
-Production ready for Railway
+AMTHERO24 OS v1.4 - Loop Fix + Human Ultimate
+Fixes:
+- Infinite loop "شو اسمك؟" -> Fixed with smart name extraction + no repeat
+- "وسام" alone now recognized as name
+- Prompt updated: if name known, NEVER ask again
+- More human, less repetitive
 """
 from fastapi import FastAPI, Request, BackgroundTasks, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
-import os
-import re
-import time
-import base64
-import httpx
+import os, re, time, base64, httpx
 
-# Safe config import
 try:
     from config import VERIFY_TOKEN, GROQ_MODEL, GROQ_API_KEY, WHATSAPP_TOKEN, PHONE_NUMBER_ID
 except:
@@ -30,7 +22,6 @@ except:
 try:
     from data_store import add_message, get_store, add_user, _load, _save_atomic
 except:
-    # Fallback in-memory if data_store broken
     _MEM = {"users":{}, "messages":{}}
     def add_message(mid,sender,text):
         _MEM["messages"][mid] = {"sender":sender,"text":text,"ts":time.time()}
@@ -48,14 +39,12 @@ except:
         print(f"MOCK SEND to {to}: {text[:200]}")
         return {"mock":True}
 
-app = FastAPI(title="AmtHero24 OS Ultimate", version="1.3")
-
+app = FastAPI(title="AmtHero24 OS Ultimate", version="1.4")
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
 
-# ================= HERO PROFILE =================
 def detect_language(text: str) -> str:
-    if not text: return "ar"  # Default to Arabic for this user base
+    if not text: return "ar"
     t = text.lower()
     if re.search(r'[\u0370-\u03FF]', text): return "el"
     if re.search(r'[\u0600-\u06FF]', text): return "ar"
@@ -65,14 +54,23 @@ def detect_language(text: str) -> str:
 
 def extract_name(text: str) -> str:
     if not text: return ""
-    # Arabic: اسمي وسام, انا وسام, اسمي Wissam
-    m = re.search(r'(?:اسمي|أنا|انا)\s+([أ-يa-zA-Z]+)', text)
+    txt = text.strip()
+    # Case 1: Single name alone like "وسام" or "Wissam" or "Wissam Zidan"
+    if len(txt.split()) <= 2 and len(txt) <= 25:
+        if re.match(r'^[أ-يa-zA-Z\s]+$', txt):
+            low = txt.lower().strip()
+            # Ignore greetings and questions
+            banned = ["مرحبا","اهلا","سلام","هلا","ايه","شو","بشو","بشو فيني اسألك","شو فيني اسألك","كيفك","تمام","وسام؟"]
+            if low not in banned and "؟" not in txt and "?" not in txt and "بشو" not in low and "شو" not in low and "فيني" not in low:
+                # If user just sent a name, accept it
+                return txt.split()[0]  # First name only
+
+    # Case 2: "اسمي وسام" , "انا وسام"
+    m = re.search(r'(?:اسمي|أنا|انا)\s+([أ-يa-zA-Z]+)', txt)
     if m: return m.group(1).strip()
-    # German: Ich heiße, Ich bin
-    m = re.search(r'(?:ich heiße|ich bin|mein name ist)\s+([a-zA-ZäöüÄÖÜ]+)', text, re.I)
+    m = re.search(r'(?:ich heiße|ich bin|mein name ist)\s+([a-zA-ZäöüÄÖÜ]+)', txt, re.I)
     if m: return m.group(1).strip()
-    # Albanian, Greek
-    m = re.search(r'(?:my name is|unë jam|ονομάζομαι)\s+([a-zA-Zα-ωΑ-Ω]+)', text, re.I)
+    m = re.search(r'(?:my name is|unë jam|ονομάζομαι)\s+([a-zA-Zα-ωΑ-Ω]+)', txt, re.I)
     if m: return m.group(1).strip()
     return ""
 
@@ -86,7 +84,6 @@ def save_user_profile(phone: str, updates: dict):
     try: add_user(phone, updates)
     except Exception as e: print(f"save error {e}")
 
-# ================= MEDIA DOWNLOAD =================
 async def get_media_url(media_id: str) -> str:
     if not WHATSAPP_TOKEN or not media_id: return ""
     url = f"{GRAPH_BASE}/{media_id}"
@@ -112,65 +109,52 @@ async def download_media_bytes(media_url: str) -> bytes:
         print(f"download error: {e}")
         return b""
 
-# ================= MASTER OS ULTIMATE PROMPT =================
 MASTER_OS_PROMPT = """
-# AMTHERO24 OS v1.3 ULTIMATE - CODEX EDITION
+# AMTHERO24 OS v1.4 ULTIMATE - HUMAN EDITION
 
-You are AmtHero24, NOT a normal bot. You are the older brother who lives in Germany since 10 years and knows every Amt trick.
+You are AmtHero24, older brother in Germany, 10 years experience. NOT a bot.
 
-## WHO YOU ARE - PERSONALITY (MOST IMPORTANT!)
-- You are Wissam's older brother. Warm, human, real. You say "يا حبيب", "ولا يهمك", "أنا معك", "لا تاكل هم".
-- You NEVER say robotic phrases: NEVER say "مرحبا! كيف يمكنني مساعدتك اليوم؟" / "أنا هنا لمساعدتك في أي شيء يتعلق بالبيروقراطية" / "هل هناك شيء محدد تريد مساعدة فيه؟" - THESE ARE BANNED.
-- Instead: Be contextual, human. Example: User says "وين فيني اشتري جبنة ب اخن" -> You say: "آه بآخن؟ لكنة! عندك كذا مكان مرتب..." and give real places.
-- You are 70% supportive older brother, 20% German Amt expert who gives concrete steps with dates and documents, 10% light humor.
-- You remember everything. If you know his name, use it every 2-3 messages: "وسام، شوف..."
-- You ask name if you don't know it: After first message, if no name known, ask naturally in user's language: Arabic: "بالمناسبة، شو بتحب ناديلك؟ أنا بدي اتذكر اسمك مشان ما انسى" German: "Wie soll ich dich nennen?" Greek: "Πώς να σε φωνάζω;"
-- You are detailed, clear, in the mindset he understands. Explain like to a friend, not like Wikipedia.
-- You NEVER invent facts. If you don't know cheese shop in Aachen, say: "ما بعرف محل محدد بآخن للجبنة السورية، بس جرب المحلات التركية قرب الـ Hauptbahnhof، عادة عندن"
-- For Arabic: Use SIMPLE clear Arabic, close to Syrian spoken, not heavy Fusha. Use short sentences. Explain step by step. Be warm. Use "انت" not "أنتم". Use emojis rarely, only 1 max.
+## CRITICAL RULES - READ CAREFULLY!
 
-## LANGUAGE LAW - CRITICAL
-1. GENERAL CHAT: 100% in user's language. User wrote Arabic -> Arabic. Greek -> Greek. NEVER mix.
-2. OFFICIAL DOCUMENTS (Brief, Kündigung, Widerspruch, Antrag, Email to Behörde):
-   PART 1: Document ONLY in PERFECT FORMAL GERMAN. No other language inside.
-   PART 2: Line: "--- Erklärung / شرح ---"
-   PART 3: Detailed explanation in USER'S language, simple, clear, what happens next, where to send, deadline.
-   Example structure:
-   Betreff: Kündigung...
-   Sehr geehrte Damen und Herren,...
-   Mit freundlichen Grüßen
-   [Name]
-   --- Erklärung / شرح ---
-   وسام هاي الرسالة يلي كتبتلك ياها بالألماني الرسمي... بتبعتها...
+### NAME HANDLING - FIX FOR LOOP!
+- Current known name: {first_name}
+- If first_name is NOT "غير معروف" and NOT empty, you ALREADY KNOW the name. NEVER ask "شو بتحب ناديلك؟" again. Use the name naturally.
+- If user says "وسام" alone or "انا اسمي وسام" or "Wissam", you MUST acknowledge: "تمام وسام، حفظت اسمك" and then ask how you can help. DO NOT ask for name again.
+- If first_name is "غير معروف" and user didn't give name in this message, ask ONCE: "بالمناسبة، شو بتحب ناديلك؟" - only once, not in every message.
+- History: {history} - check if you already asked for name. If yes, don't ask again.
 
-3. IMAGE - BRIEF SCANNER:
-   If user sent image of German letter (like Congstar bill 27,87 EUR, or Jobcenter):
-   - Do OCR: Extract Absender, Kundennummer, Rechnungsdatum, Betrag, Fälligkeit, IBAN, Verwendungszweck, Frist
-   - Then explain in USER'S language: شو هي، كم المبلغ، ايمتى لازم تدفع، شو يصير اذا ما دفعت
-   - Be detailed and human.
-   - If image is blurry and you cannot read, apologize in USER'S language (not German!) and ask for clearer photo: Arabic: "يا حبيب الصورة مو واضحة كتير، فيك تصورها من قريب وبدون فلاش؟" Greek: "Η φωτογραφία είναι θολή..."
+### PERSONALITY
+- Warm, human, Syrian brother. Say "يا حبيب", "ولا يهمك", "أنا معك", "لا تاكل هم".
+- NEVER say robotic: "مرحبا! كيف يمكنني مساعدتك اليوم؟" / "أنا هنا لمساعدتك في أي شيء" / "هل هناك شيء محدد تريد مساعدة فيه؟" / "شوف، شوف" repeatedly. BANNED.
+- Be contextual. User asks "بشو فيني اسألك؟" -> Don't loop! Answer: "وسام يا حبيب، فيك تسألني عن أي شي بألمانيا: أوراق Amt، رسائل رسمية، عقود، شكاوي، حتى وين تشتري جبنة بآخن، أنا معك. شو عندك هلق؟"
+- User says "انا اسمي وسام" -> Respond: "أهلا وسام! حفظت اسمك خلص. أنا هون مشانك. شو بتحب نعمل هلق؟" NOT "بدي افهم اولا شو بتحب تسأل. انت كتبت انا اسمي وسام يعني..."
+- Detailed, clear, Syrian mindset, short sentences, warm. Use "انت" not "أنتم". Max 1 emoji.
+- NEVER invent facts.
 
-## 7 MISSIONS
-1. Brief Scanner (TEXT + IMAGE) 2. Letter Generator 3. Email Generator 4. Kündigung 5. Contract Checker 6. Refund 7. Appointment
-But also help with daily life in Germany like shopping, you are not limited.
+### LANGUAGE LAW
+1. GENERAL: 100% in user's language. Arabic -> Arabic.
+2. OFFICIAL DOCS (Brief, Kündigung, Widerspruch): 
+   PART 1: Perfect formal German ONLY
+   PART 2: --- Erklärung / شرح ---
+   PART 3: Detailed explanation in USER language.
+3. IMAGE: If has_image=true, do OCR, extract details (Absender, Betrag, Frist), explain in user language. If blurry, apologize in user language.
 
-## MEMORY - HERO PROFILE
+### 7 MISSIONS + daily life
+Brief Scanner, Letter Generator, Email, Kündigung, Contract, Refund, Appointment, plus shopping/life in Aachen.
+
+### CONTEXT
 Phone: {sender}
-Known name: {first_name} (if unknown, ASK for it naturally)
-Preferred lang: {pref_lang}
-Detected now: {detected_lang}
+Known name: {first_name}
+Pref lang: {pref_lang}
+Detected: {detected_lang}
 User text: {text}
 Has image: {has_image}
-Conversation history snippet: {history}
 
-INSTRUCTION: If first_name is unknown or empty, you MUST ask for name naturally in user's language in your response, unless user is asking something urgent.
-If has_image=true, you MUST do OCR first.
-
-NEVER be generic. Be specific, human, older brother.
+INSTRUCTION: If name is known, use it but don't overdo. Answer the user's ACTUAL question. If user asks "بشو فيني اسألك؟" list examples concretely, don't ask for name again.
 """
 
 @app.get("/")
-async def root(): return {"status":"AmtHero24 Ultimate v1.3 Online","model":GROQ_MODEL,"vision":GROQ_VISION_MODEL}
+async def root(): return {"status":"AmtHero24 Ultimate v1.4 Online","model":GROQ_MODEL}
 
 @app.get("/health")
 async def health(): return {"status":"ok","model":GROQ_MODEL}
@@ -185,7 +169,6 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
     profile = get_user_profile(sender)
     lower = (text or "").lower()
 
-    # GDPR delete
     if any(k in lower for k in ["lösch meine daten","daten löschen","delete my data","امسح بياناتي"]):
         try:
             store = _load()
@@ -193,21 +176,25 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
                 del store["users"][sender]
                 _save_atomic(store)
         except: pass
-        await send_whatsapp_message(sender, "تم مسح بياناتك ✅ / Deine Daten gelöscht ✅")
+        await send_whatsapp_message(sender, "تم مسح بياناتك ✅")
         return
 
-    # Name extraction
     extracted_name = extract_name(text)
     if extracted_name:
-        save_user_profile(sender, {"first_name": extracted_name})
-        profile["first_name"] = extracted_name
+        # Only save if it's not a common word and length reasonable
+        if len(extracted_name) >= 2 and len(extracted_name) <= 20:
+            save_user_profile(sender, {"first_name": extracted_name})
+            profile["first_name"] = extracted_name
+            print(f"Name extracted: {extracted_name}")
+
     first_name = profile.get("first_name","")
+    # If user sent just "وسام" and we extracted, we have name now
+    # If still unknown, keep as غير معروف
 
     detected = detect_language(text)
     if not text and media_id:
-        detected = profile.get("preferred_language","ar")  # Default AR for this user
+        detected = profile.get("preferred_language","ar")
 
-    # Save profile
     save_user_profile(sender, {
         "preferred_language": detected,
         "last_seen": time.time(),
@@ -224,21 +211,15 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
                 img_bytes = await download_media_bytes(media_url)
                 if img_bytes:
                     image_b64 = base64.b64encode(img_bytes).decode('utf-8')
-                    print(f"Image OK {len(img_bytes)} bytes")
-                else:
-                    print("Download returned empty")
-            else:
-                print("No media_url")
         except Exception as e:
             print(f"Media fail: {e}")
             has_image = False
 
-    # Build history snippet (last 2 messages if available)
     history = ""
     try:
         store = get_store()
         msgs = [v for v in store.get("messages",{}).values() if v.get("sender")==sender]
-        msgs = sorted(msgs, key=lambda x: x.get("ts",0))[-3:]
+        msgs = sorted(msgs, key=lambda x: x.get("ts",0))[-4:]
         history = " | ".join([m.get("text","")[:80] for m in msgs])
     except: pass
 
@@ -247,9 +228,9 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
         first_name=first_name or "غير معروف",
         pref_lang=profile.get("preferred_language", detected),
         detected_lang=detected,
-        text=text or "(صورة بدون نص)",
+        text=text or "(صورة)",
         has_image=str(has_image).lower(),
-        history=history[:300]
+        history=history[:400]
     )
 
     reply = ""
@@ -258,17 +239,15 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
         client = Groq(api_key=GROQ_API_KEY)
 
         if has_image and image_b64:
-            # Try vision with 11b first, then 90b
             vision_models = [GROQ_VISION_MODEL, "llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
             for v_model in vision_models:
                 try:
-                    print(f"Trying vision model {v_model}")
                     chat = client.chat.completions.create(
                         model=v_model,
                         messages=[
                             {"role":"system","content":prompt},
                             {"role":"user","content":[
-                                {"type":"text","text":f"User caption: {text or 'اشرحلي هالصورة'} - Do OCR detailed and answer in {detected} language, older brother style."},
+                                {"type":"text","text":f"User: {text or 'اشرحلي هالصورة'} - Answer in {detected}, human brother style. Name is {first_name}"},
                                 {"type":"image_url","image_url":{"url":f"data:{mime_type};base64,{image_b64}"}}
                             ]}
                         ],
@@ -280,10 +259,8 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
                 except Exception as ve:
                     print(f"Vision {v_model} failed: {ve}")
                     continue
-            
             if not reply:
-                # Vision completely failed - fallback in user's language
-                raise Exception("All vision models failed")
+                raise Exception("Vision failed")
 
         else:
             chat = client.chat.completions.create(
@@ -295,19 +272,18 @@ async def process_incoming(sender: str, text: str, msg_id: str, media_id: str = 
             reply = chat.choices[0].message.content.strip()
 
     except Exception as e:
-        print(f"AI error final: {e}")
-        # Multilingual fallback - NOT German only!
+        print(f"AI error: {e}")
         if detected == "ar":
             if has_image:
-                reply = "يا حبيب والله الصورة ما قدرت اقراها منيح، يمكن النت ضعيف أو الصورة مو واضحة. فيك ترجع تصورها من قريب، خلي الإضاءة منيحة وبدون فلاش؟ أنا معك ورح اشرحلك ياها بالتفصيل بس توضح الصورة. ولا يهمك!"
+                reply = "يا حبيب الصورة ما قدرت اقراها منيح، فيك تصورها من قريب بدون فلاش؟"
             else:
-                reply = "يا حبيب صار معي خلل تقني صغير، فيك ترجع تكتب رسالتك مرة تانية؟ أنا هون معك."
-        elif detected == "el":
-            reply = "Φίλε μου, υπήρξε ένα τεχνικό πρόβλημα. Στείλε ξανά το μήνυμα ή μια πιο καθαρή φωτογραφία;"
-        elif detected == "sq":
-            reply = "Vëlla, pati një problem teknik. Dërgoje përsëri më qartë të lutem;"
+                # If we know name, use it
+                if first_name and first_name != "غير معروف":
+                    reply = f"أهلا {first_name}، صار معي خلل صغير، فيك ترجع تكتب؟ أنا هون معك."
+                else:
+                    reply = "يا حبيب صار معي خلل صغير، فيك ترجع تكتب؟"
         else:
-            reply = "Sorry Bruder, kleiner technischer Fehler. Schick nochmal bitte, ich bin da!"
+            reply = "Sorry, technical issue, try again."
 
     if not reply:
         reply = "أنا هون معك، كيف فيني ساعدك؟"
