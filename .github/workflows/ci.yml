@@ -21,8 +21,10 @@ jobs:
         run: python -m pip install --quiet -r requirements.txt
       - name: Compile
         run: python -m compileall -q app.py config.py data_store.py groq_client.py prompts.py whatsapp.py main.py
-      - name: Test parsing
-        run: pytest -q tests/test_app.py::test_extract_text_button_interactive_and_ignore_statuses tests/test_app.py::test_extract_name_keeps_single_name_flow --tb=short
+      - name: Test message parsing
+        run: pytest -q tests/test_app.py::test_extract_text_button_interactive_and_ignore_statuses --tb=short
+      - name: Test name parsing
+        run: pytest -q tests/test_app.py::test_extract_name_keeps_single_name_flow --tb=short
       - name: Test verification
         run: pytest -q tests/test_app.py::test_verification_success_failure_and_missing_env --tb=short
       - name: Test webhook
