@@ -62,14 +62,15 @@ class JsonDataStore:
         def claim(data: dict[str, Any]) -> bool:
             if message_id in data["messages"]:
                 return False
+            now = _now()
             data["messages"][message_id] = {
                 "phone_hash": _phone_hash(phone),
                 "text": text[:2000],
                 "type": message_type,
-                "media_id": media_id,
+                "has_media": bool(media_id),
                 "status": "claimed",
-                "created_at": _now(),
-                "updated_at": _now(),
+                "created_at": now,
+                "updated_at": now,
             }
             return True
 
@@ -102,22 +103,29 @@ class JsonDataStore:
 
     def delete_user(self, phone: str) -> bool:
         key = _phone_hash(phone)
+
         def delete(data: dict[str, Any]) -> bool:
             existed = data["users"].pop(key, None) is not None
             for message_id in [mid for mid, record in data["messages"].items() if record.get("phone_hash") == key]:
                 del data["messages"][message_id]
             return existed
+
         return self._transaction(delete)
 
     def recent_user_messages(self, phone: str, limit: int = 4) -> list[str]:
         key = _phone_hash(phone)
         with self._lock:
-            records = [record for record in self._read_unlocked().get("messages", {}).values() if record.get("phone_hash") == key and record.get("text")]
+            records = [
+                record
+                for record in self._read_unlocked().get("messages", {}).values()
+                if record.get("phone_hash") == key and record.get("text")
+            ]
         records.sort(key=lambda record: record.get("created_at", ""))
         return [str(record["text"]) for record in records[-limit:]]
 
     def cleanup_expired(self, now: datetime | None = None, *, max_age: timedelta = timedelta(hours=24)) -> int:
         cutoff = (now or datetime.now(UTC)) - max_age
+
         def cleanup(data: dict[str, Any]) -> int:
             expired = []
             for message_id, record in data["messages"].items():
@@ -131,6 +139,7 @@ class JsonDataStore:
             for message_id in expired:
                 del data["messages"][message_id]
             return len(expired)
+
         return self._transaction(cleanup)
 
     def snapshot(self) -> dict[str, Any]:
@@ -140,17 +149,22 @@ class JsonDataStore:
 
 _default_store = JsonDataStore(os.getenv("DATA_STORE_PATH", "data/store.json"))
 
+
 def add_message(msg_id: str, sender: str, text: str) -> bool:
     return _default_store.claim_message(msg_id, sender, text)
+
 
 def add_user(phone: str, data: dict[str, Any]) -> dict[str, Any]:
     return _default_store.update_user(phone, data)
 
+
 def get_store() -> dict[str, Any]:
     return _default_store.snapshot()
 
+
 def _load() -> dict[str, Any]:
     return _default_store.snapshot()
+
 
 def _save_atomic(data: dict[str, Any]) -> None:
     with _default_store._lock:
