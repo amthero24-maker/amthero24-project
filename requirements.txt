@@ -1,8 +1,5 @@
-   fastapi
-   uvicorn
-   groq
-   httpx
-   python-dotenv
-   pytest
-   openai
-   pillow
+fastapi
+uvicorn
+groq
+httpx
+python-dotenv
