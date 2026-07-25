@@ -48,7 +48,7 @@ except:
         print(f"MOCK SEND to {to}: {text[:200]}")
         return {"mock":True}
 
-app = FastAPI(title="AmtHero24 OS Ultimate", version="1.3)
+app = FastAPI(title="AmtHero24 OS Ultimate", version="1.3")
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
