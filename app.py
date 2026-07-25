@@ -13,9 +13,9 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from config import APP_VERSION, DATA_STORE_PATH, GROQ_MODEL, required_env
 from data_store import JsonDataStore
-from groq_client import GroqServiceError, generate_reply
+from groq_client import generate_reply
 from prompts import build_system_prompt
-from whatsapp import WhatsAppServiceError, download_media_bytes, get_media_url, send_whatsapp_message
+from whatsapp import download_media_bytes, get_media_url, send_whatsapp_message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("amthero24")
@@ -60,6 +60,18 @@ def extract_name(text: str) -> str:
         match = re.search(pattern, cleaned, re.IGNORECASE)
         if match:
             return match.group(1)
+
+    # Preserve the proven WhatsApp flow where a user replies with only their name.
+    if 1 <= len(cleaned.split()) <= 2 and len(cleaned) <= 40 and not re.search(r"[?!؟]", cleaned):
+        if re.fullmatch(r"[\u0600-\u06FFA-Za-zÄÖÜäöüß\u0400-\u04FF\u0370-\u03FF' -]+", cleaned):
+            ignored = {
+                "مرحبا", "أهلا", "اهلا", "سلام", "هلا", "تمام", "نعم", "لا", "شكرا", "مساعدة",
+                "hallo", "hi", "hilfe", "danke", "ja", "nein", "okay", "ok",
+                "hello", "help", "thanks", "yes", "no",
+                "привіт", "так", "ні", "дякую", "βοήθεια", "γεια", "ναι", "όχι",
+            }
+            if cleaned.casefold() not in {item.casefold() for item in ignored}:
+                return cleaned.split()[0]
     return ""
 
 
@@ -145,18 +157,28 @@ def _safe_failure(language: str, has_media: bool) -> str:
     return "A small technical issue occurred. Please send your message again."
 
 
+def _deletion_confirmation(language: str) -> str:
+    return {
+        "ar": "تم حذف بياناتك المحفوظة.",
+        "uk": "Збережені дані видалено.",
+        "el": "Τα αποθηκευμένα δεδομένα σου διαγράφηκαν.",
+        "de": "Deine gespeicherten Daten wurden gelöscht.",
+        "en": "Your saved data has been deleted.",
+    }.get(language, "Your saved data has been deleted.")
+
+
 async def process_incoming(message: IncomingMessage) -> None:
-    language = detect_language(message.text)
+    language = "de"
     has_media = message.media_id is not None
     try:
-        lowered = message.text.lower()
+        profile = store.get_user(message.sender)
+        language = detect_language(message.text) if message.text.strip() else str(profile.get("preferred_language") or "de")
+        lowered = message.text.casefold()
         if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "видали мої дані")):
             store.delete_user(message.sender)
-            await send_whatsapp_message(message.sender, "تم حذف بياناتك المحفوظة.")
-            store.update_message_status(message.message_id, "deleted")
+            await send_whatsapp_message(message.sender, _deletion_confirmation(language))
             return
 
-        profile = store.get_user(message.sender)
         name = extract_name(message.text)
         updates: dict[str, Any] = {
             "preferred_language": language,
@@ -189,12 +211,15 @@ async def process_incoming(message: IncomingMessage) -> None:
         ))
         await send_whatsapp_message(message.sender, reply)
         store.update_message_status(message.message_id, "sent")
-    except (GroqServiceError, WhatsAppServiceError, RuntimeError):
+    except Exception:
         logger.exception("Message processing failed", extra={"message_id": message.message_id})
-        store.update_message_status(message.message_id, "failed")
+        try:
+            store.update_message_status(message.message_id, "failed")
+        except Exception:
+            logger.exception("Unable to record failed message status", extra={"message_id": message.message_id})
         try:
             await send_whatsapp_message(message.sender, _safe_failure(language, has_media))
-        except WhatsAppServiceError:
+        except Exception:
             logger.exception("Unable to deliver failure message", extra={"message_id": message.message_id})
 
 
@@ -233,13 +258,17 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
         return JSONResponse({"status": "accepted"})
 
     for message in extract_incoming_messages(payload):
-        claimed = store.claim_message(
-            message.message_id,
-            message.sender,
-            message.text,
-            message_type=message.message_type,
-            media_id=message.media_id,
-        )
+        try:
+            claimed = store.claim_message(
+                message.message_id,
+                message.sender,
+                message.text,
+                message_type=message.message_type,
+                media_id=message.media_id,
+            )
+        except Exception:
+            logger.exception("Unable to claim webhook message", extra={"message_id": message.message_id})
+            continue
         if claimed:
             background_tasks.add_task(process_incoming, message)
     return JSONResponse({"status": "accepted"})
