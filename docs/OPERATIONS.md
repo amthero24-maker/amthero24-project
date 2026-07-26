@@ -75,13 +75,51 @@ Earlier versions could derive reminder encryption from `WHATSAPP_TOKEN`. Version
 REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=true
 ```
 
-This flag never permits new encryption with the WhatsApp token. It only allows historical ciphertext to be read while it is migrated. The launch report shows a warning until active reminder records are re-encrypted and the flag is changed to:
+This flag never permits new encryption with the WhatsApp token. It only allows historical ciphertext to be read while it is migrated. Never rotate or remove an old WhatsApp token while historical reminders may still depend on it.
+
+### Atomic reminder re-encryption
+
+The migration utility never prints reminder IDs, phone numbers, ciphertext, or secret values. It is dry-run by default.
+
+1. Create and configure the new strong `REMINDER_ENCRYPTION_KEY`.
+2. Keep the historical key in one of these temporary variables:
+   - `REMINDER_OLD_ENCRYPTION_KEY` for an earlier dedicated key.
+   - `REMINDER_LEGACY_WHATSAPP_TOKEN` for ciphertext created from a historical WhatsApp token.
+3. Create a fresh encrypted PostgreSQL backup.
+4. Run the dry-run while the bot is still online:
+
+```bash
+python scripts/migrate_reminder_encryption.py
+```
+
+A safe report has `unreadable: 0` and `safe_to_apply: true`. Counts are aggregate only.
+
+5. Stop the bot service so the reminder worker cannot race the migration.
+6. Temporarily set:
+
+```text
+REMINDER_MIGRATION_ALLOWED=true
+```
+
+7. Apply the migration:
+
+```bash
+python scripts/migrate_reminder_encryption.py \
+  --apply \
+  --confirm REENCRYPT_REMINDERS \
+  --confirm-bot-stopped BOT_STOPPED
+```
+
+Apply mode locks the reminder table, decrypts all rows in memory, aborts the whole transaction if any row is unreadable, updates ciphertext only when the original row is unchanged, and verifies every row with the new key before commit.
+
+8. Run the dry-run again. Every row should be counted under `already_current`.
+9. Remove the temporary old-key variables, set `REMINDER_MIGRATION_ALLOWED=false`, and set:
 
 ```text
 REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=false
 ```
 
-Never rotate or remove the old WhatsApp token before historical reminder migration is complete when old reminders may exist.
+10. Start the bot and run the production smoke suite. Do not delete historical key material until the post-migration backup and restore drill have both succeeded.
 
 ## 3. Encrypted PostgreSQL backups
 
@@ -196,6 +234,7 @@ Before controlled Beta, the launch report should confirm:
 - strong unique `ADMIN_API_TOKEN`
 - strong unique `REMINDER_ENCRYPTION_KEY`
 - `REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=false` after migration
+- `REMINDER_MIGRATION_ALLOWED=false` outside a supervised migration
 - privacy retention enabled
 - provider telemetry enabled
 - abuse protection enabled
