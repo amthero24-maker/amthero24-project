@@ -8,11 +8,17 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from encryption_policy import install_encryption_policy
-from storage_factory import install_production_storage_policy
+from log_safety import install_logging_safety
 
-# Railway starts `webhook_security:app`. Install durable-storage and reversible-
-# encryption policies before application composition imports modules and binds them.
+# Railway starts `webhook_security:app`. Install logging safety before any storage,
+# provider, webhook, or application module can create a record containing request data.
+install_logging_safety()
+
+from encryption_policy import install_encryption_policy  # noqa: E402
+from storage_factory import install_production_storage_policy  # noqa: E402
+
+# Install durable-storage and reversible-encryption policies before application
+# composition imports modules and binds them.
 install_production_storage_policy()
 install_encryption_policy()
 
