@@ -31,6 +31,20 @@ async def _cancel_and_await(task: asyncio.Task[Any] | None) -> None:
         pass
 
 
+async def _await_with_remaining_budget(task: asyncio.Task[Any] | None) -> None:
+    """Wait only inside the process-wide deadline, otherwise cancel immediately."""
+    if task is None:
+        return
+    remaining = lifecycle.remaining_drain_seconds()
+    if remaining <= 0:
+        await _cancel_and_await(task)
+        return
+    try:
+        await asyncio.wait_for(task, timeout=remaining)
+    except (TimeoutError, asyncio.CancelledError):
+        await _cancel_and_await(task)
+
+
 async def _stop_durable_worker() -> None:
     """Let admitted queue work finish before cancelling the polling task."""
     task = durable_module._WORKER_TASK
@@ -51,14 +65,7 @@ async def _stop_reminder_worker() -> None:
     task = reminder_module._WORKER_TASK
     if stop is not None:
         stop.set()
-    if task is not None:
-        try:
-            await asyncio.wait_for(
-                task,
-                timeout=max(0.05, lifecycle.remaining_drain_seconds()),
-            )
-        except (TimeoutError, asyncio.CancelledError):
-            await _cancel_and_await(task)
+    await _await_with_remaining_budget(task)
     try:
         repository = reminder_module._repository()
         if isinstance(repository, reminder_module.ResilientReminderRepository):
@@ -74,14 +81,7 @@ async def _stop_privacy_worker() -> None:
     task = privacy_module._RETENTION_TASK
     if stop is not None:
         stop.set()
-    if task is not None:
-        try:
-            await asyncio.wait_for(
-                task,
-                timeout=max(0.05, lifecycle.remaining_drain_seconds()),
-            )
-        except (TimeoutError, asyncio.CancelledError):
-            await _cancel_and_await(task)
+    await _await_with_remaining_budget(task)
     privacy_module._RETENTION_TASK = None
     privacy_module._RETENTION_STOP = None
 
