@@ -13,6 +13,7 @@ from document_action_repository import PendingDocumentRepository
 from entitlement_engine import EntitlementRepository
 from feedback_engine import FeedbackRepository
 from hero_memory import HeroMemory
+from message_idempotency import MessageClaimRepository
 from provider_reliability import ProviderReliabilityRepository
 from reminder_engine import ReminderRepository
 from support_handoff import SupportRepository
@@ -25,6 +26,7 @@ def bootstrap_postgres_schemas(store: Any) -> tuple[str, ...]:
 
     components: tuple[tuple[str, type[Any]], ...] = (
         ("hero_memory", HeroMemory),
+        ("message_idempotency", MessageClaimRepository),
         ("reminders", ReminderRepository),
         ("pending_documents", PendingDocumentRepository),
         ("entitlements", EntitlementRepository),
