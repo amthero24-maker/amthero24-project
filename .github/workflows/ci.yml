@@ -62,7 +62,7 @@ jobs:
       - name: Anonymous feedback tests
         run: python -m pytest -q tests/test_feedback_engine.py tests/test_feedback_extensions.py
       - name: Production operations tests
-        run: python -m pytest -q tests/test_production_smoke.py tests/test_postgres_operations.py tests/test_reminder_encryption_migration.py
+        run: python -m pytest -q tests/test_production_smoke.py tests/test_postgres_operations.py tests/test_reminder_encryption_migration.py tests/test_release_preflight.py
       - name: Admin aggregate metric tests
         run: python -m pytest -q tests/test_admin_metrics.py
       - name: Admin protected endpoint tests
