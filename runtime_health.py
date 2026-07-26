@@ -17,6 +17,7 @@ from encryption_policy import (
     support_encryption_status,
     support_security_ready,
 )
+from schema_coordination import install_schema_coordination, schema_coordination_status
 from storage_factory import database_fallback_allowed
 
 _REQUIRED_RUNTIME_ENV = (
@@ -26,6 +27,7 @@ _REQUIRED_RUNTIME_ENV = (
     "VERIFY_TOKEN",
 )
 _BOOTSTRAPPED_SCHEMAS: tuple[str, ...] = ()
+_SCHEMA_COORDINATED_COMPONENTS = install_schema_coordination()
 
 
 def _signature_required() -> bool:
@@ -75,13 +77,19 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     support_key_status = support_encryption_status()
     support_token_status = support_api_token_status()
     production_store = globals().get("store")
-    schemas_ready = backend != "postgresql" or store is not production_store or bool(_BOOTSTRAPPED_SCHEMAS)
+    coordination = schema_coordination_status(store)
+    coordination_ready = backend != "postgresql" or coordination == "coordinated"
+    schemas_ready = (
+        backend != "postgresql"
+        or store is not production_store
+        or (bool(_BOOTSTRAPPED_SCHEMAS) and coordination_ready)
+    )
     fallback_allowed = database_fallback_allowed()
     queue_component = durable_queue_status(store)
     queue_ready = queue_component in {"disabled", "configured"}
     process = lifecycle.snapshot()
     lifecycle_ready = store is not production_store or (process.accepting_work and process.state == "accepting")
-    ready = config_ok and storage_ok and schemas_ready and queue_ready and lifecycle_ready
+    ready = config_ok and storage_ok and schemas_ready and coordination_ready and queue_ready and lifecycle_ready
 
     if not reminder_worker_enabled:
         reminders_status = "disabled"
@@ -106,6 +114,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "storage_backend": backend,
             "database_fallback": "allowed" if fallback_allowed else "fail-closed",
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
+            "schema_coordination": coordination,
             "process_lifecycle": process.state,
             "active_work": process.active_work,
             "webhook_signature": signature_status,
