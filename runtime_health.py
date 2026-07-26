@@ -61,6 +61,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     abuse_enforced = os.getenv("ABUSE_GUARD_ENFORCEMENT_ENABLED", "true").strip().casefold() in {"1", "true", "yes", "on"}
     provider = provider_layer.provider_status()
     admin_configured = bool(os.getenv("ADMIN_API_TOKEN", "").strip())
+    support_enabled = os.getenv("HUMAN_SUPPORT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
+    support_configured = support_enabled and bool(os.getenv("SUPPORT_API_TOKEN", "").strip()) and bool(os.getenv("SUPPORT_ENCRYPTION_KEY", "").strip())
     ready = config_ok and storage_ok
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
@@ -77,6 +79,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "privacy_retention": "enabled" if os.getenv("PRIVACY_RETENTION_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
             "admin_overview": "configured" if admin_configured else "disabled",
             "beta_launch_report": "configured" if admin_configured else "disabled",
+            "human_support": "configured" if support_configured else ("misconfigured" if support_enabled else "disabled"),
             "entitlements": "enforced" if entitlement_enforced else "observe-only",
             "default_plan": os.getenv("ENTITLEMENT_DEFAULT_PLAN", "beta").strip().casefold() or "beta",
             "payments": "disabled",
@@ -90,7 +93,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
-from launch_extensions import app, store  # noqa: E402
+from support_extensions import app, store  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
 
