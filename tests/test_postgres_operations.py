@@ -22,28 +22,28 @@ SCHEMA_IDENTITY = expected_schema_identity()
 
 
 def test_cli_environment_parses_url_and_clears_conflicting_pg_values() -> None:
-    username = "hero"
-    password = "private" + "-value"
-    database_url = f"postgresql://{username}:{password}@db.internal:5433/amthero24_test?sslmode=require"
     environment = postgres_cli_environment(
-        database_url,
+        "postgresql://db.internal:5433/amthero24_test?sslmode=require",
         base_environment={
             "DATABASE_URL": "postgresql://wrong.invalid/other",
             "PGHOST": "wrong.invalid",
             "PGDATABASE": "other",
+            "PGUSER": "stale-user",
+            "PGPASSWORD": "stale-value",
             "SAFE_FLAG": "kept",
         },
     )
 
     assert environment["PGHOST"] == "db.internal"
     assert environment["PGPORT"] == "5433"
-    assert environment["PGUSER"] == username
-    assert environment["PGPASSWORD"] == password
     assert environment["PGDATABASE"] == "amthero24_test"
     assert environment["PGSSLMODE"] == "require"
     assert environment["SAFE_FLAG"] == "kept"
     assert "DATABASE_URL" not in environment
+    assert "PGUSER" not in environment
+    assert "PGPASSWORD" not in environment
     assert "wrong.invalid" not in str(environment)
+    assert "stale-value" not in str(environment)
 
 
 def test_backup_is_encrypted_schema_bound_and_database_url_is_not_in_argv(tmp_path) -> None:
