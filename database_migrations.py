@@ -1,7 +1,8 @@
-"""Versioned PostgreSQL schema migrations with bounded cross-replica locking.
+"""Versioned PostgreSQL schema migrations with immutable historical checksums.
 
-The migration ledger stores only schema metadata. Startup migrations are expand-only and
-all direct SQL passes through a runtime online-safety validator before PostgreSQL sees it.
+Each migration checksum is bound only to that migration's frozen contract. Extending the
+current schema therefore never rewrites history or invalidates an already-applied ledger
+entry. Startup migrations remain expand-only and pass through the online-safe executor.
 """
 from __future__ import annotations
 
@@ -61,8 +62,11 @@ class MigrationSpec:
 
 _MIGRATION_LOCK_KEY = 4_814_172_024_045
 _LEDGER_TABLE = "amthero_schema_migrations"
+_BACKUP_STATE_TABLE = "backup_operational_state"
 
-_EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
+# This exact mapping produced the version-1 checksum deployed in AmtHero24 v4.5-v4.7.
+# Never add a future table or column to this frozen historical contract.
+_SCHEMA_V1_CONTRACT: dict[str, tuple[str, ...]] = {
     "hero_users": ("phone_hash", "profile"),
     "inbound_messages": ("message_id", "phone_hash", "status"),
     "inbound_work_queue": ("message_id", "status", "lease_owner"),
@@ -83,6 +87,30 @@ _EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
     "human_support_admin_events": (),
     "anonymous_feedback": (),
     _LEDGER_TABLE: ("version", "name", "checksum", "app_version", "applied_at"),
+}
+
+_SCHEMA_V2_CONTRACT: dict[str, tuple[str, ...]] = {
+    _BACKUP_STATE_TABLE: (
+        "scope",
+        "last_attempt_at",
+        "last_success_at",
+        "last_failure_at",
+        "last_status",
+        "last_failure_code",
+        "artifact_sha256",
+        "artifact_size_bytes",
+        "schema_version",
+        "schema_checksum",
+        "encrypted",
+        "updated_at",
+    ),
+}
+
+# The current runtime contract is a union. Historical checksums are never calculated from
+# this mutable union.
+_EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
+    **_SCHEMA_V1_CONTRACT,
+    **_SCHEMA_V2_CONTRACT,
 }
 
 
@@ -173,8 +201,37 @@ def _apply_schema_v1(store: Any, executor: OnlineMigrationExecutor) -> tuple[str
     return components
 
 
+def _apply_backup_freshness_v2(
+    store: Any,
+    executor: OnlineMigrationExecutor,
+) -> tuple[str, ...]:
+    executor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS backup_operational_state (
+            scope TEXT PRIMARY KEY,
+            last_attempt_at TIMESTAMPTZ,
+            last_success_at TIMESTAMPTZ,
+            last_failure_at TIMESTAMPTZ,
+            last_status TEXT NOT NULL DEFAULT 'never',
+            last_failure_code TEXT NOT NULL DEFAULT '',
+            artifact_sha256 TEXT NOT NULL DEFAULT '',
+            artifact_size_bytes BIGINT NOT NULL DEFAULT 0,
+            schema_version INTEGER NOT NULL DEFAULT 0,
+            schema_checksum TEXT NOT NULL DEFAULT '',
+            encrypted BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """
+    )
+    return ("backup_freshness",)
+
+
 _SCHEMA_V1_NAME = "production_schema_v1"
-_SCHEMA_V1_CHECKSUM = _contract_checksum(1, _SCHEMA_V1_NAME, _EXPECTED_SCHEMA)
+# Frozen literal from the contract deployed before migration version 2 existed.
+_SCHEMA_V1_CHECKSUM = "b79ba86b0703b775ba29b6321c73ae9227f327f52cd53ff518a921e5f9b67c5a"
+_SCHEMA_V2_NAME = "backup_freshness_v2"
+_SCHEMA_V2_CHECKSUM = _contract_checksum(2, _SCHEMA_V2_NAME, _SCHEMA_V2_CONTRACT)
+
 _MIGRATIONS = (
     MigrationSpec(
         version=1,
@@ -183,6 +240,13 @@ _MIGRATIONS = (
         apply=_apply_schema_v1,
         phase="expand",
         legacy_bootstrap=True,
+    ),
+    MigrationSpec(
+        version=2,
+        name=_SCHEMA_V2_NAME,
+        checksum=_SCHEMA_V2_CHECKSUM,
+        apply=_apply_backup_freshness_v2,
+        phase="expand",
     ),
 )
 LATEST_SCHEMA_VERSION = _MIGRATIONS[-1].version
@@ -239,7 +303,7 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
 
     _validate_registry()
     applied_now: list[int] = []
-    components: tuple[str, ...] = ()
+    applied_components: list[str] = []
     with store.pool.connection() as connection:
         _acquire_lock(connection, migration_lock_timeout_seconds())
         try:
@@ -258,7 +322,7 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
                         raise SchemaMigrationError("migration_checksum_mismatch")
                     continue
 
-                components = migration.apply(store, executor)
+                applied_components.extend(migration.apply(store, executor))
                 connection.execute(
                     f"""
                     INSERT INTO {_LEDGER_TABLE} (version, name, checksum, app_version)
@@ -274,18 +338,16 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
         finally:
             _release_lock(connection)
 
-    if not components:
-        from schema_bootstrap import schema_component_names
+    from schema_bootstrap import schema_component_names
 
-        components = schema_component_names()
-
+    components = tuple(dict.fromkeys((*schema_component_names(), "backup_freshness", *applied_components)))
     report = MigrationReport(
         status="current",
         current_version=LATEST_SCHEMA_VERSION,
         required_version=LATEST_SCHEMA_VERSION,
         applied_versions=tuple(applied_now),
-        components=tuple(components),
-        schema_checksum=_SCHEMA_V1_CHECKSUM,
+        components=components,
+        schema_checksum=_MIGRATIONS[-1].checksum,
     )
     setattr(store, "schema_migration_report", report)
     setattr(store, "schema_bootstrapped_components", report.components)
