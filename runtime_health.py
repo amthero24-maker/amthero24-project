@@ -106,6 +106,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "database_fallback": "allowed" if fallback_allowed else "fail-closed",
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
             "webhook_signature": signature_status,
+            "webhook_idempotency": "retry-safe",
             "text_model": model,
             "document_actions": "enabled",
             "reminders": reminders_status,
@@ -132,7 +133,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
-from feedback_extensions import app, store  # noqa: E402
+from idempotency_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
