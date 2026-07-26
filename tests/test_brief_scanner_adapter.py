@@ -64,6 +64,15 @@ def test_invalid_model_outputs_fail_closed_with_sanitized_codes(raw: str, code: 
     assert "SYNTHETIC-REF-001" not in str(raised.value)
 
 
+def test_duplicate_keys_are_rejected_instead_of_last_value_winning() -> None:
+    raw = '{"schema_version":1,"language":"de","readable":true,"readable":false}'
+
+    with pytest.raises(BriefScannerAdapterError) as raised:
+        parse_brief_scanner_model_output(raw)
+
+    assert str(raised.value) == "brief_scanner_field_duplicate:readable"
+
+
 def test_unreadable_output_requires_safe_uncertainty_reason() -> None:
     with pytest.raises(BriefScannerAdapterError, match="unreadable_document_requires_reason"):
         parse_brief_scanner_model_output(json.dumps(_payload(readable=False, uncertainty="")))
