@@ -15,9 +15,15 @@ _REQUIRED_RUNTIME_ENV = (
 )
 
 
+def _signature_required() -> bool:
+    return os.getenv("WEBHOOK_SIGNATURE_REQUIRED", "false").strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def configuration_ready() -> bool:
     """Return whether required runtime settings are present without exposing them."""
-    return all(bool(os.getenv(name, "").strip()) for name in _REQUIRED_RUNTIME_ENV)
+    base_ready = all(bool(os.getenv(name, "").strip()) for name in _REQUIRED_RUNTIME_ENV)
+    signature_ready = not _signature_required() or bool(os.getenv("META_APP_SECRET", "").strip())
+    return base_ready and signature_ready
 
 
 def storage_ready(store: Any) -> tuple[bool, str]:
@@ -47,6 +53,9 @@ def storage_ready(store: Any) -> tuple[bool, str]:
 def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str, object], int]:
     config_ok = configuration_ready()
     storage_ok, backend = storage_ready(store)
+    required = _signature_required()
+    secret_present = bool(os.getenv("META_APP_SECRET", "").strip())
+    signature_status = "enforced" if secret_present else ("missing" if required else "optional")
     ready = config_ok and storage_ok
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
@@ -55,6 +64,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "configuration": "ok" if config_ok else "missing",
             "storage": "ok" if storage_ok else "unavailable",
             "storage_backend": backend,
+            "webhook_signature": signature_status,
             "text_model": model,
             "reminders": "enabled" if os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
             "reminder_template": "configured" if os.getenv("WHATSAPP_REMINDER_TEMPLATE", "").strip() else "service-window-only",
