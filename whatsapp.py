@@ -16,10 +16,32 @@ class WhatsAppServiceError(RuntimeError):
 
 
 def split_message(text: str, limit: int = MAX_WHATSAPP_TEXT_LENGTH) -> Iterator[str]:
+    """Split text without cutting normal words, URLs, or paragraphs when possible."""
     if limit <= 0:
         raise ValueError("limit must be positive")
-    for start in range(0, len(text), limit):
-        yield text[start:start + limit]
+    remaining = str(text or "").strip()
+    minimum_soft_break = max(1, limit // 2)
+
+    while remaining:
+        if len(remaining) <= limit:
+            yield remaining
+            return
+
+        window = remaining[: limit + 1]
+        split_at = -1
+        for separator in ("\n\n", "\n", " "):
+            candidate = window.rfind(separator, minimum_soft_break, limit + 1)
+            if candidate > split_at:
+                split_at = candidate
+        if split_at <= 0:
+            split_at = limit
+
+        chunk = remaining[:split_at].rstrip()
+        if not chunk:
+            chunk = remaining[:limit]
+            split_at = limit
+        yield chunk
+        remaining = remaining[split_at:].lstrip()
 
 
 def _headers() -> dict[str, str]:
@@ -29,6 +51,8 @@ def _headers() -> dict[str, str]:
 async def send_whatsapp_message(to: str, text: str) -> list[dict]:
     if not to:
         raise WhatsAppServiceError("Missing recipient")
+    if not str(text or "").strip():
+        raise WhatsAppServiceError("Message text is empty")
     phone_id = required_env("PHONE_NUMBER_ID")
     url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_id}/messages"
     responses: list[dict] = []
@@ -39,7 +63,7 @@ async def send_whatsapp_message(to: str, text: str) -> list[dict]:
                     "messaging_product": "whatsapp",
                     "to": to,
                     "type": "text",
-                    "text": {"body": chunk},
+                    "text": {"body": chunk, "preview_url": False},
                 })
                 response.raise_for_status()
                 responses.append(response.json())
