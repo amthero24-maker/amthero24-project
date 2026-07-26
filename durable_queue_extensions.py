@@ -203,8 +203,8 @@ def _install_webhook_route() -> None:
 
 _repository()
 _install_webhook_route()
-core.app.add_event_handler("startup", _start_worker)
-core.app.add_event_handler("shutdown", _stop_worker)
+core.app.router.on_startup.append(_start_worker)
+core.app.router.on_shutdown.append(_stop_worker)
 
 app = composed.app
 store = composed.store
