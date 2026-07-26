@@ -14,6 +14,8 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from schema_recovery import require_current_manifest_schema, verify_restored_schema
+
 _CONFIRMATION = "RESTORE_AMTHERO24"
 
 
@@ -67,7 +69,7 @@ def restore_backup(
     pg_restore_binary: str = "pg_restore",
     psql_binary: str = "psql",
 ) -> dict[str, Any]:
-    """Verify and restore one backup after two independent confirmations.
+    """Verify, restore, and schema-certify one backup after two confirmations.
 
     The connection URL is provided to psql through PGDATABASE. It is never placed
     in the process argument list or output.
@@ -93,6 +95,7 @@ def restore_backup(
         raise ValueError("Manifest artifact name does not match")
     if str(manifest.get("artifact_sha256") or "") != _sha256(artifact):
         raise ValueError("Backup artifact checksum mismatch")
+    backup_identity = require_current_manifest_schema(manifest)
 
     with tempfile.TemporaryDirectory(prefix="amthero24-restore-") as temp_dir:
         plain = Path(temp_dir) / "database.dump"
@@ -140,16 +143,21 @@ def restore_backup(
             timeout=1800,
         )
 
+    restored_identity = verify_restored_schema(url, manifest)
+    if restored_identity != backup_identity:
+        raise RuntimeError("restored_schema_identity_mismatch")
     return {
-        "status": "restored",
+        "status": "verified",
         "artifact": artifact.name,
         "manifest": manifest_file.name,
         "format": str(manifest.get("format") or "unknown"),
+        "schema_version": restored_identity.version,
+        "schema_contract": restored_identity.contract,
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Restore an AmtHero24 PostgreSQL backup.")
+    parser = argparse.ArgumentParser(description="Restore and verify an AmtHero24 PostgreSQL backup.")
     parser.add_argument("artifact")
     parser.add_argument("--manifest")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL", ""))
