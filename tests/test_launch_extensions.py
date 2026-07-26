@@ -8,6 +8,8 @@ from starlette.testclient import TestClient
 import launch_extensions
 from data_store import JsonDataStore
 
+ADMIN_TOKEN = "admin-token-2026-unique-8xK2mP7qR4vN"
+
 
 def _install_store(tmp_path) -> JsonDataStore:
     store = JsonDataStore(tmp_path / "store.json")
@@ -32,12 +34,15 @@ def _overview() -> dict:
 
 def _env() -> dict[str, str]:
     return {
-        "ADMIN_API_TOKEN": "correct-secret",
+        "ADMIN_API_TOKEN": ADMIN_TOKEN,
         "META_APP_SECRET": "configured",
         "WEBHOOK_SIGNATURE_REQUIRED": "true",
         "PRIVACY_RETENTION_ENABLED": "true",
         "REMINDER_WORKER_ENABLED": "true",
+        "REMINDER_ENCRYPTION_KEY": "reminder-key-2026-unique-7fA9xQ2mLp8V",
+        "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "utility_template",
+        "HUMAN_SUPPORT_ENABLED": "false",
     }
 
 
@@ -64,7 +69,7 @@ def test_launch_endpoint_returns_actionable_report_without_personal_data(tmp_pat
     with patch.dict("os.environ", _env(), clear=True), patch.object(
         launch_extensions.admin_module, "build_overview", return_value=_overview()
     ):
-        response = client.get("/admin/launch-readiness", headers={"X-Admin-Token": "correct-secret"})
+        response = client.get("/admin/launch-readiness", headers={"X-Admin-Token": ADMIN_TOKEN})
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     payload = response.json()
