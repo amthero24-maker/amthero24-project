@@ -50,8 +50,10 @@ _PLACEHOLDER_WORDS = {
     "local-only",
 }
 _LOCAL_DATABASE_HOSTS = {"127.0.0.1", "localhost", "postgres", "db"}
+_PRIVATE_KEY_PREFIX = "-----BEGIN "
+_PRIVATE_KEY_SUFFIX = "PRIVATE KEY-----"
 _TOKEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----")),
+    ("private-key", re.compile(re.escape(_PRIVATE_KEY_PREFIX) + r"(?:RSA |EC |OPENSSH |DSA |PGP )?" + re.escape(_PRIVATE_KEY_SUFFIX))),
     ("groq-key", re.compile(r"\bgsk_[A-Za-z0-9_-]{20,}\b")),
     ("openai-key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
