@@ -137,7 +137,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
-from durable_queue_extensions import app, store  # noqa: E402
+from queue_observability_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
