@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,6 +24,17 @@ def payload(message: dict | None = None) -> dict:
     return {"entry": [{"changes": [{"value": {"messages": [message]}}]}]}
 
 
+def seed_consented_user(store: JsonDataStore, phone: str, language: str = "de") -> None:
+    store.update_user(phone, {
+        "memory_consent": "granted",
+        "memory_consent_at": datetime.now(UTC).isoformat(),
+        "memory_consent_version": "test-v1",
+        "onboarding_stage": "complete",
+        "intro_sent_at": datetime.now(UTC).isoformat(),
+        "preferred_language": language,
+    })
+
+
 def test_extract_text_button_interactive_and_ignore_statuses() -> None:
     assert app.extract_text_messages(payload()) == [("wamid.1", "49123", "Hilfe")]
     button = payload({"id": "2", "from": "49123", "type": "button", "button": {"text": "Ja"}})
@@ -36,6 +48,7 @@ def test_extract_name_keeps_single_name_flow() -> None:
     assert app.extract_name("وسام") == "وسام"
     assert app.extract_name("مرحبا") == ""
     assert app.extract_name("تاني") == ""
+    assert app.extract_name("عندي مشكلة") == ""
     assert app.extract_name("Mein Name ist Anna") == "Anna"
 
 
@@ -55,23 +68,96 @@ def test_webhook_malformed_status_and_duplicate(tmp_path) -> None:
     app.store = JsonDataStore(tmp_path / "store.json")
     assert client.post("/webhook", content=b"not-json", headers={"content-type": "application/json"}).status_code == 200
     assert client.post("/webhook", json={"entry": [{"changes": [{"value": {"statuses": [{}]}}]}]}).json() == {"status": "accepted"}
-    assert client.post("/webhook", json=payload()).status_code == 200
-    assert client.post("/webhook", json=payload()).status_code == 200
+    with patch.object(app, "process_incoming", new=AsyncMock()):
+        assert client.post("/webhook", json=payload()).status_code == 200
+        assert client.post("/webhook", json=payload()).status_code == 200
     assert len(app.store.snapshot()["messages"]) == 1
+
+
+@pytest.mark.anyio
+async def test_new_user_gets_welcome_and_name_question_without_long_term_memory(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    message = app.IncomingMessage("welcome", "49123", "مرحبا", "text")
+    app.store.claim_message("welcome", "49123", message.text)
+    with patch.object(app, "generate_reply", side_effect=AssertionError("Groq must not be called")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(message)
+    assert send.await_count == 1
+    reply = send.await_args.args[1]
+    assert "AmtHero24" in reply
+    assert "شو بتحب ناديلك" in reply
+    profile = app.store.get_user("49123")
+    assert profile["onboarding_stage"] == "awaiting_name"
+    assert "first_name" not in profile
+    assert "preferred_language" not in profile
+    assert profile["session_language"] == "ar"
+
+
+@pytest.mark.anyio
+async def test_name_is_pending_until_explicit_consent_then_saved(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    app.store.update_user("49123", {
+        "intro_sent_at": datetime.now(UTC).isoformat(),
+        "onboarding_stage": "awaiting_name",
+        "session_language": "ar",
+    })
+    name_message = app.IncomingMessage("name", "49123", "وسام", "text")
+    app.store.claim_message("name", "49123", name_message.text)
+    with patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(name_message)
+    assert "أفعّل الذاكرة" in send.await_args.args[1]
+    profile = app.store.get_user("49123")
+    assert profile["pending_name"] == "وسام"
+    assert "first_name" not in profile
+    assert profile["onboarding_stage"] == "awaiting_consent"
+
+    yes_message = app.IncomingMessage("yes", "49123", "نعم", "text")
+    app.store.claim_message("yes", "49123", yes_message.text)
+    with patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(yes_message)
+    assert "فعّلت الذاكرة" in send.await_args.args[1]
+    profile = app.store.get_user("49123")
+    assert profile["memory_consent"] == "granted"
+    assert profile["first_name"] == "وسام"
+    assert profile["preferred_language"] == "ar"
+    assert "pending_name" not in profile
+
+
+@pytest.mark.anyio
+async def test_declining_memory_removes_personal_memory_and_keeps_service_available(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    app.store.update_user("49123", {
+        "intro_sent_at": datetime.now(UTC).isoformat(),
+        "onboarding_stage": "awaiting_consent",
+        "pending_name": "وسام",
+        "first_name": "legacy-name",
+        "city": "Düsseldorf",
+        "current_topic": "invoice",
+        "session_language": "ar",
+    })
+    message = app.IncomingMessage("no", "49123", "لا", "text")
+    app.store.claim_message("no", "49123", message.text)
+    with patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(message)
+    assert "منكمل بدون ذاكرة شخصية" in send.await_args.args[1]
+    profile = app.store.get_user("49123")
+    assert profile["memory_consent"] == "declined"
+    for key in ("first_name", "city", "current_topic", "pending_name"):
+        assert key not in profile
 
 
 @pytest.mark.anyio
 async def test_process_incoming_success_and_groq_failure(tmp_path) -> None:
     app.store = JsonDataStore(tmp_path / "store.json")
-    message = app.IncomingMessage("one", "49123", "Hallo", "text")
-    app.store.claim_message("one", "49123", "Hallo")
+    seed_consented_user(app.store, "49123", "de")
+    message = app.IncomingMessage("one", "49123", "Hallo, ich brauche Hilfe", "text")
+    app.store.claim_message("one", "49123", message.text)
     with patch.object(app, "generate_reply", return_value="Antwort"), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
         await app.process_incoming(message)
         send.assert_awaited_once_with("49123", "Antwort")
         assert app.store.snapshot()["messages"]["one"]["status"] == "sent"
 
-    failed = app.IncomingMessage("two", "49123", "Hallo", "text")
-    app.store.claim_message("two", "49123", "Hallo")
+    failed = app.IncomingMessage("two", "49123", "Ich brauche Hilfe", "text")
+    app.store.claim_message("two", "49123", failed.text)
     with patch.object(app, "generate_reply", side_effect=RuntimeError("boom")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
         await app.process_incoming(failed)
         assert send.await_count == 1
@@ -81,6 +167,7 @@ async def test_process_incoming_success_and_groq_failure(tmp_path) -> None:
 @pytest.mark.anyio
 async def test_product_language_question_is_authoritative_and_skips_groq(tmp_path) -> None:
     app.store = JsonDataStore(tmp_path / "store.json")
+    seed_consented_user(app.store, "49123", "ar")
     message = app.IncomingMessage("languages", "49123", "شو اللغات يلي بتحكيها؟", "text")
     app.store.claim_message("languages", "49123", message.text)
     with patch.object(app, "generate_reply", side_effect=AssertionError("Groq must not be called")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
@@ -97,6 +184,7 @@ async def test_product_language_question_is_authoritative_and_skips_groq(tmp_pat
 @pytest.mark.anyio
 async def test_media_download_failure_gets_safe_reply(tmp_path) -> None:
     app.store = JsonDataStore(tmp_path / "store.json")
+    seed_consented_user(app.store, "49123", "de")
     message = app.IncomingMessage("image", "49123", "", "image", "media-1", "image/jpeg")
     app.store.claim_message("image", "49123", "", message_type="image", media_id="media-1")
     with patch.object(app, "get_media_url", new=AsyncMock(side_effect=RuntimeError("fail"))), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
