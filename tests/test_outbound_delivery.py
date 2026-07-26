@@ -170,10 +170,11 @@ def test_json_aggregate_and_cleanup_are_bounded_and_person_free(tmp_path, monkey
     for message_id in states.values():
         assert message_id not in encoded
 
-    snapshot = store.snapshot()
-    for record in snapshot["outbound_delivery"].values():
-        record["expires_at"] = (current - timedelta(seconds=1)).isoformat()
-    store._write_atomic(snapshot)
+    def expire(data):
+        for record in data.setdefault("outbound_delivery", {}).values():
+            record["expires_at"] = (current - timedelta(seconds=1)).isoformat()
+
+    store._transaction(expire)
     assert repository.cleanup(now=current) == 5
     assert store.snapshot()["outbound_delivery"] == {}
 
