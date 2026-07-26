@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import unicodedata
 
 from groq import Groq
 
@@ -17,13 +18,11 @@ class GroqServiceError(RuntimeError):
 
 
 def sanitize_model_reply(value: str) -> str:
-    """Remove model reasoning traces before anything reaches WhatsApp."""
+    """Remove reasoning traces and malformed Unicode before WhatsApp delivery."""
     reply = (value or "").strip()
 
-    # Qwen raw reasoning can be embedded inside <think>...</think>.
     reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.IGNORECASE | re.DOTALL).strip()
 
-    # Never expose an unterminated reasoning block or obvious internal monologue.
     lowered = reply.casefold()
     internal_markers = (
         "<think>",
@@ -39,6 +38,16 @@ def sanitize_model_reply(value: str) -> str:
         logger.error("Model returned internal reasoning instead of a final answer")
         raise GroqServiceError("Model returned an unsafe reasoning trace")
 
+    # Normalize compatibility forms and remove invisible formatting controls.
+    reply = unicodedata.normalize("NFKC", reply)
+    reply = "".join(ch for ch in reply if unicodedata.category(ch) not in {"Cf", "Cs"} or ch in {"\n", "\t"})
+
+    # The supported product languages do not use CJK ideographs. Remove isolated
+    # accidental ideographs that sometimes leak into Arabic OCR summaries.
+    reply = re.sub(r"(?<![\u3400-\u9fff])[\u3400-\u9fff](?![\u3400-\u9fff])", "", reply)
+    reply = re.sub(r"[ \t]{2,}", " ", reply)
+    reply = re.sub(r" *\n *", "\n", reply).strip()
+
     if not reply:
         raise GroqServiceError("Groq returned an empty response")
     return reply
@@ -50,13 +59,22 @@ def generate_reply(*, system_prompt: str, user_text: str, image_bytes: bytes | N
         if image_bytes:
             encoded = base64.b64encode(image_bytes).decode("ascii")
             content: object = [
-                {"type": "text", "text": user_text or "Explain this document concisely in the user's preferred language. Return only the final answer."},
+                {
+                    "type": "text",
+                    "text": user_text or (
+                        "Explain this document in the user's preferred language. "
+                        "Use no more than 700 characters and at most three short sections: "
+                        "meaning, important point, next step. Return only the final answer."
+                    ),
+                },
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
             ]
             model = GROQ_VISION_MODEL
+            max_tokens = 650
         else:
             content = user_text or "Hello"
             model = GROQ_MODEL
+            max_tokens = 900
 
         request: dict[str, object] = {
             "model": model,
@@ -64,12 +82,10 @@ def generate_reply(*, system_prompt: str, user_text: str, image_bytes: bytes | N
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
             ],
-            "max_tokens": 1400,
-            "temperature": 0.35,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
         }
         if model.startswith("qwen/"):
-            # Groq documents `hidden` as final-answer-only and `none` as
-            # non-thinking mode for Qwen 3 models.
             request["reasoning_format"] = "hidden"
             request["reasoning_effort"] = "none"
 
