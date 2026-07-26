@@ -65,8 +65,13 @@ def restore_backup(
     encryption_key: str = "",
     manifest_path: Path | None = None,
     pg_restore_binary: str = "pg_restore",
+    psql_binary: str = "psql",
 ) -> dict[str, Any]:
-    """Verify and restore one backup after two independent confirmations."""
+    """Verify and restore one backup after two independent confirmations.
+
+    The connection URL is provided to psql through PGDATABASE. It is never placed
+    in the process argument list or output.
+    """
     if not restore_allowed:
         raise PermissionError("RESTORE_ALLOWED=true is required")
     if str(confirmation or "").strip() != _CONFIRMATION:
@@ -76,9 +81,12 @@ def restore_backup(
     artifact = Path(artifact)
     if not artifact.is_file():
         raise ValueError("Backup artifact does not exist")
-    binary = shutil.which(pg_restore_binary)
-    if not binary:
+    restore_binary = shutil.which(pg_restore_binary)
+    sql_binary = shutil.which(psql_binary)
+    if not restore_binary:
         raise RuntimeError(f"{pg_restore_binary} is not installed")
+    if not sql_binary:
+        raise RuntimeError(f"{psql_binary} is not installed")
 
     manifest_file, manifest = _load_manifest(artifact, manifest_path)
     if str(manifest.get("artifact") or "") != artifact.name:
@@ -88,6 +96,7 @@ def restore_backup(
 
     with tempfile.TemporaryDirectory(prefix="amthero24-restore-") as temp_dir:
         plain = Path(temp_dir) / "database.dump"
+        sql_file = Path(temp_dir) / "restore.sql"
         if bool(manifest.get("encrypted")):
             if not str(encryption_key or "").strip():
                 raise ValueError("BACKUP_ENCRYPTION_KEY is required for this artifact")
@@ -99,21 +108,31 @@ def restore_backup(
         if not expected_plaintext or expected_plaintext != _sha256(plain):
             raise ValueError("Decrypted backup checksum mismatch")
 
-        child_env = os.environ.copy()
-        child_env["PGDATABASE"] = url
-        child_env.pop("DATABASE_URL", None)
         subprocess.run(
             [
-                binary,
+                restore_binary,
                 "--clean",
                 "--if-exists",
                 "--no-owner",
                 "--no-privileges",
                 "--exit-on-error",
-                "--dbname",
-                url,
+                "--file",
+                str(sql_file),
                 str(plain),
             ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=1800,
+        )
+        if not sql_file.exists() or sql_file.stat().st_size <= 0:
+            raise RuntimeError("pg_restore did not produce SQL output")
+
+        child_env = os.environ.copy()
+        child_env["PGDATABASE"] = url
+        child_env.pop("DATABASE_URL", None)
+        subprocess.run(
+            [sql_binary, "--set", "ON_ERROR_STOP=on", "--file", str(sql_file)],
             check=True,
             env=child_env,
             stdout=subprocess.DEVNULL,
@@ -137,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--encryption-key", default=os.getenv("BACKUP_ENCRYPTION_KEY", ""))
     parser.add_argument("--confirm", required=True)
     parser.add_argument("--pg-restore", default=os.getenv("PG_RESTORE_BINARY", "pg_restore"))
+    parser.add_argument("--psql", default=os.getenv("PSQL_BINARY", "psql"))
     args = parser.parse_args(argv)
 
     try:
@@ -148,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             encryption_key=args.encryption_key,
             manifest_path=Path(args.manifest) if args.manifest else None,
             pg_restore_binary=args.pg_restore,
+            psql_binary=args.psql,
         )
     except (PermissionError, ValueError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
         print(f"Restore failed: {type(exc).__name__}: {exc}", file=sys.stderr)
