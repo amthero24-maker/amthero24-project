@@ -4,13 +4,13 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 import document_extensions as composed
 import reminder_engine as reminder_module
 from reminder_engine import (
     ReminderRepository,
-    deliver_due_reminders,
     detect_reminder_intent,
     reminder_cancelled_message,
     reminder_created_message,
@@ -30,10 +30,48 @@ _WORKER_TASK: asyncio.Task[None] | None = None
 _WORKER_STOP: asyncio.Event | None = None
 
 
+class ResilientReminderRepository(ReminderRepository):
+    """Reclaim reminder leases left behind by a stopped Railway process."""
+
+    def claim_due(self, *, now: datetime | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE hero_reminders
+                    SET status = 'failed', lease_until = NULL, next_attempt_at = LEAST(next_attempt_at, %s),
+                        last_error = 'expired_delivery_lease', updated_at = NOW()
+                    WHERE status = 'processing' AND lease_until IS NOT NULL AND lease_until < %s
+                    """,
+                    (current, current),
+                )
+        else:
+            def reclaim(data: dict[str, Any]) -> None:
+                for item in data.setdefault("reminders", {}).values():
+                    if not isinstance(item, dict) or item.get("status") != "processing" or not item.get("lease_until"):
+                        continue
+                    try:
+                        lease_until = datetime.fromisoformat(str(item["lease_until"]))
+                        if lease_until.tzinfo is None:
+                            lease_until = lease_until.replace(tzinfo=UTC)
+                    except (TypeError, ValueError):
+                        continue
+                    if lease_until.astimezone(UTC) < current:
+                        item["status"] = "failed"
+                        item["lease_until"] = None
+                        item["next_attempt_at"] = current.isoformat()
+                        item["last_error"] = "expired_delivery_lease"
+                        item["updated_at"] = current.isoformat()
+
+            self.store._transaction(reclaim)
+        return super().claim_due(now=current, limit=limit)
+
+
 def _repository() -> ReminderRepository:
     global _REMINDER_REPOSITORY
     if _REMINDER_REPOSITORY is None or _REMINDER_REPOSITORY.store is not core.store:
-        _REMINDER_REPOSITORY = ReminderRepository(core.store)
+        _REMINDER_REPOSITORY = ResilientReminderRepository(core.store)
     return _REMINDER_REPOSITORY
 
 
