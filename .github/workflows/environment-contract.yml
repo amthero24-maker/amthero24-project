@@ -45,9 +45,11 @@ jobs:
       - name: Run environment contract tests
         id: contract_tests
         continue-on-error: true
-        run: >-
-          python -m pytest -vv --tb=short --junitxml=environment-contract-junit.xml
-          tests/test_environment_contract.py 2>&1 | tee environment-contract-tests.log
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short --junitxml=environment-contract-junit.xml \
+            tests/test_environment_contract.py 2>&1 | tee environment-contract-tests.log
       - name: Upload sanitized contract diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,6 +61,12 @@ jobs:
             environment-contract-tests.log
           if-no-files-found: warn
           retention-days: 30
-      - name: Fail when configuration drift or tests fail
-        if: steps.contract.outcome == 'failure' || steps.contract_tests.outcome == 'failure'
-        run: exit 1
+      - name: Enforce contract and test outcomes
+        if: always()
+        shell: bash
+        env:
+          CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
+          TEST_OUTCOME: ${{ steps.contract_tests.outcome }}
+        run: |
+          test "$CONTRACT_OUTCOME" = "success"
+          test "$TEST_OUTCOME" = "success"
