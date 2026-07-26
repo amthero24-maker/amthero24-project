@@ -90,14 +90,31 @@ class JsonDataStore:
 
     def update_user(self, phone: str, updates: dict[str, Any]) -> dict[str, Any]:
         allowed = {
-            "first_name", "city", "preferred_language", "last_seen", "last_message", "name_prompted",
-            "current_topic", "last_assistant_reply", "conversation_summary", "last_message_type",
+            # Consent-backed long-term memory.
+            "first_name", "city", "preferred_language", "current_topic", "last_assistant_reply",
+            "conversation_summary", "communication_style",
+            # Consent and onboarding state.
+            "memory_consent", "memory_consent_at", "memory_consent_version", "onboarding_stage",
+            "intro_sent_at", "pending_name", "pending_name_expires_at", "name_prompted",
+            # Short-lived operational context; cleared after 24 hours.
+            "session_language", "session_topic", "session_last_reply", "session_expires_at",
+            # Operational metadata.
+            "last_seen", "last_message", "last_message_type",
         }
         clean = {key: value for key, value in updates.items() if key in allowed}
-        if "last_assistant_reply" in clean:
-            clean["last_assistant_reply"] = str(clean["last_assistant_reply"])[:1800]
-        if "conversation_summary" in clean:
-            clean["conversation_summary"] = str(clean["conversation_summary"])[:600]
+        limits = {
+            "first_name": 80,
+            "city": 80,
+            "last_assistant_reply": 1800,
+            "conversation_summary": 600,
+            "session_last_reply": 1800,
+            "last_message": 300,
+            "pending_name": 80,
+            "communication_style": 80,
+        }
+        for key, limit in limits.items():
+            if key in clean:
+                clean[key] = str(clean[key])[:limit]
         key = _phone_hash(phone)
 
         def update(data: dict[str, Any]) -> dict[str, Any]:
@@ -107,6 +124,19 @@ class JsonDataStore:
             return deepcopy(profile)
 
         return self._transaction(update)
+
+    def remove_user_fields(self, phone: str, fields: set[str] | list[str] | tuple[str, ...]) -> dict[str, Any]:
+        key = _phone_hash(phone)
+        requested = set(fields)
+
+        def remove(data: dict[str, Any]) -> dict[str, Any]:
+            profile = data["users"].setdefault(key, {})
+            for field in requested:
+                profile.pop(field, None)
+            profile["updated_at"] = _now()
+            return deepcopy(profile)
+
+        return self._transaction(remove)
 
     def delete_user(self, phone: str) -> bool:
         key = _phone_hash(phone)
@@ -131,21 +161,49 @@ class JsonDataStore:
         return [str(record["text"]) for record in records[-limit:]]
 
     def cleanup_expired(self, now: datetime | None = None, *, max_age: timedelta = timedelta(hours=24)) -> int:
-        cutoff = (now or datetime.now(UTC)) - max_age
+        current = now or datetime.now(UTC)
+        cutoff = current - max_age
 
         def cleanup(data: dict[str, Any]) -> int:
-            expired = []
+            cleaned = 0
+            expired_messages: list[str] = []
             for message_id, record in data["messages"].items():
                 try:
                     created = datetime.fromisoformat(record["created_at"])
                 except (KeyError, TypeError, ValueError):
-                    expired.append(message_id)
+                    expired_messages.append(message_id)
                     continue
                 if created < cutoff:
-                    expired.append(message_id)
-            for message_id in expired:
+                    expired_messages.append(message_id)
+            for message_id in expired_messages:
                 del data["messages"][message_id]
-            return len(expired)
+                cleaned += 1
+
+            session_fields = {
+                "session_language", "session_topic", "session_last_reply", "session_expires_at",
+                "last_message", "last_message_type",
+            }
+            for profile in data["users"].values():
+                try:
+                    session_expiry = datetime.fromisoformat(str(profile.get("session_expires_at", "")))
+                except ValueError:
+                    session_expiry = None
+                if session_expiry and session_expiry < current:
+                    for field in session_fields:
+                        profile.pop(field, None)
+                    cleaned += 1
+
+                try:
+                    pending_expiry = datetime.fromisoformat(str(profile.get("pending_name_expires_at", "")))
+                except ValueError:
+                    pending_expiry = None
+                if pending_expiry and pending_expiry < current:
+                    profile.pop("pending_name", None)
+                    profile.pop("pending_name_expires_at", None)
+                    if profile.get("onboarding_stage") == "awaiting_consent":
+                        profile["onboarding_stage"] = "awaiting_name"
+                    cleaned += 1
+            return cleaned
 
         return self._transaction(cleanup)
 
