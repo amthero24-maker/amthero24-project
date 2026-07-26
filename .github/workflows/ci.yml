@@ -42,7 +42,19 @@ jobs:
       - name: Reminder core tests
         run: python -m pytest -q tests/test_reminder_engine.py
       - name: Reminder create command test
-        run: python -m pytest -q tests/test_reminder_extensions.py::test_reminder_command_creates_consent_backed_followup
+        id: reminder_create
+        continue-on-error: true
+        run: python -m pytest -vv tests/test_reminder_extensions.py::test_reminder_command_creates_consent_backed_followup > reminder-create.log 2>&1
+      - name: Upload reminder failure details
+        if: steps.reminder_create.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reminder-create-failure
+          path: reminder-create.log
+          retention-days: 1
+      - name: Stop on reminder create failure
+        if: steps.reminder_create.outcome == 'failure'
+        run: exit 1
       - name: Reminder list and cancel command test
         run: python -m pytest -q tests/test_reminder_extensions.py::test_reminder_list_and_cancel_do_not_call_groq
       - name: Production and webhook security tests
