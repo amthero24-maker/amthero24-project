@@ -110,6 +110,16 @@ def run_smoke(
         signature_ok = signature == "enforced" or not require_signature
         checks.append(SmokeCheck("webhook_signature", "pass" if signature_ok else "fail", signature))
 
+        idempotency = str(components.get("webhook_idempotency") or "missing")
+        checks.append(SmokeCheck("webhook_idempotency", "pass" if idempotency == "retry-safe" else "fail", idempotency))
+
+        durable_queue = str(components.get("durable_inbound_queue") or "missing")
+        queue_ok = durable_queue in {"disabled", "configured"}
+        checks.append(SmokeCheck("durable_inbound_queue", "pass" if queue_ok else "fail", durable_queue))
+
+        delivery_receipts = str(components.get("outbound_delivery_receipts") or "missing")
+        checks.append(SmokeCheck("outbound_delivery_receipts", "pass" if delivery_receipts == "enabled" else "fail", delivery_receipts))
+
         reminders = str(components.get("reminders") or "missing")
         checks.append(SmokeCheck("reminders", "pass" if reminders == "enabled" else "fail", reminders))
         reminder_encryption = str(components.get("reminder_encryption") or "missing")

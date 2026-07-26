@@ -17,6 +17,9 @@ def _healthy(path: str) -> tuple[int, dict]:
                 "postgresql_schemas": "initialized",
                 "database_fallback": "fail-closed",
                 "webhook_signature": "enforced",
+                "webhook_idempotency": "retry-safe",
+                "durable_inbound_queue": "configured",
+                "outbound_delivery_receipts": "enabled",
                 "reminders": "enabled",
                 "reminder_encryption": "configured",
                 "admin_overview": "configured",
@@ -45,6 +48,9 @@ def test_smoke_passes_for_healthy_production() -> None:
         "storage_backend",
         "postgresql_schemas",
         "database_fallback",
+        "webhook_idempotency",
+        "durable_inbound_queue",
+        "outbound_delivery_receipts",
         "reminders",
         "reminder_encryption",
         "admin_secret",
@@ -52,7 +58,7 @@ def test_smoke_passes_for_healthy_production() -> None:
     }
 
 
-def test_smoke_fails_on_storage_signature_and_encryption_misconfiguration() -> None:
+def test_smoke_fails_on_storage_signature_and_delivery_misconfiguration() -> None:
     def response(base: str, path: str, **kwargs):
         if path == "/health":
             return 200, {"status": "ok", "version": "3.2.0"}
@@ -63,6 +69,9 @@ def test_smoke_fails_on_storage_signature_and_encryption_misconfiguration() -> N
                 "postgresql_schemas": "unavailable",
                 "database_fallback": "allowed",
                 "webhook_signature": "optional",
+                "webhook_idempotency": "missing",
+                "durable_inbound_queue": "misconfigured",
+                "outbound_delivery_receipts": "missing",
                 "reminders": "misconfigured",
                 "reminder_encryption": "weak",
                 "privacy_retention": "enabled",
@@ -79,9 +88,25 @@ def test_smoke_fails_on_storage_signature_and_encryption_misconfiguration() -> N
         "postgresql_schemas",
         "database_fallback",
         "webhook_signature",
+        "webhook_idempotency",
+        "durable_inbound_queue",
+        "outbound_delivery_receipts",
         "reminders",
         "reminder_encryption",
     }
+
+
+def test_disabled_durable_queue_is_allowed_during_safe_rollout() -> None:
+    def response(base: str, path: str, **kwargs):
+        status, payload = _healthy(path)
+        if path == "/ready":
+            payload["components"]["durable_inbound_queue"] = "disabled"
+        return status, payload
+
+    with patch("production_smoke.fetch_json", side_effect=response):
+        checks = production_smoke.run_smoke("https://example.test", require_signature=True)
+
+    assert next(item for item in checks if item.name == "durable_inbound_queue").passed is True
 
 
 def test_smoke_stops_cleanly_when_health_is_unavailable() -> None:

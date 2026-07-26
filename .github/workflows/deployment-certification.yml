@@ -1,0 +1,62 @@
+name: Deployment Certification
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Exact AmtHero24 version expected in production
+        required: true
+        type: string
+      samples:
+        description: Consecutive healthy samples required (2-6)
+        required: true
+        default: "3"
+        type: string
+      delay_seconds:
+        description: Delay between healthy samples (0-300 seconds)
+        required: true
+        default: "30"
+        type: string
+      require_launch_ready:
+        description: Require the protected launch decision to be fully ready
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  certify-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PRODUCTION_BASE_URL: ${{ secrets.PRODUCTION_BASE_URL }}
+      ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
+      EXPECTED_APP_VERSION: ${{ inputs.expected_version }}
+      DEPLOYMENT_STABILITY_SAMPLES: ${{ inputs.samples }}
+      DEPLOYMENT_STABILITY_DELAY_SECONDS: ${{ inputs.delay_seconds }}
+      DEPLOYMENT_STABILITY_REQUIRE_LAUNCH_READY: ${{ inputs.require_launch_ready }}
+      SMOKE_TIMEOUT_SECONDS: "20"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run consecutive read-only deployment certification
+        id: certification
+        continue-on-error: true
+        run: python scripts/deployment_stability.py --output deployment-stability.json
+      - name: Upload sanitized certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-certification-${{ github.run_id }}
+          path: deployment-stability.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Reject unstable deployment
+        if: steps.certification.outcome == 'failure'
+        run: exit 1
