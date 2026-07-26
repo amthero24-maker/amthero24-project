@@ -6,7 +6,15 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import production_smoke
+from schema_recovery import expected_schema_identity
 from scripts import release_preflight
+
+
+SCHEMA_IDENTITY = expected_schema_identity()
+
+
+def _schema_fields() -> dict[str, object]:
+    return SCHEMA_IDENTITY.manifest_fields()
 
 
 def test_gate_requires_explicit_release_identity() -> None:
@@ -31,25 +39,73 @@ def test_gate_requires_every_strict_smoke_check() -> None:
     assert run.call_args.kwargs["require_launch_ready"] is True
 
 
-def test_recent_encrypted_backup_manifest_passes(tmp_path) -> None:
+def test_recent_encrypted_schema_bound_backup_manifest_passes(tmp_path) -> None:
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
     manifest = tmp_path / "backup.manifest.json"
     manifest.write_text(json.dumps({
         "created_at": (now - timedelta(hours=2)).isoformat(),
         "artifact": "amthero24.dump.fernet",
         "encrypted_sha256": "a" * 64,
+        **_schema_fields(),
     }), encoding="utf-8")
     checks = release_preflight.verify_backup_manifest(str(manifest), now=now)
     assert all(item.passed for item in checks)
+    assert {item.name for item in checks} >= {
+        "backup_schema_version",
+        "backup_schema_checksum",
+        "backup_schema_ledger",
+        "backup_schema_contract",
+    }
 
 
-def test_old_or_invalid_backup_manifest_blocks_release(tmp_path) -> None:
+def test_old_or_invalid_artifact_metadata_blocks_release_with_valid_schema(tmp_path) -> None:
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
     manifest = tmp_path / "backup.manifest.json"
     manifest.write_text(json.dumps({
         "created_at": (now - timedelta(days=3)).isoformat(),
         "artifact": "plain.dump",
         "encrypted_sha256": "bad",
+        **_schema_fields(),
     }), encoding="utf-8")
     failed = {item.name for item in release_preflight.verify_backup_manifest(str(manifest), now=now) if not item.passed}
     assert failed == {"backup_age", "backup_integrity_metadata", "backup_artifact_metadata"}
+
+
+def test_missing_schema_identity_blocks_release(tmp_path) -> None:
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    manifest = tmp_path / "backup.manifest.json"
+    manifest.write_text(json.dumps({
+        "created_at": (now - timedelta(hours=1)).isoformat(),
+        "artifact": "amthero24.dump.fernet",
+        "artifact_sha256": "b" * 64,
+    }), encoding="utf-8")
+
+    failed = {item.name for item in release_preflight.verify_backup_manifest(str(manifest), now=now) if not item.passed}
+    assert failed == {
+        "backup_schema_version",
+        "backup_schema_checksum",
+        "backup_schema_ledger",
+        "backup_schema_contract",
+    }
+
+
+def test_incompatible_schema_identity_blocks_release(tmp_path) -> None:
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    manifest = tmp_path / "backup.manifest.json"
+    manifest.write_text(json.dumps({
+        "created_at": (now - timedelta(hours=1)).isoformat(),
+        "artifact": "amthero24.dump.fernet",
+        "artifact_sha256": "c" * 64,
+        "schema_version": 999,
+        "schema_checksum": "d" * 64,
+        "schema_ledger_entries": 999,
+        "schema_contract": "invalid",
+    }), encoding="utf-8")
+
+    failed = {item.name for item in release_preflight.verify_backup_manifest(str(manifest), now=now) if not item.passed}
+    assert failed == {
+        "backup_schema_version",
+        "backup_schema_checksum",
+        "backup_schema_ledger",
+        "backup_schema_contract",
+    }
