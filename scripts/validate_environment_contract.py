@@ -17,9 +17,13 @@ from pathlib import Path
 from typing import Iterable
 
 _KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+# These helpers accept an environment-variable name as their first argument. Keeping
+# this list explicit avoids treating arbitrary uppercase business constants as runtime
+# configuration while still following the project's typed/dynamic environment helpers.
 _WRAPPER_PATTERN = re.compile(
     r"^(?:required_env|get_env|env_value|env_bool|env_int|env_float|env_str|"
-    r"_env_value|_env_bool|_env_int|_env_float|_env_str)$"
+    r"_env_value|_env_bool|_env_int|_env_float|_env_str|_environment_value|"
+    r"_flag|_int_env|_limit|assess_secret)$"
 )
 _EXTERNAL_KEYS = {
     "PORT",  # injected and consumed by the Railway start command
