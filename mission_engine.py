@@ -47,11 +47,15 @@ def detect_mission_intent(text: str) -> MissionIntent | None:
         return MissionIntent("list")
     if any(_normalize(pattern) in normalized for pattern in _COMPLETE_PATTERNS):
         return MissionIntent("complete")
+    original_words = (text or "").strip().split()
     for pattern in _CREATE_PATTERNS:
         normalized_pattern = _normalize(pattern)
-        if normalized_pattern in normalized:
-            title = normalized.replace(normalized_pattern, "", 1).strip(" -")
+        if normalized.startswith(normalized_pattern):
+            command_word_count = len(pattern.split())
+            title = " ".join(original_words[command_word_count:]).strip(" -")
             return MissionIntent("create", title)
+        if normalized_pattern in normalized:
+            return MissionIntent("create")
     return None
 
 
