@@ -76,7 +76,7 @@ jobs:
       - name: Anonymous feedback tests
         run: python -m pytest -q tests/test_feedback_engine.py tests/test_feedback_extensions.py
       - name: Production and deployment operations tests
-        run: python -m pytest -q tests/test_production_smoke.py tests/test_postgres_operations.py tests/test_reminder_encryption_migration.py tests/test_release_preflight.py tests/test_production_monitor.py tests/test_railway_contract.py tests/test_deployment_stability.py
+        run: python -m pytest -q tests/test_production_smoke.py tests/test_postgres_operations.py tests/test_reminder_encryption_migration.py tests/test_release_preflight.py tests/test_production_monitor.py tests/test_railway_contract.py tests/test_deployment_stability.py tests/test_database_migrations.py
       - name: Admin aggregate metric tests
         run: python -m pytest -q tests/test_admin_metrics.py
       - name: Admin protected endpoint tests
@@ -115,6 +115,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_test
       DATABASE_FALLBACK_ALLOWED: "false"
       DB_POOL_MAX: "4"
+      SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS: "5"
       GROQ_API_KEY: isolated-groq-key
       WHATSAPP_TOKEN: isolated-whatsapp-token
       PHONE_NUMBER_ID: isolated-phone-id
@@ -147,7 +148,7 @@ jobs:
       - name: Run real PostgreSQL integration suite
         id: postgres_tests
         continue-on-error: true
-        run: python -m pytest -vv --tb=short --junitxml=postgres-junit.xml tests/test_postgresql_integration.py tests/test_postgresql_tenant_isolation.py tests/test_postgresql_message_idempotency.py tests/test_postgresql_durable_queue.py tests/test_postgresql_queue_observability.py tests/test_postgresql_outbound_delivery.py tests/test_postgresql_reminder_migration_atomicity.py 2>&1 | tee postgres-test.log
+        run: python -m pytest -vv --tb=short --junitxml=postgres-junit.xml tests/test_postgresql_integration.py tests/test_postgresql_tenant_isolation.py tests/test_postgresql_message_idempotency.py tests/test_postgresql_durable_queue.py tests/test_postgresql_queue_observability.py tests/test_postgresql_outbound_delivery.py tests/test_postgresql_reminder_migration_atomicity.py tests/test_postgresql_schema_migrations.py 2>&1 | tee postgres-test.log
       - name: Upload PostgreSQL diagnostics
         if: always()
         uses: actions/upload-artifact@v4
