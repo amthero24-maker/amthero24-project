@@ -38,7 +38,7 @@ jobs:
       - name: Voice Input tests
         run: python -m pytest -q tests/test_voice_service.py tests/test_application_voice.py
       - name: PDF Document AI tests
-        run: python -m pytest -q tests/test_document_service.py tests/test_application_pdf.py
+        run: python -m pytest -q tests/test_document_service.py tests/test_application_documents.py
       - name: Application mission tests
         run: python -m pytest -q tests/test_app_missions.py
       - name: Application tests
