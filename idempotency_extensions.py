@@ -5,6 +5,7 @@ conversation layer remain unchanged.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -13,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 import feedback_extensions as composed
 from message_idempotency import MessageClaimRepository
+from runtime_lifecycle import lifecycle
 
 logger = logging.getLogger("amthero24.idempotency")
 core = composed.core
@@ -27,20 +29,40 @@ def _repository(store: Any | None = None) -> MessageClaimRepository:
     return _MESSAGE_REPOSITORY
 
 
+def _release_claim(message_id: str) -> None:
+    try:
+        state = _repository(core.store).state(message_id) or {}
+        if state.get("status") not in {"sent", "failed"}:
+            core.store.update_message_status(message_id, "failed")
+    except Exception:
+        logger.exception("Unable to release interrupted message claim", extra={"message_id": message_id})
+
+
 async def _process_claimed(message: core.IncomingMessage) -> None:
-    """Guarantee that exceptions outside the core handler become retryable state."""
+    """Guarantee exceptions and shutdown interruption become retryable state."""
+    if not lifecycle.try_start_work():
+        _release_claim(message.message_id)
+        return
     try:
         await core.process_incoming(message)
+    except asyncio.CancelledError:
+        _release_claim(message.message_id)
+        raise
     except Exception:
         logger.exception("Unhandled claimed-message failure", extra={"message_id": message.message_id})
-        try:
-            core.store.update_message_status(message.message_id, "failed")
-        except Exception:
-            logger.exception("Unable to release failed message claim", extra={"message_id": message.message_id})
+        _release_claim(message.message_id)
+    finally:
+        lifecycle.finish_work()
 
 
 async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     """Acknowledge only after every incoming message has a durable processing claim."""
+    if lifecycle.is_draining():
+        return JSONResponse(
+            {"status": "draining"},
+            status_code=503,
+            headers={"Retry-After": "10", "Cache-Control": "no-store"},
+        )
     try:
         payload = await request.json()
     except (ValueError, UnicodeDecodeError):
