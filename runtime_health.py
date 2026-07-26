@@ -34,8 +34,6 @@ def storage_ready(store: Any) -> tuple[bool, str]:
 
         if backend == "json":
             if database_expected:
-                # Railway is configured for PostgreSQL but the application silently
-                # fell back to ephemeral JSON. Keep liveness up but fail readiness.
                 return False, "json-fallback"
             path = Path(getattr(store, "path", "data/store.json"))
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,8 +61,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     return payload, 200 if ready else 503
 
 
-# Import the fully composed application only after defining pure health helpers.
-from application import app, store  # noqa: E402
+# Import all production composition layers after defining pure health helpers.
+from document_extensions import app, store  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
 
