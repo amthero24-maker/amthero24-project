@@ -6,7 +6,9 @@ handoff window, and the production ASGI entrypoint from accidental configuration
 """
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -122,3 +124,25 @@ def report_payload(findings: list[RailwayContractFinding]) -> dict[str, Any]:
         "passed": bool(findings) and all(item.passed for item in findings),
         "findings": [asdict(item) for item in findings],
     }
+
+
+def write_report(payload: dict[str, Any], output: Path | None = None) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(encoded + "\n", encoding="utf-8")
+    return encoded
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Validate AmtHero24's Railway deployment contract offline.")
+    parser.add_argument("--root", type=Path, default=Path("."))
+    parser.add_argument("--output", type=Path, default=Path("railway-contract.json"))
+    args = parser.parse_args(argv)
+    payload = report_payload(validate_railway_contract(args.root))
+    print(write_report(payload, args.output))
+    return 0 if payload["passed"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
