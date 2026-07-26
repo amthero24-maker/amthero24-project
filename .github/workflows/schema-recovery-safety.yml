@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - schema_recovery.py
+      - postgres_cli_env.py
       - database_migrations.py
       - scripts/postgres_backup.py
       - scripts/postgres_restore.py
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - schema_recovery.py
+      - postgres_cli_env.py
       - database_migrations.py
       - scripts/postgres_backup.py
       - scripts/postgres_restore.py
@@ -100,7 +102,7 @@ jobs:
           pg_restore --version
           psql --version
       - name: Compile recovery modules
-        run: python -m py_compile schema_recovery.py scripts/postgres_backup.py scripts/postgres_restore.py scripts/release_preflight.py
+        run: python -m py_compile schema_recovery.py postgres_cli_env.py scripts/postgres_backup.py scripts/postgres_restore.py scripts/release_preflight.py
       - name: Run schema identity and operation policy tests
         id: unit_tests
         continue-on-error: true
