@@ -18,9 +18,11 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install --quiet -r requirements.txt
+        run: python -m pip install --quiet -r requirements-dev.txt
       - name: Compile
         run: python -m compileall -q .
+      - name: Dependency policy tests
+        run: python -m pytest -q tests/test_dependency_policy.py
       - name: Conversation intelligence tests
         run: python -m pytest -q tests/test_conversation_intelligence.py
       - name: Product knowledge tests
@@ -126,7 +128,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install --quiet -r requirements.txt
+        run: python -m pip install --quiet -r requirements-dev.txt
       - name: Run real PostgreSQL integration suite
         id: postgres_tests
         continue-on-error: true
@@ -182,7 +184,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install --quiet -r requirements.txt
+        run: python -m pip install --quiet -r requirements-dev.txt
       - name: Ensure PostgreSQL client tools
         run: |
           if ! command -v pg_dump >/dev/null || ! command -v pg_restore >/dev/null || ! command -v psql >/dev/null; then
