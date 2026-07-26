@@ -1,6 +1,6 @@
 # AmtHero24 Production Operations
 
-This runbook covers read-only production checks, encrypted PostgreSQL backups, restore drills, and safe application rollback. It deliberately avoids real credentials and user data.
+This runbook covers read-only production checks, fail-closed durable storage, encrypted PostgreSQL backups, restore drills, and safe application rollback. It deliberately avoids real credentials and user data.
 
 ## 1. Production smoke checks
 
@@ -24,11 +24,25 @@ For a strict Beta gate:
 python production_smoke.py --require-signature --require-launch-ready
 ```
 
+The smoke suite requires PostgreSQL, initialized application schemas, and `database_fallback=fail-closed` for a production pass.
+
 ### GitHub scheduled checks
 
 Set the repository variable `PRODUCTION_BASE_URL`. Add the repository secret `ADMIN_API_TOKEN` to include the protected launch report. The `Production Smoke` workflow then runs every six hours and can also be started manually.
 
 A missing `PRODUCTION_BASE_URL` causes the scheduled job to skip instead of producing false incidents.
+
+### Durable storage failure policy
+
+Production must use:
+
+```text
+DATABASE_FALLBACK_ALLOWED=false
+```
+
+When `DATABASE_URL` is configured and PostgreSQL cannot initialize, the production entrypoint stops instead of accepting traffic into an ephemeral JSON store. This prevents two different copies of user memory from being created across restarts or replicas.
+
+`DATABASE_FALLBACK_ALLOWED=true` exists only as an explicit supervised emergency option. It causes `/ready` to remain unhealthy and blocks the controlled-Beta launch report. Do not use it to hide a database incident.
 
 ## 2. Encrypted PostgreSQL backups
 
@@ -104,6 +118,8 @@ python production_smoke.py --base-url "https://the-drill-service.example" --requ
 
 A backup strategy is considered complete only after a successful restore drill has been documented with date, artifact, target, and result.
 
+Every pull request also runs an isolated automated recovery drill. CI creates representative application data, encrypts a real `pg_dump`, restores it into a separate database, and verifies table, row-count, mission, reminder, support, and privacy parity. This proves the recovery code continuously but does not replace testing an actual Railway backup from its persistent volume.
+
 ## 4. Application rollback
 
 Use the GitHub Actions workflow `Create Rollback PR`.
@@ -122,9 +138,9 @@ This rollback affects application code only. It does not reverse database data o
 For a production incident:
 
 1. Check Railway deployment and `/health`.
-2. Check `/ready` and identify configuration, storage, or provider failure.
+2. Check `/ready` and identify configuration, storage, schema, or provider failure.
 3. Check `/admin/launch-readiness` using the protected token.
-4. Pause Beta invitations; do not disable privacy or signature verification to hide the symptom.
+4. Pause Beta invitations; do not disable privacy, signature verification, or fail-closed database policy to hide the symptom.
 5. For a code regression, create a rollback PR to the last known-good commit.
 6. For database corruption, stop writes, preserve evidence, and restore first into a separate service.
 7. Run the smoke suite before directing traffic to the recovered version.
@@ -134,6 +150,8 @@ For a production incident:
 Before controlled Beta, the launch report should confirm:
 
 - PostgreSQL active
+- all PostgreSQL application schemas initialized
+- `DATABASE_FALLBACK_ALLOWED=false`
 - `META_APP_SECRET` configured
 - `WEBHOOK_SIGNATURE_REQUIRED=true`
 - `ADMIN_API_TOKEN` configured
