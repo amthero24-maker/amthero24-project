@@ -96,6 +96,18 @@ def build_launch_report(
         else LaunchCheck("postgresql", "blocked", f"Storage backend is {backend}.", "Restore the Railway PostgreSQL connection before Beta traffic.")
     )
 
+    fallback_allowed = _flag(environment, "DATABASE_FALLBACK_ALLOWED", False)
+    checks.append(
+        LaunchCheck("database_fail_closed", "ready", "PostgreSQL failures stop traffic instead of creating divergent JSON state.")
+        if not fallback_allowed
+        else LaunchCheck(
+            "database_fail_closed",
+            "blocked",
+            "Emergency JSON fallback is allowed while PostgreSQL is configured.",
+            "Set DATABASE_FALLBACK_ALLOWED=false before Beta to prevent split-brain user memory.",
+        )
+    )
+
     app_secret = bool(str(environment.get("META_APP_SECRET", "")).strip())
     signature_required = _flag(environment, "WEBHOOK_SIGNATURE_REQUIRED", False)
     if app_secret and signature_required:
