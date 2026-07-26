@@ -163,11 +163,26 @@ def _wrap_initializer(owner: type[Any], method_name: str, component: str) -> Non
     setattr(owner, method_name, coordinated)
 
 
-def _initializer_name(owner: type[Any]) -> str:
+def _wrap_constructor(owner: type[Any], component: str) -> None:
+    original = owner.__init__
+    if getattr(original, "_amthero24_schema_coordinated", False):
+        return
+
+    @wraps(original)
+    def coordinated(instance: Any, store: Any, *args: Any, **kwargs: Any) -> None:
+        with schema_lock(store):
+            original(instance, store, *args, **kwargs)
+            _record_component(store, component)
+
+    setattr(coordinated, "_amthero24_schema_coordinated", True)
+    owner.__init__ = coordinated  # type: ignore[method-assign]
+
+
+def _initializer_name(owner: type[Any]) -> str | None:
     for candidate in ("_initialize_postgres_schema", "_initialize_schema", "_init_postgres_schema"):
         if callable(getattr(owner, candidate, None)):
             return candidate
-    raise SchemaCoordinationError(f"No supported schema initializer on {owner.__name__}")
+    return None
 
 
 def install_schema_coordination() -> tuple[str, ...]:
@@ -205,7 +220,11 @@ def install_schema_coordination() -> tuple[str, ...]:
     )
     installed: list[str] = []
     for component, owner in owners:
-        _wrap_initializer(owner, _initializer_name(owner), component)
+        initializer = _initializer_name(owner)
+        if initializer is None:
+            _wrap_constructor(owner, component)
+        else:
+            _wrap_initializer(owner, initializer, component)
         installed.append(component)
     _INSTALLED_COMPONENTS = tuple(installed)
     _POLICY_INSTALLED = True
