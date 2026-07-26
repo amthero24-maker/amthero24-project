@@ -39,23 +39,27 @@ class LifecycleSnapshot:
 
 
 class RuntimeLifecycle:
-    """Thread-safe accepting/draining state with aggregate active-work accounting."""
+    """Thread-safe accepting/draining state with one shared shutdown deadline."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._phase = "accepting"
         self._active_work = 0
+        self._drain_started: float | None = None
 
     def reset_accepting(self) -> None:
         with self._lock:
             self._phase = "accepting"
             self._active_work = 0
+            self._drain_started = None
 
     def begin_draining(self) -> bool:
-        """Enter draining once; return whether this call changed the phase."""
+        """Enter draining once; return whether this call established the deadline."""
         with self._lock:
             changed = self._phase != "draining"
             self._phase = "draining"
+            if self._drain_started is None:
+                self._drain_started = time.monotonic()
             return changed
 
     def try_start_work(self) -> bool:
@@ -77,10 +81,19 @@ class RuntimeLifecycle:
     def is_draining(self) -> bool:
         return self.snapshot().phase == "draining"
 
+    def remaining_grace_seconds(self) -> float:
+        """Return the remaining shared drain budget without exposing process timing."""
+        with self._lock:
+            started = self._drain_started
+        if started is None:
+            return float(shutdown_grace_seconds())
+        return max(0.0, float(shutdown_grace_seconds()) - (time.monotonic() - started))
+
     async def wait_for_idle(self, timeout: float | None = None) -> bool:
-        """Wait for aggregate work to finish without binding events to an import-time loop."""
-        bounded = float(shutdown_grace_seconds() if timeout is None else timeout)
-        bounded = max(0.0, min(bounded, 30.0))
+        """Wait for aggregate work using at most the remaining shared drain budget."""
+        available = self.remaining_grace_seconds()
+        requested = available if timeout is None else max(0.0, min(float(timeout), 30.0))
+        bounded = min(available, requested)
         deadline = time.monotonic() + bounded
         while self.snapshot().active_work > 0:
             remaining = deadline - time.monotonic()
