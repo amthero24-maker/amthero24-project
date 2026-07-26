@@ -1,24 +1,9 @@
 """Document AI extraction tests."""
 from __future__ import annotations
 
-import io
-
 import pytest
-from pypdf import PdfWriter
 
 from document_service import DocumentServiceError, PdfExtraction, build_pdf_request, extract_pdf_text
-
-
-def _pdf_with_text(text: str) -> bytes:
-    writer = PdfWriter()
-    writer.add_blank_page(width=300, height=300)
-    # pypdf cannot author page text directly; attach a metadata field to keep this
-    # helper focused on validating PDF structure. Text extraction behavior is
-    # tested through a patched reader below.
-    writer.add_metadata({"/Subject": text})
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
 
 
 def test_empty_and_invalid_pdf_are_rejected() -> None:
@@ -28,15 +13,24 @@ def test_empty_and_invalid_pdf_are_rejected() -> None:
         extract_pdf_text(b"not-a-pdf")
 
 
-def test_scanned_or_blank_pdf_requests_clearer_input() -> None:
+def test_blank_pdf_is_classified_as_scanned(monkeypatch) -> None:
+    class BlankPage:
+        def extract_text(self) -> str:
+            return ""
+
+    class Reader:
+        is_encrypted = False
+        pages = [BlankPage()]
+
+    monkeypatch.setattr("document_service.PdfReader", lambda *_args, **_kwargs: Reader())
     with pytest.raises(DocumentServiceError, match="scanned"):
-        extract_pdf_text(_pdf_with_text("blank"))
+        extract_pdf_text(b"%PDF-blank")
 
 
 def test_extraction_is_clean_bounded_and_reports_metadata(monkeypatch) -> None:
     class Page:
         def extract_text(self) -> str:
-            return "  Mahnung   vom Jobcenter\n\n\nFrist: 10.08.2026  "
+            return "  Mahnung   vom Jobcenter\n\n\nFrist: 10.08.2026. Bitte reagieren Sie rechtzeitig.  "
 
     class Reader:
         is_encrypted = False
