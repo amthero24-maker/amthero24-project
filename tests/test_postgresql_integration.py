@@ -5,6 +5,7 @@ It never connects to Railway or any shared database.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -12,15 +13,18 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from starlette.testclient import TestClient
 
 import webhook_security
 from abuse_guard import AbuseGuardRepository
 from data_store import PostgresDataStore
 from document_action_repository import PendingDocumentRepository
+from encryption_policy import decrypt_reminder_recipient
 from entitlement_engine import EntitlementRepository
 from hero_memory import HeroMemory
 from reminder_engine import ReminderRepository
+from scripts.migrate_reminder_encryption import migrate_reminder_ciphertexts
 from support_handoff import SupportRepository
 
 
@@ -55,6 +59,11 @@ def _store():
 def _phone_hash(phone: str) -> str:
     normalized = "".join(character for character in phone if character.isdigit() or character == "+")
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _legacy_cipher(secret: str, phone: str) -> str:
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+    return Fernet(key).encrypt(phone.encode("utf-8")).decode("ascii")
 
 
 @pytest.fixture(autouse=True)
@@ -206,3 +215,89 @@ def test_complete_user_deletion_removes_every_linked_postgres_layer() -> None:
             "SELECT COUNT(*) AS count FROM privacy_deletion_events"
         ).fetchone()
     assert int(privacy_event["count"]) == 1
+
+
+def test_reminder_ciphertext_migration_is_atomic_and_idempotent() -> None:
+    store = _store()
+    database_url = os.environ["DATABASE_URL"]
+    new_key = os.environ["REMINDER_ENCRYPTION_KEY"]
+    old_key = "old-dedicated-reminder-key-before-rotation"
+    legacy_token = "historical-whatsapp-token-before-key-separation"
+    now = datetime.now(UTC)
+    current_phone = "+491701111111"
+    old_phone = "+491702222222"
+    legacy_phone = "+491703333333"
+
+    ReminderRepository(store).create(
+        current_phone,
+        title="Current key",
+        scheduled_at=now + timedelta(days=1),
+        language="de",
+    )
+    with store.pool.connection() as connection:
+        for label, phone, ciphertext in (
+            ("old", old_phone, _legacy_cipher(old_key, old_phone)),
+            ("legacy", legacy_phone, _legacy_cipher(legacy_token, legacy_phone)),
+        ):
+            connection.execute(
+                """
+                INSERT INTO hero_reminders
+                    (reminder_id, dedupe_key, phone_hash, recipient_ciphertext, title,
+                     language, timezone, scheduled_at, next_attempt_at)
+                VALUES (%s, %s, %s, %s, %s, 'de', 'Europe/Berlin', %s, %s)
+                """,
+                (
+                    f"migration-{label}",
+                    hashlib.sha256(f"migration-{label}".encode()).hexdigest(),
+                    _phone_hash(phone),
+                    ciphertext,
+                    f"Migration {label}",
+                    now + timedelta(days=2),
+                    now + timedelta(days=2),
+                ),
+            )
+
+    dry_run = migrate_reminder_ciphertexts(
+        database_url,
+        new_key=new_key,
+        old_key=old_key,
+        legacy_token=legacy_token,
+    )
+    assert dry_run.total == 3
+    assert dry_run.already_current == 1
+    assert dry_run.decryptable_old_key == 1
+    assert dry_run.decryptable_legacy_token == 1
+    assert dry_run.unreadable == 0
+    assert dry_run.migrated == 0
+
+    applied = migrate_reminder_ciphertexts(
+        database_url,
+        new_key=new_key,
+        old_key=old_key,
+        legacy_token=legacy_token,
+        apply=True,
+        migration_allowed=True,
+        confirmation="REENCRYPT_REMINDERS",
+        bot_stopped_confirmation="BOT_STOPPED",
+    )
+    assert applied.migrated == 2
+    assert applied.unreadable == 0
+
+    with store.pool.connection() as connection:
+        rows = connection.execute(
+            "SELECT recipient_ciphertext FROM hero_reminders ORDER BY reminder_id"
+        ).fetchall()
+    decrypted = {decrypt_reminder_recipient(str(row["recipient_ciphertext"])) for row in rows}
+    assert decrypted == {current_phone, old_phone, legacy_phone}
+
+    second_run = migrate_reminder_ciphertexts(
+        database_url,
+        new_key=new_key,
+        old_key=old_key,
+        legacy_token=legacy_token,
+    )
+    assert second_run.total == 3
+    assert second_run.already_current == 3
+    assert second_run.decryptable_old_key == 0
+    assert second_run.decryptable_legacy_token == 0
+    assert second_run.unreadable == 0
