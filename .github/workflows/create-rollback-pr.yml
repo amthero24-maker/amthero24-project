@@ -1,0 +1,63 @@
+name: Create Rollback PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Known-good commit SHA from main
+        required: true
+        type: string
+      confirmation:
+        description: Type CREATE_ROLLBACK_PR
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-rollback:
+    if: ${{ inputs.confirmation == 'CREATE_ROLLBACK_PR' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate known-good commit
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --quiet
+          git cat-file -e "${TARGET_SHA}^{commit}"
+          git merge-base --is-ancestor "$TARGET_SHA" origin/main
+          test "$TARGET_SHA" != "$(git rev-parse origin/main)"
+      - name: Create rollback branch contents
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
+          BRANCH="rollback/to-${SHORT_SHA}-${GITHUB_RUN_ID}"
+          git switch -c "$BRANCH" origin/main
+          git rm -r --quiet .
+          git checkout "$TARGET_SHA" -- .
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "rollback: restore repository to ${SHORT_SHA}"
+          git push origin "$BRANCH"
+          echo "ROLLBACK_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+      - name: Open CI-gated rollback pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "$ROLLBACK_BRANCH" \
+            --title "rollback: restore production code to $SHORT_SHA" \
+            --body "Automated rollback proposal to known-good commit \`$TARGET_SHA\`. This does not force-push or deploy directly. Merge only after CI passes and the diff is reviewed. Database changes are not reversed by this workflow."
