@@ -1,4 +1,4 @@
-"""Meta webhook authenticity tests."""
+"""Meta webhook authenticity and deployment-drain tests."""
 from __future__ import annotations
 
 import hashlib
@@ -9,6 +9,7 @@ from unittest.mock import patch
 from starlette.testclient import TestClient
 
 import webhook_security
+from deployment_lifecycle import ProcessLifecycle
 
 
 async def _echo_app(scope, receive, send) -> None:
@@ -80,3 +81,26 @@ def test_get_webhook_verification_is_not_signature_checked() -> None:
     with patch.dict("os.environ", {"META_APP_SECRET": "app-secret"}, clear=True):
         response = client.get("/webhook")
     assert response.status_code == 200
+
+
+def test_drain_middleware_rejects_new_webhook_work_with_retry_after(monkeypatch) -> None:
+    process = ProcessLifecycle()
+    process.start_accepting()
+    process.begin_drain()
+    monkeypatch.setattr(webhook_security, "lifecycle", process)
+    client = TestClient(webhook_security.DeploymentDrainMiddleware(_echo_app))
+
+    response = client.post("/webhook", content=b'{"entry":[]}')
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "draining"}
+    assert response.headers["retry-after"] == "10"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_drain_middleware_keeps_read_only_routes_available(monkeypatch) -> None:
+    process = ProcessLifecycle()
+    process.begin_drain()
+    monkeypatch.setattr(webhook_security, "lifecycle", process)
+    client = TestClient(webhook_security.DeploymentDrainMiddleware(_echo_app))
+    assert client.get("/health").status_code == 200
