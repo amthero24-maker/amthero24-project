@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,30 @@ def _fernet(key: str) -> Fernet:
         return Fernet(cleaned.encode("ascii"))
     except (ValueError, TypeError) as exc:
         raise ValueError("BACKUP_ENCRYPTION_KEY must be a valid Fernet key") from exc
+
+
+def _pg_dump_failure_code(stderr: bytes | str | None) -> str:
+    """Return a bounded operational category without returning stderr or connection data."""
+    if isinstance(stderr, bytes):
+        text = stderr.decode("utf-8", errors="replace")
+    else:
+        text = str(stderr or "")
+    normalized = " ".join(text.casefold().split())
+    mismatch = re.search(
+        r"server version:\s*([0-9]+)(?:\.[0-9]+)?.*pg_dump version:\s*([0-9]+)(?:\.[0-9]+)?",
+        normalized,
+    )
+    if mismatch:
+        return f"pg_dump_version_mismatch_server_{mismatch.group(1)}_client_{mismatch.group(2)}"
+    if "password authentication failed" in normalized or "no password supplied" in normalized:
+        return "pg_dump_authentication_failed"
+    if "connection to server" in normalized or "could not connect" in normalized:
+        return "pg_dump_connection_failed"
+    if "permission denied" in normalized or "must be owner" in normalized:
+        return "pg_dump_permission_denied"
+    if "query failed" in normalized or "pg_dump: error:" in normalized:
+        return "pg_dump_database_error"
+    return "pg_dump_failed"
 
 
 def _rotate(output_dir: Path, keep: int) -> int:
@@ -98,14 +123,17 @@ def create_backup(
         child_env = os.environ.copy()
         child_env["PGDATABASE"] = url
         child_env.pop("DATABASE_URL", None)
-        subprocess.run(
-            [binary, "--format=custom", "--no-owner", "--no-privileges", "--file", str(plain)],
-            check=True,
-            env=child_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=1800,
-        )
+        try:
+            subprocess.run(
+                [binary, "--format=custom", "--no-owner", "--no-privileges", "--file", str(plain)],
+                check=True,
+                env=child_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=1800,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(_pg_dump_failure_code(exc.stderr)) from exc
         if not plain.exists() or plain.stat().st_size <= 0:
             raise RuntimeError("pg_dump completed without producing a backup")
 
