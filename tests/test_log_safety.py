@@ -9,9 +9,10 @@ from log_safety import install_logging_safety, redact_text, redact_value, saniti
 
 def test_redact_text_removes_environment_secret_bearer_database_and_phone() -> None:
     secret = "operator-secret-value-123456789"
+    database_url = "postgresql://" + "service:database-password@db.example/app"
     text = (
         f"Authorization: Bearer bearer-token-value-123456 "
-        f"database=postgresql://service:database-password@db.example/app "
+        f"database={database_url} "
         f"phone=+49 151 23456789 custom={secret}"
     )
 
