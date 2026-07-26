@@ -68,6 +68,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     entitlement_enforced = os.getenv("ENTITLEMENT_ENFORCEMENT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
     abuse_enabled = os.getenv("ABUSE_GUARD_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
     abuse_enforced = os.getenv("ABUSE_GUARD_ENFORCEMENT_ENABLED", "true").strip().casefold() in {"1", "true", "yes", "on"}
+    backup_enforced = os.getenv("BACKUP_FRESHNESS_ENFORCEMENT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
     provider = provider_layer.provider_status()
     admin_status = admin_api_token_status()
     support_enabled = os.getenv("HUMAN_SUPPORT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
@@ -116,6 +117,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
             "database_schema_migrations": visible_migration_status,
             "database_schema_version": schema_version,
+            "backup_freshness": "enforced" if backup_enforced else "observe-only",
             "process_lifecycle": process.state,
             "active_work": process.active_work,
             "webhook_signature": signature_status,
@@ -147,7 +149,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 
 import provider_extensions as provider_layer  # noqa: E402
-from shared_drain_extensions import app, store  # noqa: E402
+from backup_freshness_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
