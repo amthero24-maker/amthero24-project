@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import document_extensions as composed
 import reminder_engine as reminder_module
+from deployment_lifecycle import lifecycle
 from encryption_policy import reminder_encryption_ready
 from reminder_engine import (
     ReminderRepository,
@@ -29,44 +31,108 @@ _ORIGINAL_RENDER_REMINDER = reminder_module.render_reminder
 _REMINDER_REPOSITORY: ReminderRepository | None = None
 _WORKER_TASK: asyncio.Task[None] | None = None
 _WORKER_STOP: asyncio.Event | None = None
+_WORKER_ID = uuid4().hex
 
 
 class ResilientReminderRepository(ReminderRepository):
-    """Reclaim reminder leases left behind by a stopped Railway process."""
+    """Reclaim expired leases and release only this process's work during drain."""
+
+    def _initialize_postgres_schema(self) -> None:
+        super()._initialize_postgres_schema()
+        with self.store.pool.connection() as connection:
+            connection.execute("ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS lease_owner TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS hero_reminders_owner_idx "
+                "ON hero_reminders (lease_owner) WHERE status = 'processing'"
+            )
 
     def claim_due(self, *, now: datetime | None = None, limit: int = 10) -> list[dict[str, Any]]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
+        safe_limit = max(1, min(int(limit), 50))
+        retry_statuses = ("pending", "failed", "blocked_template")
         if self.backend_name == "postgresql":
             with self.store.pool.connection() as connection:
                 connection.execute(
                     """
                     UPDATE hero_reminders
-                    SET status = 'failed', lease_until = NULL, next_attempt_at = LEAST(next_attempt_at, %s),
+                    SET status = 'failed', lease_until = NULL, lease_owner = NULL,
+                        next_attempt_at = LEAST(next_attempt_at, %s),
                         last_error = 'expired_delivery_lease', updated_at = NOW()
                     WHERE status = 'processing' AND lease_until IS NOT NULL AND lease_until < %s
                     """,
                     (current, current),
                 )
-        else:
-            def reclaim(data: dict[str, Any]) -> None:
-                for item in data.setdefault("reminders", {}).values():
-                    if not isinstance(item, dict) or item.get("status") != "processing" or not item.get("lease_until"):
-                        continue
-                    try:
-                        lease_until = datetime.fromisoformat(str(item["lease_until"]))
-                        if lease_until.tzinfo is None:
-                            lease_until = lease_until.replace(tzinfo=UTC)
-                    except (TypeError, ValueError):
-                        continue
-                    if lease_until.astimezone(UTC) < current:
-                        item["status"] = "failed"
-                        item["lease_until"] = None
-                        item["next_attempt_at"] = current.isoformat()
-                        item["last_error"] = "expired_delivery_lease"
-                        item["updated_at"] = current.isoformat()
+                rows = connection.execute(
+                    """
+                    WITH due AS (
+                        SELECT reminder_id FROM hero_reminders
+                        WHERE status = ANY(%s)
+                          AND scheduled_at <= %s
+                          AND next_attempt_at <= %s
+                          AND (lease_until IS NULL OR lease_until < %s)
+                        ORDER BY scheduled_at ASC
+                        LIMIT %s
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE hero_reminders AS reminder
+                    SET status = 'processing', lease_until = %s, lease_owner = %s,
+                        attempt_count = attempt_count + 1, updated_at = NOW()
+                    FROM due WHERE reminder.reminder_id = due.reminder_id
+                    RETURNING reminder.*
+                    """,
+                    (
+                        list(retry_statuses), current, current, current, safe_limit,
+                        current + timedelta(minutes=5), _WORKER_ID,
+                    ),
+                ).fetchall()
+            return [self._from_row(row) for row in rows]
 
-            self.store._transaction(reclaim)
+        def reclaim(data: dict[str, Any]) -> None:
+            for item in data.setdefault("reminders", {}).values():
+                if not isinstance(item, dict) or item.get("status") != "processing" or not item.get("lease_until"):
+                    continue
+                try:
+                    lease_until = datetime.fromisoformat(str(item["lease_until"]))
+                    if lease_until.tzinfo is None:
+                        lease_until = lease_until.replace(tzinfo=UTC)
+                except (TypeError, ValueError):
+                    continue
+                if lease_until.astimezone(UTC) < current:
+                    item["status"] = "failed"
+                    item["lease_until"] = None
+                    item["next_attempt_at"] = current.isoformat()
+                    item["last_error"] = "expired_delivery_lease"
+                    item["updated_at"] = current.isoformat()
+
+        self.store._transaction(reclaim)
         return super().claim_due(now=current, limit=limit)
+
+    def release_owned(self, *, now: datetime | None = None) -> int:
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        if self.backend_name != "postgresql":
+            return 0
+        with self.store.pool.connection() as connection:
+            result = connection.execute(
+                """
+                UPDATE hero_reminders
+                SET status = 'failed', lease_until = NULL, lease_owner = NULL,
+                    next_attempt_at = LEAST(next_attempt_at, %s),
+                    last_error = 'process_draining', updated_at = NOW()
+                WHERE status = 'processing' AND lease_owner = %s
+                """,
+                (current, _WORKER_ID),
+            )
+        return int(result.rowcount or 0)
+
+    def _set_delivery_state(self, *args: Any, **kwargs: Any) -> None:
+        super()._set_delivery_state(*args, **kwargs)
+        reminder_id = str(args[0] if args else kwargs.get("reminder_id") or "")
+        if self.backend_name == "postgresql" and reminder_id:
+            with self.store.pool.connection() as connection:
+                connection.execute(
+                    "UPDATE hero_reminders SET lease_owner = NULL WHERE reminder_id = %s",
+                    (reminder_id,),
+                )
 
 
 def _repository() -> ReminderRepository:
@@ -81,7 +147,6 @@ def _language(profile: dict[str, Any]) -> str:
 
 
 def _command_text(text: str) -> str:
-    """Normalize common Arabic spelling variants before deterministic parsing."""
     value = str(text or "").translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
     value = re.sub(r"(قبلها|قبل الموعد|قبل المهلة)\s+بيومين\b", r"\1 2 ايام", value)
     value = re.sub(r"(قبلها|قبل الموعد|قبل المهلة)\s+بيوم\b", r"\1 1 يوم", value)
@@ -89,7 +154,6 @@ def _command_text(text: str) -> str:
 
 
 def _render_reminder(language: str, title: str) -> str:
-    """Keep every reminder entirely in the user's selected language."""
     return _ORIGINAL_RENDER_REMINDER(language, title).replace("offene متابعة", "offene Aufgabe")
 
 
@@ -104,7 +168,6 @@ def _reminder_prompt(language: str) -> str:
 
 
 def reminder_unavailable_message(language: str) -> str:
-    """Explain a configuration outage without exposing secret names or internals."""
     return {
         "ar": "التذكيرات متوقفة مؤقتًا لحماية بياناتك. باقي خدمات سام شغّالة، وما حفظت هالتذكير.",
         "de": "Erinnerungen sind zum Schutz deiner Daten vorübergehend deaktiviert. Die übrigen Funktionen bleiben verfügbar; diese Erinnerung wurde nicht gespeichert.",
@@ -126,17 +189,13 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     language = _language(profile)
     stage = str(profile.get("onboarding_stage") or "")
     intent = detect_reminder_intent(_command_text(message.text)) if message.message_type == "text" else None
-
-    # Let onboarding and consent handling run before long-term reminder commands.
     if intent is None or stage != "complete":
         await _ORIGINAL_PROCESS_INCOMING(message)
         return
-
     memory_enabled = profile.get("memory_consent") == "granted"
     if not memory_enabled:
         await core._finish(message.message_id, core.memory_required_message(language), message.sender)
         return
-
     core.store.update_user(message.sender, {
         "last_seen": core._now().isoformat(),
         "session_language": language,
@@ -144,30 +203,21 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         "session_expires_at": core._session_expiry(),
     })
     repository = _repository()
-
     if intent.action == "list":
-        await core._finish(
-            message.message_id,
-            reminder_list_message(language, repository.list(message.sender, active_only=True, limit=10)),
-            message.sender,
-        )
+        await core._finish(message.message_id, reminder_list_message(language, repository.list(message.sender, active_only=True, limit=10)), message.sender)
         return
-
     if intent.action in {"cancel", "cancel_all"}:
         count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
         await core._finish(message.message_id, reminder_cancelled_message(language, count), message.sender)
         return
-
     if not reminder_encryption_ready():
         await core._finish(message.message_id, reminder_unavailable_message(language), message.sender)
         return
-
     mission = core._hero_memory().get_latest_mission(message.sender)
     scheduled_at = resolve_reminder_schedule(intent, mission)
     if scheduled_at is None:
         await core._finish(message.message_id, reminder_needs_date_message(language), message.sender)
         return
-
     title = str((mission or {}).get("title") or profile.get("current_topic") or "Follow-up")
     reminder = repository.create(
         message.sender,
@@ -210,11 +260,15 @@ async def _stop_worker() -> None:
             await asyncio.wait_for(_WORKER_TASK, timeout=5)
         except (TimeoutError, asyncio.CancelledError):
             _WORKER_TASK.cancel()
-    _WORKER_TASK = None
-    _WORKER_STOP = None
+    try:
+        repository = _repository()
+        if isinstance(repository, ResilientReminderRepository):
+            repository.release_owned()
+    finally:
+        _WORKER_TASK = None
+        _WORKER_STOP = None
 
 
-# Replace request-time targets after all lower composition layers are loaded.
 reminder_module.render_reminder = _render_reminder
 composed.process_incoming = process_incoming
 core.process_incoming = process_incoming

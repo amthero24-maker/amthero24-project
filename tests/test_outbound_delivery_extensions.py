@@ -23,6 +23,7 @@ from outbound_delivery import DeliveryReceipt
 def _reset_store(tmp_path, monkeypatch) -> JsonDataStore:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DURABLE_QUEUE_ENABLED", "false")
+    layer.webhook_module.lifecycle.start_accepting()
     store = JsonDataStore(tmp_path / "delivery-extension.json")
     layer.core.store = store
     layer._DELIVERY_REPOSITORY = None

@@ -1,4 +1,4 @@
-"""ASGI protection for Meta WhatsApp webhook authenticity."""
+"""ASGI protection for Meta WhatsApp webhook authenticity and deployment drain."""
 from __future__ import annotations
 
 import hashlib
@@ -10,19 +10,16 @@ from typing import Any
 
 from log_safety import install_logging_safety
 
-# Railway starts `webhook_security:app`. Install logging safety before any storage,
-# provider, webhook, or application module can create a record containing request data.
 install_logging_safety()
 
 from encryption_policy import install_encryption_policy  # noqa: E402
 from storage_factory import install_production_storage_policy  # noqa: E402
 
-# Install durable-storage and reversible-encryption policies before application
-# composition imports modules and binds them.
 install_production_storage_policy()
 install_encryption_policy()
 
 import runtime_health  # noqa: E402
+from deployment_lifecycle import lifecycle  # noqa: E402
 
 _MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
 
@@ -32,7 +29,6 @@ def signature_required() -> bool:
 
 
 def verify_meta_signature(body: bytes, signature: str, app_secret: str) -> bool:
-    """Validate Meta's sha256 HMAC signature using constant-time comparison."""
     if not body or not app_secret or not signature.startswith("sha256="):
         return False
     supplied = signature.split("=", 1)[1].strip().casefold()
@@ -42,18 +38,52 @@ def verify_meta_signature(body: bytes, signature: str, app_secret: str) -> bool:
     return hmac.compare_digest(expected, supplied)
 
 
-async def _json_response(send: Callable[[dict[str, Any]], Awaitable[None]], status: int, payload: dict[str, object]) -> None:
+async def _json_response(
+    send: Callable[[dict[str, Any]], Awaitable[None]],
+    status: int,
+    payload: dict[str, object],
+    *,
+    retry_after: str = "",
+) -> None:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    await send({
-        "type": "http.response.start",
-        "status": status,
-        "headers": [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(body)).encode("ascii")),
-            (b"cache-control", b"no-store"),
-        ],
-    })
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+        (b"cache-control", b"no-store"),
+    ]
+    if retry_after:
+        headers.append((b"retry-after", retry_after.encode("ascii")))
+    await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
+
+
+class DeploymentDrainMiddleware:
+    """Reject new webhooks during drain and track admitted request/background work."""
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[..., Awaitable[dict[str, Any]]],
+        send: Callable[..., Awaitable[None]],
+    ) -> None:
+        is_webhook = (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") == "/webhook"
+        )
+        if not is_webhook:
+            await self.app(scope, receive, send)
+            return
+        if not lifecycle.work_started():
+            await _json_response(send, 503, {"status": "draining"}, retry_after="10")
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            lifecycle.work_finished()
 
 
 class MetaWebhookSignatureMiddleware:
@@ -113,4 +143,4 @@ class MetaWebhookSignatureMiddleware:
         await self.app(scope, replay_receive, send)
 
 
-app = MetaWebhookSignatureMiddleware(runtime_health.app)
+app = DeploymentDrainMiddleware(MetaWebhookSignatureMiddleware(runtime_health.app))
