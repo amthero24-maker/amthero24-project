@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from database_migrations import migration_readiness
 from deployment_lifecycle import lifecycle
 from durable_queue import queue_status as durable_queue_status
 from encryption_policy import (
@@ -76,12 +77,19 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     support_token_status = support_api_token_status()
     production_store = globals().get("store")
     schemas_ready = backend != "postgresql" or store is not production_store or bool(_BOOTSTRAPPED_SCHEMAS)
+    migration_status, schema_version = migration_readiness(store)
+    migration_ready = backend != "postgresql" or store is not production_store or migration_status == "current"
+    visible_migration_status = (
+        "not-required"
+        if backend == "postgresql" and store is not production_store and migration_status == "unverified"
+        else migration_status
+    )
     fallback_allowed = database_fallback_allowed()
     queue_component = durable_queue_status(store)
     queue_ready = queue_component in {"disabled", "configured"}
     process = lifecycle.snapshot()
     lifecycle_ready = store is not production_store or (process.accepting_work and process.state == "accepting")
-    ready = config_ok and storage_ok and schemas_ready and queue_ready and lifecycle_ready
+    ready = config_ok and storage_ok and schemas_ready and migration_ready and queue_ready and lifecycle_ready
 
     if not reminder_worker_enabled:
         reminders_status = "disabled"
@@ -106,6 +114,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "storage_backend": backend,
             "database_fallback": "allowed" if fallback_allowed else "fail-closed",
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
+            "database_schema_migrations": visible_migration_status,
+            "database_schema_version": schema_version,
             "process_lifecycle": process.state,
             "active_work": process.active_work,
             "webhook_signature": signature_status,
@@ -141,7 +151,7 @@ from shared_drain_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
-_BOOTSTRAPPED_SCHEMAS = bootstrap_postgres_schemas(store)
+_BOOTSTRAPPED_SCHEMAS = tuple(getattr(store, "schema_bootstrapped_components", ())) or bootstrap_postgres_schemas(store)
 
 
 async def _accept_after_startup() -> None:
