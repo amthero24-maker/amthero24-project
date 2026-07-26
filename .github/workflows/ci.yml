@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app.py config.py conversation_intelligence.py data_store.py groq_client.py hero_memory.py mission_engine.py onboarding.py product_knowledge.py prompts.py whatsapp.py main.py
+        run: python -m compileall -q app.py application.py config.py conversation_intelligence.py data_store.py groq_client.py hero_memory.py mission_engine.py mission_intelligence.py onboarding.py product_knowledge.py prompts.py relationship_engine.py whatsapp.py main.py
       - name: Conversation intelligence tests
         run: python -m pytest -q tests/test_conversation_intelligence.py
       - name: Product knowledge tests
@@ -32,7 +32,9 @@ jobs:
       - name: Hero Memory tests
         run: python -m pytest -q tests/test_hero_memory.py
       - name: Mission Engine tests
-        run: python -m pytest -q tests/test_mission_engine.py
+        run: python -m pytest -q tests/test_mission_engine.py tests/test_mission_intelligence.py
+      - name: Relationship Engine tests
+        run: python -m pytest -q tests/test_relationship_engine.py tests/test_application_composition.py
       - name: Application mission tests
         run: python -m pytest -q tests/test_app_missions.py
       - name: Application tests
