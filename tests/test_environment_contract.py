@@ -61,7 +61,12 @@ def test_collects_os_environ_and_wrapper_calls(tmp_path) -> None:
         'a = os.environ["DIRECT_SETTING"]\n'
         'b = os.environ.get("OPTIONAL_SETTING")\n'
         'c = required_env("REQUIRED_SETTING")\n'
-        'd = _env_bool("BOOLEAN_SETTING")\n',
+        'd = _env_bool("BOOLEAN_SETTING")\n'
+        'e = _flag("FEATURE_FLAG", True)\n'
+        'f = _int_env("INTEGER_SETTING", 5, 1, 10)\n'
+        'g = _limit("PLAN_LIMIT", 3)\n'
+        'h = _environment_value("ENCRYPTION_SETTING")\n'
+        'i = assess_secret("OPERATOR_SECRET")\n',
     )
 
     uses, findings = collect_environment_uses(tmp_path, files=[source])
@@ -72,6 +77,11 @@ def test_collects_os_environ_and_wrapper_calls(tmp_path) -> None:
         "OPTIONAL_SETTING",
         "REQUIRED_SETTING",
         "BOOLEAN_SETTING",
+        "FEATURE_FLAG",
+        "INTEGER_SETTING",
+        "PLAN_LIMIT",
+        "ENCRYPTION_SETTING",
+        "OPERATOR_SECRET",
     }
 
 
