@@ -102,6 +102,14 @@ def run_smoke(
         schemas_ok = schemas == "initialized" or not require_postgresql
         checks.append(SmokeCheck("postgresql_schemas", "pass" if schemas_ok else "fail", schemas))
 
+        migrations = str(components.get("database_schema_migrations") or "missing")
+        migrations_ok = migrations == "current" or not require_postgresql
+        checks.append(SmokeCheck("database_schema_migrations", "pass" if migrations_ok else "fail", migrations))
+
+        schema_version = components.get("database_schema_version")
+        version_ok = (isinstance(schema_version, int) and schema_version >= 1) or not require_postgresql
+        checks.append(SmokeCheck("database_schema_version", "pass" if version_ok else "fail", str(schema_version if schema_version is not None else "missing")))
+
         fallback = str(components.get("database_fallback") or "missing")
         fallback_ok = fallback == "fail-closed" or not require_postgresql
         checks.append(SmokeCheck("database_fallback", "pass" if fallback_ok else "fail", fallback))
