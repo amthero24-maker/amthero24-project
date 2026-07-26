@@ -1,6 +1,7 @@
 """Prompt construction for Sam, the AmtHero24 assistant."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -12,9 +13,20 @@ LANGUAGE_NAMES = {
     "el": "Greek",
 }
 
+_INVALID_NAMES = {
+    "unknown", "جديد", "جديدة", "محتاج", "محتاجة", "تعبان", "تعبانة", "هون", "هنا",
+    "neu", "hier", "new", "here",
+}
+
 
 def build_system_prompt(*, sender: str, text: str, detected_language: str, profile: dict[str, Any], history: list[str], has_image: bool) -> str:
-    first_name = str(profile.get("first_name") or "unknown")
+    first_name = str(profile.get("first_name") or "unknown").strip()
+    # Older builds could misread ordinary Arabic phrases such as "أنا جديد هون" as a name.
+    if first_name.casefold() in {item.casefold() for item in _INVALID_NAMES}:
+        first_name = "unknown"
+    if re.match(r"^\s*(?:أنا|انا)\s+(?!اسمي\b)", text or ""):
+        first_name = "unknown"
+
     preferred_language = str(profile.get("preferred_language") or detected_language)
     history_text = " | ".join(item[:180] for item in history[-4:]) or "none"
     reply_language = LANGUAGE_NAMES.get(detected_language, "German")
@@ -52,7 +64,7 @@ MEMORY AND PRIVACY
 - Known first name: {first_name}
 - Preferred language: {preferred_language}
 - If the first name is known, never ask for it again.
-- Do not treat ordinary words after "أنا" as a person's name.
+- Do not treat ordinary words after "أنا" as a person's name. A valid Arabic self-introduction is normally "اسمي ..." or "أنا اسمي ...".
 - Do not request or retain passwords, bank credentials, insurance numbers, passport images, or document bytes.
 
 DOCUMENTS AND IMAGES
