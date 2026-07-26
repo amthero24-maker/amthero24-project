@@ -20,10 +20,13 @@ def test_feedback_repository_stores_no_identity_or_content(tmp_path) -> None:
 
     assert event["score"] == 5
     assert set(event) == {"feedback_id", "score", "language", "topic", "source", "created_at"}
-    serialized = str(store.snapshot())
+    stored = store.snapshot()["anonymous_feedback"][0]
+    serialized = str(stored)
     assert "49123" not in serialized
-    assert "phone_hash" not in serialized
-    assert "message" not in serialized
+    assert "phone_hash" not in stored
+    assert "message" not in stored
+    assert "text" not in stored
+    assert "reply" not in stored
 
 
 def test_feedback_aggregate_and_cleanup(tmp_path) -> None:
