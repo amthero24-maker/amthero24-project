@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from storage_factory import database_fallback_allowed
+
 _REQUIRED_RUNTIME_ENV = (
     "GROQ_API_KEY",
     "WHATSAPP_TOKEN",
@@ -66,6 +68,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     support_configured = support_enabled and bool(os.getenv("SUPPORT_API_TOKEN", "").strip()) and bool(os.getenv("SUPPORT_ENCRYPTION_KEY", "").strip())
     production_store = globals().get("store")
     schemas_ready = backend != "postgresql" or store is not production_store or bool(_BOOTSTRAPPED_SCHEMAS)
+    fallback_allowed = database_fallback_allowed()
     ready = config_ok and storage_ok and schemas_ready
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
@@ -74,6 +77,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "configuration": "ok" if config_ok else "missing",
             "storage": "ok" if storage_ok else "unavailable",
             "storage_backend": backend,
+            "database_fallback": "allowed" if fallback_allowed else "fail-closed",
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
             "webhook_signature": signature_status,
             "text_model": model,
