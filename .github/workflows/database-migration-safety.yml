@@ -65,9 +65,6 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_migrations
       DB_POOL_MAX: "4"
       SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS: "5"
-      MESSAGE_QUEUE_ENCRYPTION_KEY: migration-queue-key-2026-unique-7rT4mQ9x
-      REMINDER_ENCRYPTION_KEY: migration-reminder-key-2026-unique-8pL2vN6m
-      SUPPORT_ENCRYPTION_KEY: migration-support-key-2026-unique-5kR9wQ3z
       PROVIDER_TELEMETRY_ENABLED: "true"
       ABUSE_GUARD_ENABLED: "true"
       ABUSE_GUARD_ENFORCEMENT_ENABLED: "true"
