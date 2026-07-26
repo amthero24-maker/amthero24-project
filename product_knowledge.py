@@ -10,7 +10,7 @@ SUPPORTED_LANGUAGES = ("de", "ar", "en", "uk", "el")
 def _normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").casefold().strip()
     value = re.sub(r"[\u064b-\u065f\u0670\u0640]", "", value)
-    value = re.sub(r"[^\w\u0600-\u06ff\u0370-\u03ff\u0400-\u04ff]+", " ", value)
+    value = "".join(character if character.isalnum() or character.isspace() else " " for character in value)
     return re.sub(r"\s+", " ", value).strip()
 
 
