@@ -19,7 +19,11 @@ def test_sanitize_rejects_unterminated_reasoning() -> None:
         groq_client.sanitize_model_reply("<think>internal analysis")
 
 
-def test_qwen_request_hides_reasoning(monkeypatch) -> None:
+def test_sanitize_removes_isolated_ocr_ideograph() -> None:
+    assert groq_client.sanitize_model_reply("أبلغت الشركة أن دفع率 الفاتورة سيتأخر.") == "أبلغت الشركة أن دفع الفاتورة سيتأخر."
+
+
+def test_qwen_request_hides_reasoning_and_caps_vision_output(monkeypatch) -> None:
     completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="شرح مختصر وواضح."))])
     client = MagicMock()
     client.chat.completions.create.return_value = completion
@@ -37,3 +41,4 @@ def test_qwen_request_hides_reasoning(monkeypatch) -> None:
     kwargs = client.chat.completions.create.call_args.kwargs
     assert kwargs["reasoning_format"] == "hidden"
     assert kwargs["reasoning_effort"] == "none"
+    assert kwargs["max_tokens"] == 650
