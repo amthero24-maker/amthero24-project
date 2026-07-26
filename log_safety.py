@@ -181,7 +181,9 @@ def _safe_exc_info(exc_info: Any, *, environment: Mapping[str, str] | None = Non
     exception = exc_info[1]
     safe_message = redact_text(str(exception), environment=environment)
     safe = RedactedLogException(f"{type(exception).__name__}: {safe_message}")
-    return (type(safe), safe, exc_info[2])
+    # Raw traceback source lines can contain a literal phone number, URL, or test fixture.
+    # Keep the exception category/message but drop frames before any formatter sees them.
+    return (type(safe), safe, None)
 
 
 def sanitize_log_record(record: logging.LogRecord, *, environment: Mapping[str, str] | None = None) -> logging.LogRecord:
