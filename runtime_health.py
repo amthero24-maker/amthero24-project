@@ -63,7 +63,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     admin_configured = bool(os.getenv("ADMIN_API_TOKEN", "").strip())
     support_enabled = os.getenv("HUMAN_SUPPORT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
     support_configured = support_enabled and bool(os.getenv("SUPPORT_API_TOKEN", "").strip()) and bool(os.getenv("SUPPORT_ENCRYPTION_KEY", "").strip())
-    ready = config_ok and storage_ok
+    schemas_ready = backend != "postgresql" or bool(_BOOTSTRAPPED_SCHEMAS)
+    ready = config_ok and storage_ok and schemas_ready
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
         "version": version,
@@ -71,6 +72,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "configuration": "ok" if config_ok else "missing",
             "storage": "ok" if storage_ok else "unavailable",
             "storage_backend": backend,
+            "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
             "webhook_signature": signature_status,
             "text_model": model,
             "document_actions": "enabled",
@@ -95,7 +97,10 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
 from feedback_extensions import app, store  # noqa: E402
+from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
+
+_BOOTSTRAPPED_SCHEMAS = bootstrap_postgres_schemas(store)
 
 
 @app.get("/ready", include_in_schema=False)
