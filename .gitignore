@@ -20,6 +20,7 @@ secret-scan-report.json
 secret-scan.json
 production-monitor.json
 dependency-policy.json
+environment-contract.json
 pip-audit.json
 resolved-audit-environment.txt
 sbom*.json
