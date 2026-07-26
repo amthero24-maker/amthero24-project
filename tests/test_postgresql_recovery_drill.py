@@ -21,6 +21,7 @@ from durable_queue import DurableQueueRepository
 from entitlement_engine import EntitlementRepository
 from feedback_engine import FeedbackRepository
 from hero_memory import HeroMemory
+from outbound_delivery import DeliveryReceipt, OutboundDeliveryRepository
 from provider_reliability import ProviderReliabilityRepository
 from reminder_engine import ReminderRepository, decrypt_recipient
 from schema_bootstrap import bootstrap_postgres_schemas
@@ -31,10 +32,12 @@ from support_handoff import SupportRepository
 
 PHONE = "+4915712345678"
 PHONE_HASH = hashlib.sha256(PHONE.encode("utf-8")).hexdigest()
+OUTBOUND_ID = "wamid.recovery-outbound"
 EXPECTED_TABLES = {
     "hero_users",
     "inbound_messages",
     "inbound_work_queue",
+    "outbound_delivery_messages",
     "schema_migrations",
     "hero_missions",
     "memory_consent_events",
@@ -51,7 +54,9 @@ EXPECTED_TABLES = {
     "human_support_admin_events",
     "anonymous_feedback",
 }
-COUNTED_TABLES = EXPECTED_TABLES - {"schema_migrations", "abuse_blocks", "human_support_admin_events", "provider_circuit_state"}
+COUNTED_TABLES = EXPECTED_TABLES - {
+    "schema_migrations", "abuse_blocks", "human_support_admin_events", "provider_circuit_state"
+}
 
 
 def _reset_target(admin_url: str, target_name: str) -> None:
@@ -90,6 +95,7 @@ def _seed_source(database_url: str) -> dict[str, str]:
     support = SupportRepository(store)
     feedback = FeedbackRepository(store)
     durable_queue = DurableQueueRepository(store)
+    outbound = OutboundDeliveryRepository(store)
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
 
     try:
@@ -103,6 +109,12 @@ def _seed_source(database_url: str) -> dict[str, str]:
         store.claim_message("wamid.recovery-drill", PHONE, "recovery test message")
         store.update_message_status("wamid.recovery-drill", "sent")
         durable_queue.enqueue("wamid.recovery-drill", PHONE, now=now)
+        outbound.record_accepted(OUTBOUND_ID, message_kind="template", now=now)
+        outbound.record_receipt(DeliveryReceipt(
+            OUTBOUND_ID,
+            "delivered",
+            now + timedelta(seconds=15),
+        ), now=now)
         memory.record_consent(PHONE, "granted", "recovery-v1")
         mission = memory.create_mission(
             PHONE,
@@ -161,6 +173,7 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
         "hero_users",
         "inbound_messages",
         "inbound_work_queue",
+        "outbound_delivery_messages",
         "hero_missions",
         "hero_reminders",
         "pending_document_actions",
@@ -184,6 +197,7 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
     assert manifest["encrypted"] is True
     assert manifest_path.exists()
     assert PHONE.encode("utf-8") not in encrypted_bytes
+    assert OUTBOUND_ID.encode("utf-8") not in encrypted_bytes
     assert b"RecoveryTest" not in encrypted_bytes
     assert b"recovery test message" not in encrypted_bytes
 
@@ -217,6 +231,11 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
         assert queue_item is not None
         assert queue_item.sender == PHONE
         assert queue_item.inbound_status == "sent"
+
+        outbound = OutboundDeliveryRepository(target_store).state(OUTBOUND_ID)
+        assert outbound is not None
+        assert outbound["status"] == "delivered"
+        assert outbound["message_kind"] == "template"
 
         reminder = ReminderRepository(target_store).list(PHONE, active_only=False, limit=10)[0]
         assert reminder["reminder_id"] == identifiers["reminder_id"]
