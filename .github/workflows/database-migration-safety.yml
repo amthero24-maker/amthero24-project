@@ -1,0 +1,112 @@
+name: Database Migration Safety
+
+on:
+  pull_request:
+    paths:
+      - database_migrations.py
+      - schema_bootstrap.py
+      - storage_factory.py
+      - runtime_health.py
+      - production_smoke.py
+      - data_store.py
+      - tests/test_database_migrations.py
+      - tests/test_postgresql_schema_migrations.py
+      - tests/test_storage_factory.py
+      - tests/test_runtime_health.py
+      - tests/test_production_smoke.py
+      - .github/workflows/database-migration-safety.yml
+      - .env.example
+  push:
+    branches: [main]
+    paths:
+      - database_migrations.py
+      - schema_bootstrap.py
+      - storage_factory.py
+      - runtime_health.py
+      - production_smoke.py
+      - data_store.py
+      - tests/test_database_migrations.py
+      - tests/test_postgresql_schema_migrations.py
+      - tests/test_storage_factory.py
+      - tests/test_runtime_health.py
+      - tests/test_production_smoke.py
+      - .github/workflows/database-migration-safety.yml
+      - .env.example
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-migration-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: amthero24_migrations
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d amthero24_migrations"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_migrations
+      DB_POOL_MAX: "4"
+      SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS: "5"
+      MESSAGE_QUEUE_ENCRYPTION_KEY: migration-queue-key-2026-unique-7rT4mQ9x
+      REMINDER_ENCRYPTION_KEY: migration-reminder-key-2026-unique-8pL2vN6m
+      SUPPORT_ENCRYPTION_KEY: migration-support-key-2026-unique-5kR9wQ3z
+      PROVIDER_TELEMETRY_ENABLED: "true"
+      ABUSE_GUARD_ENABLED: "true"
+      ABUSE_GUARD_ENFORCEMENT_ENABLED: "true"
+      ENTITLEMENT_ENFORCEMENT_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install pinned development dependencies
+        run: python -m pip install --quiet -r requirements-dev.txt
+      - name: Compile migration and storage modules
+        run: python -m py_compile database_migrations.py schema_bootstrap.py storage_factory.py runtime_health.py production_smoke.py
+      - name: Run migration policy and PostgreSQL concurrency tests
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short --junitxml=migration-junit.xml \
+            tests/test_database_migrations.py \
+            tests/test_postgresql_schema_migrations.py \
+            tests/test_storage_factory.py \
+            tests/test_runtime_health.py \
+            tests/test_production_smoke.py 2>&1 | tee migration-test.log
+      - name: Upload sanitized migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-migration-safety
+          path: |
+            migration-junit.xml
+            migration-test.log
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce migration safety
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
