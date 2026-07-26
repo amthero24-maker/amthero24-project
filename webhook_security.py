@@ -13,10 +13,12 @@ from log_safety import install_logging_safety
 install_logging_safety()
 
 from encryption_policy import install_encryption_policy  # noqa: E402
+from schema_coordination import install_schema_coordination  # noqa: E402
 from storage_factory import install_production_storage_policy  # noqa: E402
 
 install_production_storage_policy()
 install_encryption_policy()
+install_schema_coordination()
 
 import runtime_health  # noqa: E402
 from deployment_lifecycle import lifecycle  # noqa: E402
