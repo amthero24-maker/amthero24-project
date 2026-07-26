@@ -79,6 +79,7 @@ def test_production_postgres_requires_current_migration_report(monkeypatch) -> N
         "DATABASE_URL": "postgresql://private",
     }
     monkeypatch.setattr(runtime_health, "store", store)
+    monkeypatch.setattr(runtime_health, "_BOOTSTRAPPED_SCHEMAS", ("hero_memory",))
     monkeypatch.setattr(
         runtime_health.lifecycle,
         "snapshot",
@@ -98,6 +99,7 @@ def test_production_postgres_accepts_current_migration_report(monkeypatch) -> No
         "DATABASE_URL": "postgresql://private",
     }
     monkeypatch.setattr(runtime_health, "store", store)
+    monkeypatch.setattr(runtime_health, "_BOOTSTRAPPED_SCHEMAS", ("hero_memory",))
     monkeypatch.setattr(
         runtime_health.lifecycle,
         "snapshot",
