@@ -17,6 +17,7 @@ import pytest
 import runtime_health
 from abuse_guard import AbuseGuardRepository
 from document_action_repository import PendingDocumentRepository
+from durable_queue import DurableQueueRepository
 from entitlement_engine import EntitlementRepository
 from hero_memory import HeroMemory
 from reminder_engine import ReminderRepository
@@ -37,6 +38,7 @@ _LINKED_TABLES = (
 )
 _SEEDED_TABLES = tuple(table for table in _LINKED_TABLES if table != "abuse_blocks")
 _CLEANUP_TABLES = _LINKED_TABLES + (
+    "inbound_work_queue",
     "abuse_guard_events",
     "provider_operational_events",
     "provider_circuit_state",
@@ -52,7 +54,8 @@ def _phone_hash(phone: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def clean_tenant_records() -> None:
+def clean_tenant_records(monkeypatch) -> None:
+    monkeypatch.setenv("MESSAGE_QUEUE_ENCRYPTION_KEY", "queue-tenant-ci-2026-unique-7rT4mQ9xLp2V")
     store = runtime_health.store
     assert store.backend_name == "postgresql"
     with store.pool.connection() as connection:
@@ -82,6 +85,7 @@ def _seed_user(phone: str, marker: str, *, language: str, plan: str, now: dateti
     entitlements = EntitlementRepository(store)
     abuse = AbuseGuardRepository(store)
     support = SupportRepository(store)
+    durable_queue = DurableQueueRepository(store)
 
     store.update_user(phone, {
         "first_name": f"{marker}_NAME",
@@ -89,7 +93,9 @@ def _seed_user(phone: str, marker: str, *, language: str, plan: str, now: dateti
         "memory_consent": "granted",
         "onboarding_stage": "complete",
     })
-    store.claim_message(f"wamid.{marker.lower()}.{uuid4().hex}", phone, f"{marker}_MESSAGE")
+    message_id = f"wamid.{marker.lower()}.{uuid4().hex}"
+    store.claim_message(message_id, phone, f"{marker}_MESSAGE")
+    durable_queue.enqueue(message_id, phone, now=now)
     memory.record_consent(phone, "granted", "tenant-isolation-v1")
     mission = memory.create_mission(
         phone,
@@ -119,6 +125,7 @@ def _seed_user(phone: str, marker: str, *, language: str, plan: str, now: dateti
         "pending": pending,
         "entitlements": entitlements,
         "support": support,
+        "message_id": message_id,
     }
 
 
@@ -189,6 +196,14 @@ def test_deleting_one_tenant_preserves_every_other_tenant_layer() -> None:
             ).fetchone()
             assert int(beta_count["count"]) > 0, f"beta was removed from {table}"
 
+        alpha_queue = connection.execute(
+            "SELECT COUNT(*) AS count FROM inbound_work_queue WHERE message_id = %s",
+            (alpha_repos["message_id"],),
+        ).fetchone()
+        beta_queue = connection.execute(
+            "SELECT sender_ciphertext FROM inbound_work_queue WHERE message_id = %s",
+            (beta_repos["message_id"],),
+        ).fetchone()
         events = connection.execute(
             "SELECT COUNT(*) AS count FROM privacy_deletion_events"
         ).fetchone()
@@ -201,6 +216,9 @@ def test_deleting_one_tenant_preserves_every_other_tenant_layer() -> None:
             (f"%{beta}%", f"%{beta}%"),
         ).fetchone()
 
+    assert int(alpha_queue["count"]) == 0
+    assert beta_queue is not None
+    assert beta not in str(beta_queue["sender_ciphertext"])
     assert int(events["count"]) == 1
     assert int(raw_phone_occurrences["count"]) == 0
     assert store.get_user(beta)["first_name"] == "BETA_KEEP_NAME"
