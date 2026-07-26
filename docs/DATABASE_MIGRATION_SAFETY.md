@@ -1,25 +1,30 @@
 # AmtHero24 Database Migration Safety
 
-AmtHero24 applies production PostgreSQL schema changes through one ordered migration
-ledger before the application is allowed to become ready.
+AmtHero24 records and coordinates new production PostgreSQL schema changes through an
+ordered migration ledger before the application is allowed to become ready. The small
+legacy core-table bootstrap remains an idempotent compatibility path; optional and future
+schema evolution is validated through the versioned migration contract.
 
 ## Safety model
 
 The production storage policy performs these steps in order:
 
 1. connect to the configured PostgreSQL service
-2. acquire a bounded PostgreSQL advisory lock shared by all application replicas
-3. create or read `amthero_schema_migrations`
-4. reject a database whose recorded version is newer than the running application
-5. reject a changed checksum for an already-applied migration
-6. apply missing migrations in ascending integer order
-7. validate required tables and safety-critical columns
-8. release the advisory lock
-9. import the historical JSON store once, when present
-10. continue application composition and allow `/ready` only when the schema is current
+2. initialize the legacy core tables idempotently for backward compatibility
+3. acquire a bounded PostgreSQL advisory lock shared by all application replicas
+4. create or read `amthero_schema_migrations`
+5. reject a database whose recorded version is newer than the running application
+6. reject a changed checksum for an already-applied migration
+7. apply missing versioned migrations in ascending integer order
+8. create and validate all current optional tables and safety-critical columns
+9. release the advisory lock
+10. import the historical JSON store once, when present
+11. continue application composition and allow `/ready` only when the schema is current
 
 The lock is session-scoped and released explicitly. PostgreSQL also releases it if the
-connection closes unexpectedly.
+connection closes unexpectedly. Repository constructors retain idempotent DDL for local
+compatibility, but production readiness is granted only after the ledger and schema
+contract are current.
 
 ## Ledger privacy boundary
 
