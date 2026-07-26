@@ -41,8 +41,10 @@ jobs:
         run: python -m pytest -q tests/test_document_service.py tests/test_application_documents.py tests/test_document_extensions.py
       - name: Reminder core tests
         run: python -m pytest -q tests/test_reminder_engine.py
-      - name: Reminder WhatsApp integration tests
-        run: python -m pytest -q tests/test_reminder_extensions.py
+      - name: Reminder create command test
+        run: python -m pytest -q tests/test_reminder_extensions.py::test_reminder_command_creates_consent_backed_followup
+      - name: Reminder list and cancel command test
+        run: python -m pytest -q tests/test_reminder_extensions.py::test_reminder_list_and_cancel_do_not_call_groq
       - name: Production and webhook security tests
         run: python -m pytest -q tests/test_runtime_health.py tests/test_webhook_security.py
       - name: Application mission tests
