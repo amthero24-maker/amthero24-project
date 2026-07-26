@@ -1,8 +1,8 @@
 """Central PostgreSQL schema bootstrap for every production composition layer.
 
-Repository constructors remain responsible for their own idempotent DDL. This module
-ensures optional features have created their tables before health/admin endpoints or
-privacy deletion can reference them, even when no user has exercised that feature yet.
+Repository constructors remain responsible for their own idempotent DDL. Production now
+runs this bootstrap inside the versioned migration lock before application composition;
+direct local/test construction keeps the same callable for compatibility.
 """
 from __future__ import annotations
 
@@ -20,27 +20,33 @@ from provider_reliability import ProviderReliabilityRepository
 from reminder_engine import ReminderRepository
 from support_handoff import SupportRepository
 
+_COMPONENTS: tuple[tuple[str, type[Any]], ...] = (
+    ("hero_memory", HeroMemory),
+    ("message_idempotency", MessageClaimRepository),
+    ("durable_inbound_queue", DurableQueueRepository),
+    ("outbound_delivery", OutboundDeliveryRepository),
+    ("reminders", ReminderRepository),
+    ("pending_documents", PendingDocumentRepository),
+    ("entitlements", EntitlementRepository),
+    ("abuse_guard", AbuseGuardRepository),
+    ("provider_reliability", ProviderReliabilityRepository),
+    ("human_support", SupportRepository),
+    ("anonymous_feedback", FeedbackRepository),
+)
+
+
+def schema_component_names() -> tuple[str, ...]:
+    """Return static subsystem names without touching PostgreSQL or application data."""
+    return tuple(name for name, _repository_type in _COMPONENTS)
+
 
 def bootstrap_postgres_schemas(store: Any) -> tuple[str, ...]:
     """Create all current production tables idempotently and return component names."""
     if str(getattr(store, "backend_name", "json")) != "postgresql":
         return ()
 
-    components: tuple[tuple[str, type[Any]], ...] = (
-        ("hero_memory", HeroMemory),
-        ("message_idempotency", MessageClaimRepository),
-        ("durable_inbound_queue", DurableQueueRepository),
-        ("outbound_delivery", OutboundDeliveryRepository),
-        ("reminders", ReminderRepository),
-        ("pending_documents", PendingDocumentRepository),
-        ("entitlements", EntitlementRepository),
-        ("abuse_guard", AbuseGuardRepository),
-        ("provider_reliability", ProviderReliabilityRepository),
-        ("human_support", SupportRepository),
-        ("anonymous_feedback", FeedbackRepository),
-    )
     initialized: list[str] = []
-    for name, repository_type in components:
+    for name, repository_type in _COMPONENTS:
         repository_type(store)
         initialized.append(name)
     return tuple(initialized)
