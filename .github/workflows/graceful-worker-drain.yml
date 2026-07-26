@@ -4,26 +4,36 @@ on:
   pull_request:
     paths:
       - deployment_lifecycle.py
+      - shared_drain_extensions.py
       - durable_queue_extensions.py
       - reminder_extensions.py
+      - privacy_extensions.py
       - runtime_health.py
       - webhook_security.py
+      - production_smoke.py
       - tests/test_deployment_lifecycle.py
+      - tests/test_shared_drain_extensions.py
       - tests/test_webhook_security.py
       - tests/test_runtime_health.py
+      - tests/test_production_smoke.py
       - tests/test_postgresql_durable_queue.py
       - .github/workflows/graceful-worker-drain.yml
   push:
     branches: [main]
     paths:
       - deployment_lifecycle.py
+      - shared_drain_extensions.py
       - durable_queue_extensions.py
       - reminder_extensions.py
+      - privacy_extensions.py
       - runtime_health.py
       - webhook_security.py
+      - production_smoke.py
       - tests/test_deployment_lifecycle.py
+      - tests/test_shared_drain_extensions.py
       - tests/test_webhook_security.py
       - tests/test_runtime_health.py
+      - tests/test_production_smoke.py
       - tests/test_postgresql_durable_queue.py
       - .github/workflows/graceful-worker-drain.yml
   schedule:
@@ -47,6 +57,21 @@ jobs:
       - name: Install pinned development dependencies
         run: python -m pip install --quiet -r requirements-dev.txt
       - name: Compile lifecycle composition
-        run: python -m compileall -q deployment_lifecycle.py durable_queue_extensions.py reminder_extensions.py runtime_health.py webhook_security.py
-      - name: Run lifecycle and admission regression tests
-        run: python -m pytest -q tests/test_deployment_lifecycle.py tests/test_webhook_security.py tests/test_runtime_health.py
+        run: python -m compileall -q deployment_lifecycle.py shared_drain_extensions.py durable_queue_extensions.py reminder_extensions.py privacy_extensions.py runtime_health.py webhook_security.py production_smoke.py
+      - name: Run lifecycle, shared budget, admission, and certification tests
+        id: lifecycle_tests
+        continue-on-error: true
+        run: python -m pytest -vv --tb=short --junitxml=graceful-drain-junit.xml tests/test_deployment_lifecycle.py tests/test_shared_drain_extensions.py tests/test_webhook_security.py tests/test_runtime_health.py tests/test_production_smoke.py 2>&1 | tee graceful-drain-test.log
+      - name: Upload graceful drain diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graceful-worker-drain-diagnostics
+          path: |
+            graceful-drain-junit.xml
+            graceful-drain-test.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce graceful drain regression suite
+        if: steps.lifecycle_tests.outcome == 'failure'
+        run: exit 1

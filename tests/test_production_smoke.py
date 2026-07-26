@@ -16,6 +16,7 @@ def _healthy(path: str) -> tuple[int, dict]:
                 "storage_backend": "postgresql",
                 "postgresql_schemas": "initialized",
                 "database_fallback": "fail-closed",
+                "process_lifecycle": "accepting",
                 "webhook_signature": "enforced",
                 "webhook_idempotency": "retry-safe",
                 "durable_inbound_queue": "configured",
@@ -48,6 +49,7 @@ def test_smoke_passes_for_healthy_production() -> None:
         "storage_backend",
         "postgresql_schemas",
         "database_fallback",
+        "process_lifecycle",
         "webhook_idempotency",
         "durable_inbound_queue",
         "outbound_delivery_receipts",
@@ -58,16 +60,17 @@ def test_smoke_passes_for_healthy_production() -> None:
     }
 
 
-def test_smoke_fails_on_storage_signature_and_delivery_misconfiguration() -> None:
+def test_smoke_fails_on_storage_signature_delivery_and_lifecycle_misconfiguration() -> None:
     def response(base: str, path: str, **kwargs):
         if path == "/health":
             return 200, {"status": "ok", "version": "3.2.0"}
-        return 200, {
-            "status": "ready",
+        return 503, {
+            "status": "not_ready",
             "components": {
                 "storage_backend": "json-fallback",
                 "postgresql_schemas": "unavailable",
                 "database_fallback": "allowed",
+                "process_lifecycle": "draining",
                 "webhook_signature": "optional",
                 "webhook_idempotency": "missing",
                 "durable_inbound_queue": "misconfigured",
@@ -84,9 +87,11 @@ def test_smoke_fails_on_storage_signature_and_delivery_misconfiguration() -> Non
         checks = production_smoke.run_smoke("https://example.test", require_signature=True)
     failed = {item.name for item in checks if not item.passed}
     assert failed == {
+        "readiness",
         "storage_backend",
         "postgresql_schemas",
         "database_fallback",
+        "process_lifecycle",
         "webhook_signature",
         "webhook_idempotency",
         "durable_inbound_queue",

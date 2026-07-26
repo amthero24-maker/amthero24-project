@@ -5,7 +5,8 @@ import asyncio
 
 import pytest
 
-from deployment_lifecycle import ProcessLifecycle
+import deployment_lifecycle as lifecycle_module
+from deployment_lifecycle import ProcessLifecycle, drain_timeout_seconds
 
 
 def test_lifecycle_starts_closed_and_transitions_without_personal_data() -> None:
@@ -52,4 +53,37 @@ async def test_wait_for_idle_is_bounded() -> None:
     lifecycle.start_accepting()
     assert lifecycle.work_started()
     assert await lifecycle.wait_for_idle(timeout=0.001) is False
+    lifecycle.work_finished()
+
+
+def test_timeout_is_capped_below_railway_drain_window(monkeypatch) -> None:
+    monkeypatch.setenv("GRACEFUL_DRAIN_TIMEOUT_SECONDS", "999")
+    assert drain_timeout_seconds() == 12
+    monkeypatch.setenv("GRACEFUL_DRAIN_TIMEOUT_SECONDS", "invalid")
+    assert drain_timeout_seconds() == 12
+    monkeypatch.setenv("GRACEFUL_DRAIN_TIMEOUT_SECONDS", "0")
+    assert drain_timeout_seconds() == 1
+
+
+def test_remaining_budget_is_shared_from_first_drain_transition(monkeypatch) -> None:
+    moments = iter((100.0, 103.5, 109.0))
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: next(moments))
+    lifecycle = ProcessLifecycle()
+    lifecycle.start_accepting()
+
+    lifecycle.begin_drain()
+    assert lifecycle.remaining_drain_seconds() == pytest.approx(8.5)
+    lifecycle.begin_drain()
+    assert lifecycle.remaining_drain_seconds() == pytest.approx(3.0)
+
+
+@pytest.mark.anyio
+async def test_large_worker_timeout_cannot_extend_expired_shared_budget(monkeypatch) -> None:
+    lifecycle = ProcessLifecycle()
+    lifecycle.start_accepting()
+    assert lifecycle.work_started()
+    lifecycle.begin_drain()
+    monkeypatch.setattr(lifecycle, "remaining_drain_seconds", lambda: 0.001)
+
+    assert await lifecycle.wait_for_idle(timeout=60) is False
     lifecycle.work_finished()
