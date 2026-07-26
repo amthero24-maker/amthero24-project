@@ -23,8 +23,8 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def shutdown_grace_seconds() -> int:
-    """Bound shutdown work below Railway's configured drain/overlap window."""
-    return _bounded_int("SHUTDOWN_GRACE_SECONDS", 10, 1, 25)
+    """Keep work below Railway's 15-second drain window."""
+    return _bounded_int("SHUTDOWN_GRACE_SECONDS", 10, 1, 12)
 
 
 def shutdown_retry_delay_seconds() -> int:
@@ -39,7 +39,7 @@ class LifecycleSnapshot:
 
 
 class RuntimeLifecycle:
-    """Thread-safe accepting/draining state with one shared shutdown deadline."""
+    """Thread-safe accepting/draining state with one shared deadline."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -54,7 +54,6 @@ class RuntimeLifecycle:
             self._drain_started = None
 
     def begin_draining(self) -> bool:
-        """Enter draining once; return whether this call established the deadline."""
         with self._lock:
             changed = self._phase != "draining"
             self._phase = "draining"
@@ -63,7 +62,6 @@ class RuntimeLifecycle:
             return changed
 
     def try_start_work(self) -> bool:
-        """Atomically reserve one active-work slot unless shutdown has begun."""
         with self._lock:
             if self._phase == "draining":
                 return False
@@ -82,7 +80,6 @@ class RuntimeLifecycle:
         return self.snapshot().phase == "draining"
 
     def remaining_grace_seconds(self) -> float:
-        """Return the remaining shared drain budget without exposing process timing."""
         with self._lock:
             started = self._drain_started
         if started is None:
@@ -90,7 +87,6 @@ class RuntimeLifecycle:
         return max(0.0, float(shutdown_grace_seconds()) - (time.monotonic() - started))
 
     async def wait_for_idle(self, timeout: float | None = None) -> bool:
-        """Wait for aggregate work using at most the remaining shared drain budget."""
         available = self.remaining_grace_seconds()
         requested = available if timeout is None else max(0.0, min(float(timeout), 30.0))
         bounded = min(available, requested)
@@ -107,6 +103,5 @@ lifecycle = RuntimeLifecycle()
 
 
 def lifecycle_status() -> dict[str, int | str]:
-    """Return a public-safe aggregate component status."""
     snapshot = lifecycle.snapshot()
     return {"phase": snapshot.phase, "active_work": snapshot.active_work}
