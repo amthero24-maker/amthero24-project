@@ -38,6 +38,13 @@ _MEMORY_SUMMARY = {
     "was weißt du über mich", "was hast du gespeichert", "what do you know about me",
     "what have you saved", "що ти знаєш про мене", "τι ξερεις για μενα",
 }
+_NAME_QUESTIONS = {
+    "شو اسمي", "ما اسمي", "بتعرف اسمي", "بتتذكر اسمي", "شو بتناديني",
+    "wie heiße ich", "wie ist mein name", "kennst du meinen namen",
+    "what is my name", "do you know my name", "do you remember my name",
+    "як мене звати", "ти пам ятаєш моє ім я",
+    "πως με λενε", "θυμασαι το ονομα μου",
+}
 _SIMPLE_GREETINGS = {
     "مرحبا", "مرحباً", "اهلا", "أهلا", "هلا", "السلام عليكم", "سلام", "هاي",
     "hallo", "hi", "guten tag", "guten morgen", "guten abend",
@@ -60,6 +67,10 @@ def is_enable_memory_request(text: str) -> bool:
 
 def is_memory_summary_request(text: str) -> bool:
     return _normalize(text) in {_normalize(item) for item in _MEMORY_SUMMARY}
+
+
+def is_name_question(text: str) -> bool:
+    return _normalize(text) in {_normalize(item) for item in _NAME_QUESTIONS}
 
 
 def is_simple_greeting(text: str) -> bool:
@@ -142,11 +153,33 @@ def consent_declined_message(language: str) -> str:
 def ask_name_message(language: str) -> str:
     lang = _lang(language)
     return {
-        "ar": "أكيد، بس شو بتحب ناديلك؟ فيك تكتب اسمك الأول فقط.",
-        "de": "Gern — wie darf ich dich nennen? Dein Vorname reicht.",
-        "en": "Sure — what should I call you? Your first name is enough.",
-        "uk": "Звісно — як до тебе звертатися? Достатньо імені.",
-        "el": "Βεβαίως — πώς θέλεις να σε φωνάζω; Αρκεί το μικρό σου όνομα.",
+        "ar": "أكيد 🌿 شو بتحب ناديلك؟ اكتب اسمك الأول بس، وبعدها بسألك إذا بتحب أحفظه للمرة الجاية.",
+        "de": "Gern 🌿 Wie darf ich dich nennen? Dein Vorname reicht; danach frage ich, ob ich ihn fürs nächste Mal speichern darf.",
+        "en": "Sure 🌿 What should I call you? Your first name is enough; then I’ll ask whether I may remember it for next time.",
+        "uk": "Звісно 🌿 Як до тебе звертатися? Достатньо імені; потім я запитаю, чи можна запам’ятати його на майбутнє.",
+        "el": "Βεβαίως 🌿 Πώς θέλεις να σε φωνάζω; Αρκεί το μικρό σου όνομα· μετά θα ρωτήσω αν μπορώ να το θυμάμαι για την επόμενη φορά.",
+    }[lang]
+
+
+def saved_name_message(language: str, name: str) -> str:
+    lang = _lang(language)
+    return {
+        "ar": f"اسمك {name} 🌿",
+        "de": f"Du heißt {name} 🌿",
+        "en": f"Your name is {name} 🌿",
+        "uk": f"Тебе звати {name} 🌿",
+        "el": f"Σε λένε {name} 🌿",
+    }[lang]
+
+
+def pending_name_message(language: str, name: str) -> str:
+    lang = _lang(language)
+    return {
+        "ar": f"قلتلي ناديلك {name}، بس لسا ما حفظته بشكل دائم. إذا بدك أتذكّره للمرة الجاية، جاوب «نعم» على سؤال الذاكرة؛ وإذا لا، جاوب «لا».",
+        "de": f"Du hast mir gesagt, dass ich dich {name} nennen soll, aber dauerhaft gespeichert ist es noch nicht. Antworte auf die Erinnerungsfrage mit Ja oder Nein.",
+        "en": f"You told me to call you {name}, but it is not stored permanently yet. Reply yes or no to the memory question.",
+        "uk": f"Ти сказав, що до тебе звертатися {name}, але це ще не збережено надовго. Відповідай так або ні на запит про пам’ять.",
+        "el": f"Μου είπες να σε φωνάζω {name}, αλλά δεν έχει αποθηκευτεί μόνιμα. Απάντησε ναι ή όχι στην ερώτηση για τη μνήμη.",
     }[lang]
 
 
@@ -154,11 +187,11 @@ def memory_summary_message(language: str, profile: dict[str, Any]) -> str:
     lang = _lang(language)
     if profile.get("memory_consent") != "granted":
         return {
-            "ar": "الذاكرة الشخصية مو مفعّلة حاليًا. إذا بتحب فعّلها، قلّي «فعّل الذاكرة».",
-            "de": "Die persönliche Erinnerung ist derzeit nicht aktiviert. Wenn du möchtest, schreib „Erinnerung aktivieren“.",
-            "en": "Personal memory is not enabled right now. Say “enable memory” if you want to turn it on.",
-            "uk": "Персональну пам’ять зараз не увімкнено. Напиши «увімкни пам’ять», якщо хочеш її активувати.",
-            "el": "Η προσωπική μνήμη δεν είναι ενεργή. Γράψε «ενεργοποίησε μνήμη» αν θέλεις να την ενεργοποιήσεις.",
+            "ar": "حاليًا ما عندي معلومات شخصية محفوظة عنك. إذا بتحب نبلّش صح، شو بتحب ناديلك؟ بعد الاسم بسألك بوضوح إذا بدك أحفظه للمرة الجاية.",
+            "de": "Aktuell habe ich keine persönlichen Angaben über dich gespeichert. Wenn du möchtest, beginnen wir mit deinem Vornamen; danach frage ich klar, ob ich ihn fürs nächste Mal speichern darf.",
+            "en": "I do not currently have personal information saved about you. We can start with your first name, and then I’ll clearly ask whether I may remember it for next time.",
+            "uk": "Зараз у мене немає збережених персональних даних про тебе. Можемо почати з імені, а потім я чітко запитаю дозвіл зберегти його на майбутнє.",
+            "el": "Αυτή τη στιγμή δεν έχω αποθηκευμένες προσωπικές πληροφορίες για εσένα. Μπορούμε να ξεκινήσουμε με το μικρό σου όνομα και μετά θα ζητήσω καθαρά άδεια για να το θυμάμαι.",
         }[lang]
 
     facts: list[str] = []
