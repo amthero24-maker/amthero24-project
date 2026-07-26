@@ -1,8 +1,8 @@
 """Strict adapter from untrusted model JSON to the Brief Scanner contract.
 
 The adapter accepts one bounded JSON object only. It rejects markdown wrappers, unknown keys,
-coerced scalar types, malformed dates, oversized text, and structurally incomplete outcomes.
-No persistence, telemetry, mission mutation, or model call occurs in this module.
+duplicate keys, coerced scalar types, malformed dates, oversized text, and structurally
+incomplete outcomes. No persistence, telemetry, mission mutation, or model call occurs here.
 """
 from __future__ import annotations
 
@@ -52,6 +52,16 @@ class BriefScannerAdapterError(ValueError):
 
 def _fail(code: str) -> BriefScannerAdapterError:
     return BriefScannerAdapterError(code)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate keys at any depth."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _fail(f"brief_scanner_field_duplicate:{key}")
+        result[key] = value
+    return result
 
 
 def _strict_bool(payload: dict[str, Any], field: str, *, default: bool | None = None) -> bool:
@@ -111,7 +121,7 @@ def parse_brief_scanner_model_output(raw_output: str) -> BriefScannerFacts:
     if not encoded or len(encoded) > MAX_MODEL_OUTPUT_BYTES:
         raise _fail("brief_scanner_output_size_invalid")
     try:
-        payload = json.loads(raw_output)
+        payload = json.loads(raw_output, object_pairs_hook=_reject_duplicate_keys)
     except json.JSONDecodeError as exc:
         raise _fail("brief_scanner_json_invalid") from exc
     if type(payload) is not dict:
