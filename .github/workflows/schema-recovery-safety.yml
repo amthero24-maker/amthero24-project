@@ -101,27 +101,36 @@ jobs:
           psql --version
       - name: Compile recovery modules
         run: python -m py_compile schema_recovery.py scripts/postgres_backup.py scripts/postgres_restore.py scripts/release_preflight.py
-      - name: Run schema-bound backup and restore tests
-        id: tests
+      - name: Run schema identity and operation policy tests
+        id: unit_tests
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -vv --tb=short --junitxml=schema-recovery-junit.xml \
+          python -m pytest -vv --tb=short --junitxml=schema-recovery-unit-junit.xml \
             tests/test_schema_recovery.py \
             tests/test_postgres_operations.py \
-            tests/test_release_preflight.py \
-            tests/test_postgresql_recovery_drill.py 2>&1 | tee schema-recovery-test.log
+            tests/test_release_preflight.py 2>&1 | tee schema-recovery-unit.log
+      - name: Run real encrypted PostgreSQL recovery drill in a fresh process
+        id: recovery_drill
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short --junitxml=schema-recovery-drill-junit.xml \
+            tests/test_postgresql_recovery_drill.py 2>&1 | tee schema-recovery-drill.log
       - name: Upload sanitized recovery evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: schema-recovery-safety
           path: |
-            schema-recovery-junit.xml
-            schema-recovery-test.log
+            schema-recovery-unit-junit.xml
+            schema-recovery-unit.log
+            schema-recovery-drill-junit.xml
+            schema-recovery-drill.log
           if-no-files-found: error
           retention-days: 14
       - name: Enforce schema recovery safety
-        if: steps.tests.outcome == 'failure'
+        if: steps.unit_tests.outcome == 'failure' || steps.recovery_drill.outcome == 'failure'
         run: exit 1
