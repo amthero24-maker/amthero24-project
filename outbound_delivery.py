@@ -16,11 +16,8 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 _ALLOWED_STATUSES = {"sent", "delivered", "read", "failed"}
-_SUCCESS_FIELDS = {
-    "sent": "sent_at",
-    "delivered": "delivered_at",
-    "read": "read_at",
-}
+_SUCCESS_FIELDS = {"sent": "sent_at", "delivered": "delivered_at", "read": "read_at"}
+_STATUS_NAMES = ("accepted", "sent", "delivered", "read", "failed")
 
 
 @dataclass(frozen=True)
@@ -36,13 +33,6 @@ def _now(value: datetime | None = None) -> datetime:
     return current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
 
 
-def _parse_timestamp(value: Any, *, fallback: datetime | None = None) -> datetime:
-    try:
-        return datetime.fromtimestamp(int(str(value)), tz=UTC)
-    except (TypeError, ValueError, OverflowError, OSError):
-        return _now(fallback)
-
-
 def _as_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -53,12 +43,11 @@ def _as_datetime(value: Any) -> datetime | None:
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
-def _minimum(existing: datetime | None, candidate: datetime) -> datetime:
-    return candidate if existing is None or candidate < existing else existing
-
-
-def _maximum(existing: datetime | None, candidate: datetime) -> datetime:
-    return candidate if existing is None or candidate > existing else existing
+def _parse_timestamp(value: Any, fallback: datetime | None = None) -> datetime:
+    try:
+        return datetime.fromtimestamp(int(str(value)), tz=UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return _now(fallback)
 
 
 def _message_hash(message_id: str) -> str:
@@ -73,6 +62,15 @@ def _retention() -> timedelta:
     return timedelta(days=min(max(days, 1), 180))
 
 
+def _integer(value: Any) -> int:
+    if isinstance(value, Decimal):
+        return int(value)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _failure_code(status: dict[str, Any]) -> str:
     errors = status.get("errors")
     if not isinstance(errors, list) or not errors or not isinstance(errors[0], dict):
@@ -82,7 +80,7 @@ def _failure_code(status: dict[str, Any]) -> str:
 
 
 def extract_delivery_receipts(payload: Any, *, now: datetime | None = None) -> list[DeliveryReceipt]:
-    """Extract supported receipt fields without retaining recipient or error text."""
+    """Extract only status, timestamp, generic code, and ephemeral Meta message ID."""
     if not isinstance(payload, dict):
         return []
     receipts: list[DeliveryReceipt] = []
@@ -95,7 +93,10 @@ def extract_delivery_receipts(payload: Any, *, now: datetime | None = None) -> l
             value = change.get("value")
             if not isinstance(value, dict):
                 continue
-            for status in value.get("statuses", []):
+            statuses = value.get("statuses", [])
+            if not isinstance(statuses, list):
+                continue
+            for status in statuses:
                 if not isinstance(status, dict):
                     continue
                 message_id = str(status.get("id") or "").strip()
@@ -115,13 +116,26 @@ def extract_response_message_ids(response: Any) -> list[str]:
     if not isinstance(response, dict):
         return []
     identifiers: list[str] = []
-    for item in response.get("messages", []):
+    messages = response.get("messages", [])
+    if not isinstance(messages, list):
+        return identifiers
+    for item in messages:
         if not isinstance(item, dict):
             continue
         message_id = str(item.get("id") or "").strip()
         if message_id and message_id not in identifiers:
             identifiers.append(message_id)
     return identifiers
+
+
+def _first(existing: Any, candidate: datetime) -> datetime:
+    parsed = _as_datetime(existing)
+    return candidate if parsed is None or candidate < parsed else parsed
+
+
+def _last(existing: Any, candidate: datetime) -> datetime:
+    parsed = _as_datetime(existing)
+    return candidate if parsed is None or candidate > parsed else parsed
 
 
 def _derive_status(record: dict[str, Any]) -> str:
@@ -137,26 +151,28 @@ def _derive_status(record: dict[str, Any]) -> str:
         return "failed"
     if sent_at:
         return "sent"
-    if failed_at:
-        return "failed"
-    return "accepted"
+    return "failed" if failed_at else "accepted"
 
 
-def _serialize_time(value: datetime | None) -> str | None:
-    return value.astimezone(UTC).isoformat() if value else None
+def _apply_receipt(record: dict[str, Any], receipt: DeliveryReceipt) -> None:
+    occurred = _now(receipt.occurred_at)
+    if receipt.status in _SUCCESS_FIELDS:
+        field = _SUCCESS_FIELDS[receipt.status]
+        record[field] = _first(record.get(field), occurred)
+    elif receipt.status == "failed":
+        record["failed_at"] = _last(record.get("failed_at"), occurred)
+        if receipt.failure_code:
+            record["failure_code"] = receipt.failure_code[:40]
+    record["status"] = _derive_status(record)
 
 
-def _integer(value: Any) -> int:
-    if isinstance(value, Decimal):
-        return int(value)
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
+def _json_time(value: Any) -> str | None:
+    parsed = _as_datetime(value)
+    return parsed.isoformat() if parsed else None
 
 
 class OutboundDeliveryRepository:
-    """Store only hashed message lifecycle data in JSON or PostgreSQL."""
+    """Store hashed outbound lifecycle data in the configured application store."""
 
     def __init__(self, store: Any) -> None:
         self.store = store
@@ -201,7 +217,10 @@ class OutboundDeliveryRepository:
             return False
         current = _now(now)
         key = _message_hash(clean_id)
-        kind = "".join(character for character in str(message_kind or "unknown").casefold() if character.isalnum() or character in {"_", "-"})[:40] or "unknown"
+        kind = "".join(
+            character for character in str(message_kind or "unknown").casefold()
+            if character.isalnum() or character in {"_", "-"}
+        )[:40] or "unknown"
         expires_at = current + _retention()
         if self.backend_name == "postgresql":
             with self.store.pool.connection() as connection:
@@ -242,7 +261,6 @@ class OutboundDeliveryRepository:
     def record_receipt(self, receipt: DeliveryReceipt, *, now: datetime | None = None) -> str:
         key = _message_hash(receipt.message_id)
         current = _now(now)
-        occurred = _now(receipt.occurred_at)
         if self.backend_name == "postgresql":
             with self.store.pool.connection() as connection:
                 row = connection.execute(
@@ -252,7 +270,7 @@ class OutboundDeliveryRepository:
                 if not row:
                     return "unknown"
                 record = dict(row)
-                self._apply_receipt(record, receipt.status, occurred, receipt.failure_code)
+                _apply_receipt(record, receipt)
                 connection.execute(
                     """
                     UPDATE outbound_delivery_messages
@@ -261,15 +279,10 @@ class OutboundDeliveryRepository:
                     WHERE message_hash = %s
                     """,
                     (
-                        record["status"],
-                        record.get("sent_at"),
-                        record.get("delivered_at"),
-                        record.get("read_at"),
-                        record.get("failed_at"),
-                        record.get("failure_code", ""),
-                        current + _retention(),
-                        current,
-                        key,
+                        record["status"], record.get("sent_at"), record.get("delivered_at"),
+                        record.get("read_at"), record.get("failed_at"),
+                        str(record.get("failure_code") or "")[:40],
+                        current + _retention(), current, key,
                     ),
                 )
             return str(record["status"])
@@ -278,23 +291,14 @@ class OutboundDeliveryRepository:
             record = data.setdefault("outbound_delivery", {}).get(key)
             if not isinstance(record, dict):
                 return "unknown"
-            self._apply_receipt(record, receipt.status, occurred, receipt.failure_code)
+            _apply_receipt(record, receipt)
+            for field in ("sent_at", "delivered_at", "read_at", "failed_at"):
+                record[field] = _json_time(record.get(field))
             record["expires_at"] = (current + _retention()).isoformat()
             record["updated_at"] = current.isoformat()
             return str(record["status"])
 
         return str(self.store._transaction(update))
-
-    @staticmethod
-    def _apply_receipt(record: dict[str, Any], status: str, occurred: datetime, failure_code: str) -> None:
-        if status in _SUCCESS_FIELDS:
-            field = _SUCCESS_FIELDS[status]
-            record[field] = _serialize_time(_minimum(_as_datetime(record.get(field)), occurred))
-        elif status == "failed":
-            record["failed_at"] = _serialize_time(_maximum(_as_datetime(record.get("failed_at")), occurred))
-            if failure_code:
-                record["failure_code"] = failure_code[:40]
-        record["status"] = _derive_status(record)
 
     def state(self, message_id: str) -> dict[str, Any] | None:
         key = _message_hash(message_id)
@@ -310,11 +314,10 @@ class OutboundDeliveryRepository:
                 ).fetchone()
             if not row:
                 return None
-            payload = dict(row)
-            for field in fields:
-                if isinstance(payload.get(field), datetime):
-                    payload[field] = payload[field].astimezone(UTC).isoformat()
-            return payload
+            return {
+                field: (_json_time(row.get(field)) if isinstance(row.get(field), datetime) else row.get(field))
+                for field in fields
+            }
         record = self.store.snapshot().get("outbound_delivery", {}).get(key)
         if not isinstance(record, dict):
             return None
@@ -339,25 +342,33 @@ class OutboundDeliveryRepository:
                     """
                     SELECT
                         COUNT(*) FILTER (
-                            WHERE status IN ('accepted', 'sent') AND accepted_at <= %s AND expires_at > %s
+                            WHERE status IN ('accepted', 'sent')
+                              AND accepted_at <= %s AND expires_at > %s
                         ) AS pending_over_15m,
-                        COALESCE(EXTRACT(EPOCH FROM (%s - MIN(accepted_at))) FILTER (
-                            WHERE status IN ('accepted', 'sent') AND expires_at > %s
-                        ), 0) AS oldest_pending_age_seconds
+                        COALESCE(
+                            EXTRACT(EPOCH FROM (
+                                %s - MIN(accepted_at) FILTER (
+                                    WHERE status IN ('accepted', 'sent') AND expires_at > %s
+                                )
+                            )),
+                            0
+                        ) AS oldest_pending_age_seconds
                     FROM outbound_delivery_messages
                     """,
                     (pending_cutoff, current, current, current),
                 ).fetchone()
-            counts = {"accepted": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0}
+            counts = {status: 0 for status in _STATUS_NAMES}
             for row in rows:
                 status = str(row.get("status") or "")
                 if status in counts:
                     counts[status] = _integer(row.get("count"))
-            pending = _integer(aggregate.get("pending_over_15m") if aggregate else 0)
-            oldest = max(0, _integer(aggregate.get("oldest_pending_age_seconds") if aggregate else 0))
-            return self._aggregate_payload(counts, pending, oldest)
+            return self._aggregate_payload(
+                counts,
+                _integer(aggregate.get("pending_over_15m") if aggregate else 0),
+                max(0, _integer(aggregate.get("oldest_pending_age_seconds") if aggregate else 0)),
+            )
 
-        counts = {"accepted": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0}
+        counts = {status: 0 for status in _STATUS_NAMES}
         pending = 0
         oldest = 0
         for record in self.store.snapshot().get("outbound_delivery", {}).values():
@@ -406,7 +417,8 @@ class OutboundDeliveryRepository:
             messages = data.setdefault("outbound_delivery", {})
             removable = [
                 key for key, record in messages.items()
-                if isinstance(record, dict) and (_as_datetime(record.get("expires_at")) or current) <= current
+                if isinstance(record, dict)
+                and (_as_datetime(record.get("expires_at")) or current) <= current
             ]
             for key in removable:
                 messages.pop(key, None)
@@ -415,9 +427,12 @@ class OutboundDeliveryRepository:
         return int(self.store._transaction(update))
 
 
-def record_receipts(repository: OutboundDeliveryRepository, receipts: Iterable[DeliveryReceipt]) -> dict[str, int]:
+def record_receipts(
+    repository: OutboundDeliveryRepository,
+    receipts: Iterable[DeliveryReceipt],
+) -> dict[str, int]:
     result = {"updated": 0, "unknown": 0}
     for receipt in receipts:
-        status = repository.record_receipt(receipt)
-        result["unknown" if status == "unknown" else "updated"] += 1
+        state = repository.record_receipt(receipt)
+        result["unknown" if state == "unknown" else "updated"] += 1
     return result
