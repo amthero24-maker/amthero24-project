@@ -15,6 +15,15 @@ from config import APP_VERSION, DATA_STORE_PATH, GROQ_MODEL, required_env
 from conversation_intelligence import build_effective_user_text, detect_language, extract_city, infer_topic
 from data_store import JsonDataStore
 from groq_client import generate_reply
+from hero_memory import HeroMemory
+from mission_engine import (
+    detect_mission_intent,
+    memory_required_message,
+    mission_completed_message,
+    mission_created_message,
+    mission_list_message,
+    mission_title,
+)
 from onboarding import (
     MEMORY_CONSENT_VERSION,
     ask_name_message,
@@ -40,11 +49,16 @@ logger = logging.getLogger("amthero24")
 
 app = FastAPI(title="AmtHero24", version=APP_VERSION)
 store = JsonDataStore(DATA_STORE_PATH)
+_hero_memory_store = HeroMemory(store)
 
 _LONG_TERM_MEMORY_FIELDS = {
     "first_name", "city", "preferred_language", "current_topic", "last_assistant_reply",
     "conversation_summary", "communication_style",
 }
+_EXPORT_PATTERNS = (
+    "صدر بياناتي", "صدّر بياناتي", "اعطيني نسخة من بياناتي", "نسخة من بياناتي",
+    "meine daten exportieren", "export my data", "експортуй мої дані", "εξαγωγη δεδομενων",
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +77,56 @@ def _now() -> datetime:
 
 def _session_expiry() -> str:
     return (_now() + timedelta(hours=24)).isoformat()
+
+
+def _hero_memory() -> HeroMemory:
+    """Return a HeroMemory instance that follows test/runtime store replacement."""
+    global _hero_memory_store
+    if _hero_memory_store.store is not store:
+        _hero_memory_store = HeroMemory(store)
+    return _hero_memory_store
+
+
+def _normalized_command(text: str) -> str:
+    value = (text or "").casefold().strip()
+    value = re.sub(r"[؟،؛!?.,:;]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _is_export_request(text: str) -> bool:
+    normalized = _normalized_command(text)
+    return any(_normalized_command(pattern) in normalized for pattern in _EXPORT_PATTERNS)
+
+
+def _export_reply(language: str, payload: dict[str, Any]) -> str:
+    profile = payload.get("profile", {}) if isinstance(payload.get("profile"), dict) else {}
+    missions = payload.get("missions", []) if isinstance(payload.get("missions"), list) else []
+    facts = [f"{key}: {value}" for key, value in profile.items()]
+    task_lines = [f"- {item.get('title')} ({item.get('status')})" for item in missions if item.get("title")]
+    if language == "ar":
+        heading = "هاي نسخة مختصرة من بياناتك الآمنة المحفوظة:"
+        no_data = "ما عندي بيانات شخصية محفوظة عنك حاليًا."
+        mission_heading = "\nالمهام:" if task_lines else ""
+    elif language == "de":
+        heading = "Hier ist eine kurze Kopie deiner sicher gespeicherten Daten:"
+        no_data = "Derzeit sind keine persönlichen Daten über dich gespeichert."
+        mission_heading = "\nAufgaben:" if task_lines else ""
+    elif language == "en":
+        heading = "Here is a short copy of your safely stored data:"
+        no_data = "I currently have no personal data saved about you."
+        mission_heading = "\nTasks:" if task_lines else ""
+    elif language == "uk":
+        heading = "Ось коротка копія безпечно збережених даних:"
+        no_data = "Зараз персональних даних про тебе не збережено."
+        mission_heading = "\nЗавдання:" if task_lines else ""
+    else:
+        heading = "Ακολουθεί ένα σύντομο αντίγραφο των ασφαλώς αποθηκευμένων δεδομένων σου:"
+        no_data = "Δεν υπάρχουν αποθηκευμένα προσωπικά δεδομένα αυτή τη στιγμή."
+        mission_heading = "\nΕργασίες:" if task_lines else ""
+    if not facts and not task_lines:
+        return no_data
+    body = "\n".join(f"- {fact}" for fact in facts)
+    return heading + ("\n" + body if body else "") + mission_heading + ("\n" + "\n".join(task_lines) if task_lines else "")
 
 
 def _is_name_only(text: str, name: str) -> bool:
@@ -90,6 +154,7 @@ def extract_name(text: str) -> str:
                 "بالعربي", "بالعربية", "بالألماني", "بالانجليزي", "جديد", "جديدة", "هون", "هنا",
                 "تاني", "ثاني", "كمان", "شو كمان", "شو بتقدم", "شو بتعمل", "شو اللغات",
                 "عندي مشكلة", "بدي مساعدة", "مو هلق", "مش هلق", "بدون ذاكرة",
+                "شو مهامي", "مهامي المفتوحة", "خلصت المهمة", "تمت المهمة",
                 "hallo", "hi", "hilfe", "danke", "ja", "nein", "okay", "ok", "deutsch", "english",
                 "hello", "help", "thanks", "yes", "no", "привіт", "так", "ні", "дякую", "βοήθεια", "γεια", "ναι", "όχι",
             }
@@ -161,10 +226,10 @@ def _safe_failure(language: str, has_media: bool) -> str:
 
 def _deletion_confirmation(language: str) -> str:
     return {
-        "ar": "تم حذف بياناتك المحفوظة.", "uk": "Збережені дані видалено.",
-        "el": "Τα αποθηκευμένα δεδομένα σου διαγράφηκαν.", "de": "Deine gespeicherten Daten wurden gelöscht.",
-        "en": "Your saved data has been deleted.",
-    }.get(language, "Your saved data has been deleted.")
+        "ar": "تم حذف بياناتك المحفوظة ومهامك.", "uk": "Збережені дані та завдання видалено.",
+        "el": "Τα αποθηκευμένα δεδομένα και οι εργασίες σου διαγράφηκαν.", "de": "Deine gespeicherten Daten und Aufgaben wurden gelöscht.",
+        "en": "Your saved data and tasks have been deleted.",
+    }.get(language, "Your saved data and tasks have been deleted.")
 
 
 async def _finish(message_id: str, reply: str, sender: str) -> None:
@@ -192,10 +257,15 @@ async def process_incoming(message: IncomingMessage) -> None:
         language = detect_language(message.text, previous_language) if message.text.strip() else previous_language
         lowered = message.text.casefold()
         stage = str(profile.get("onboarding_stage") or "")
+        memory_repository = _hero_memory()
 
         if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "احذف بياناتي", "видали мої дані")):
-            store.delete_user(message.sender)
+            memory_repository.delete_all_user_data(message.sender)
             await _finish(message.message_id, _deletion_confirmation(language), message.sender)
+            return
+
+        if _is_export_request(message.text):
+            await _finish(message.message_id, _export_reply(language, memory_repository.export_user_data(message.sender)), message.sender)
             return
 
         if is_name_question(message.text):
@@ -336,6 +406,7 @@ async def process_incoming(message: IncomingMessage) -> None:
                         consent_updates["first_name"] = pending_name
                     profile = store.update_user(message.sender, consent_updates)
                     profile = store.remove_user_fields(message.sender, {"pending_name", "pending_name_expires_at"})
+                    memory_repository.record_consent(message.sender, "granted", MEMORY_CONSENT_VERSION)
                     await _finish(message.message_id, consent_granted_message(language, pending_name), message.sender)
                 else:
                     store.update_user(message.sender, consent_updates)
@@ -343,12 +414,41 @@ async def process_incoming(message: IncomingMessage) -> None:
                         message.sender,
                         _LONG_TERM_MEMORY_FIELDS | {"pending_name", "pending_name_expires_at"},
                     )
+                    memory_repository.record_consent(message.sender, "declined", MEMORY_CONSENT_VERSION)
                     await _finish(message.message_id, consent_declined_message(language), message.sender)
                 return
 
         profile = store.get_user(message.sender)
         memory_enabled = profile.get("memory_consent") == "granted"
         previous_topic = str(profile.get("current_topic") if memory_enabled else profile.get("session_topic") or previous_topic)
+
+        mission_intent = detect_mission_intent(message.text)
+        if mission_intent:
+            if not memory_enabled:
+                await _finish(message.message_id, memory_required_message(language), message.sender)
+                return
+            if mission_intent.action == "list":
+                missions = memory_repository.list_missions(message.sender, status="open", limit=5)
+                await _finish(message.message_id, mission_list_message(language, missions), message.sender)
+                return
+            if mission_intent.action == "complete":
+                mission = memory_repository.complete_latest_mission(message.sender)
+                await _finish(message.message_id, mission_completed_message(language, mission), message.sender)
+                return
+            title = mission_title(
+                mission_intent,
+                current_topic=previous_topic,
+                last_message=str(profile.get("last_message") or ""),
+            )
+            mission = memory_repository.create_mission(
+                message.sender,
+                title=title,
+                topic=previous_topic,
+                metadata={"source": "whatsapp", "language": language, "category": previous_topic},
+            )
+            await _finish(message.message_id, mission_created_message(language, mission), message.sender)
+            return
+
         authoritative = product_answer(message.text, language, previous_topic)
         effective_text = build_effective_user_text(message.text, profile)
         city = extract_city(message.text)
@@ -449,7 +549,13 @@ async def root() -> dict[str, str]:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "version": APP_VERSION, "model": GROQ_MODEL, "storage": "json"}
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "model": GROQ_MODEL,
+        "storage": str(getattr(store, "backend_name", "json")),
+        "hero_memory": "ready",
+    }
 
 
 @app.get("/webhook")
