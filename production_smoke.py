@@ -116,7 +116,7 @@ def run_smoke(
             decision = str(launch.get("status") or "missing")
             endpoint_ok = launch_status == 200 and decision in {"ready", "warning", "blocked"}
             checks.append(SmokeCheck("launch_report_endpoint", "pass" if endpoint_ok else "fail", f"HTTP {launch_status}; status={decision}"))
-            launch_ok = decision == "ready" or (decision == "warning" and not require_launch_ready) or not require_launch_ready
+            launch_ok = decision == "ready" or (decision == "warning" and not require_launch_ready)
             checks.append(SmokeCheck("launch_decision", "pass" if launch_ok else "fail", decision))
         except SmokeError as exc:
             checks.append(SmokeCheck("launch_report_endpoint", "fail", str(exc)))
