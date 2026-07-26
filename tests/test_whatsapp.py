@@ -10,8 +10,24 @@ import pytest
 import whatsapp
 
 
-def test_split_long_message() -> None:
+def test_split_long_unbroken_message_uses_hard_limit() -> None:
     assert list(map(len, whatsapp.split_message("x" * 5000))) == [4096, 904]
+
+
+def test_split_prefers_paragraph_and_word_boundaries() -> None:
+    text = "مقدمة قصيرة\n\n" + ("كلمة " * 40) + "\n\nالخاتمة"
+    chunks = list(whatsapp.split_message(text, limit=90))
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 90 for chunk in chunks)
+    assert all(not chunk.startswith(" ") and not chunk.endswith(" ") for chunk in chunks)
+    assert "مقدمة قصيرة" in chunks[0]
+    assert chunks[-1].endswith("الخاتمة")
+
+
+def test_split_rejects_invalid_limit_and_empty_text_yields_nothing() -> None:
+    with pytest.raises(ValueError):
+        list(whatsapp.split_message("text", limit=0))
+    assert list(whatsapp.split_message("   ")) == []
 
 
 @pytest.mark.anyio
@@ -30,8 +46,16 @@ async def test_send_uses_environment_phone_id() -> None:
     assert result == [{"messages": [{"id": "1"}]}]
     url = client.post.call_args.args[0]
     assert "/phone-123/messages" in url
-    assert client.post.call_args.kwargs["json"]["to"] == "49123"
+    payload = client.post.call_args.kwargs["json"]
+    assert payload["to"] == "49123"
+    assert payload["text"]["preview_url"] is False
     response.raise_for_status.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_send_empty_text_is_rejected_before_network() -> None:
+    with pytest.raises(whatsapp.WhatsAppServiceError):
+        await whatsapp.send_whatsapp_message("49123", "   ")
 
 
 @pytest.mark.anyio
