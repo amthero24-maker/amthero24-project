@@ -20,9 +20,11 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app.py config.py conversation_intelligence.py data_store.py groq_client.py prompts.py whatsapp.py main.py
+        run: python -m compileall -q app.py config.py conversation_intelligence.py data_store.py groq_client.py product_knowledge.py prompts.py whatsapp.py main.py
       - name: Conversation intelligence tests
         run: python -m pytest -q tests/test_conversation_intelligence.py
+      - name: Product knowledge tests
+        run: python -m pytest -q tests/test_product_knowledge.py
       - name: Application tests
         run: python -m pytest -q tests/test_app.py
       - name: Data store tests
