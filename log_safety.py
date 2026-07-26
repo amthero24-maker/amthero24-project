@@ -45,6 +45,7 @@ _SENSITIVE_KEY_PARTS = {
     "ciphertext",
     "message",
     "messages",
+    "message_id",
     "body",
     "text",
     "caption",
@@ -114,7 +115,15 @@ def _is_sensitive_key(key: Any) -> bool:
         return True
     return any(
         normalized.endswith(suffix)
-        for suffix in ("_token", "_secret", "_password", "_api_key", "_phone", "_ciphertext")
+        for suffix in (
+            "_token",
+            "_secret",
+            "_password",
+            "_api_key",
+            "_phone",
+            "_message_id",
+            "_ciphertext",
+        )
     )
 
 
