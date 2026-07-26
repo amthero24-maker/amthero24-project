@@ -47,11 +47,17 @@ def _fernet(key: str) -> Fernet:
 
 
 def _rotate(output_dir: Path, keep: int) -> int:
-    artifacts = sorted(output_dir.glob("amthero24-*.dump*"), key=lambda path: path.stat().st_mtime, reverse=True)
+    artifacts = sorted(
+        (
+            path
+            for path in output_dir.glob("amthero24-*.dump*")
+            if path.is_file() and not path.name.endswith(".manifest.json")
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
     removed = 0
     for artifact in artifacts[max(1, int(keep)):]:
-        if artifact.suffix == ".json":
-            continue
         manifest = artifact.with_name(artifact.name + ".manifest.json")
         artifact.unlink(missing_ok=True)
         manifest.unlink(missing_ok=True)
