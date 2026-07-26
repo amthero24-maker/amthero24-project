@@ -14,6 +14,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from postgres_cli_env import postgres_cli_environment
 from schema_recovery import require_current_manifest_schema, verify_restored_schema
 
 _CONFIRMATION = "RESTORE_AMTHERO24"
@@ -71,8 +72,8 @@ def restore_backup(
 ) -> dict[str, Any]:
     """Verify, restore, and schema-certify one backup after two confirmations.
 
-    The connection URL is provided to psql through PGDATABASE. It is never placed
-    in the process argument list or output.
+    Connection values are provided only through parsed libpq child variables. They are
+    never placed in the process argument list or output.
     """
     if not restore_allowed:
         raise PermissionError("RESTORE_ALLOWED=true is required")
@@ -131,9 +132,7 @@ def restore_backup(
         if not sql_file.exists() or sql_file.stat().st_size <= 0:
             raise RuntimeError("pg_restore did not produce SQL output")
 
-        child_env = os.environ.copy()
-        child_env["PGDATABASE"] = url
-        child_env.pop("DATABASE_URL", None)
+        child_env = postgres_cli_environment(url, base_environment=os.environ)
         subprocess.run(
             [sql_binary, "--set", "ON_ERROR_STOP=on", "--file", str(sql_file)],
             check=True,
