@@ -54,10 +54,10 @@ def test_observe_only_records_limit_event_without_blocking(tmp_path, monkeypatch
 
 def test_media_volume_has_separate_limit(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("ABUSE_GUARD_ENFORCEMENT_ENABLED", "true")
+    repository = _repository(tmp_path, monkeypatch)
     monkeypatch.setenv("ABUSE_MESSAGES_PER_MINUTE", "100")
     monkeypatch.setenv("ABUSE_MESSAGES_PER_HOUR", "100")
     monkeypatch.setenv("ABUSE_MEDIA_PER_HOUR", "5")
-    repository = _repository(tmp_path, monkeypatch)
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
 
     for _ in range(5):
