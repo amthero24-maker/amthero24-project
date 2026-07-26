@@ -33,6 +33,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -52,7 +54,10 @@ jobs:
       - name: Validate installed dependency compatibility
         id: pip_check
         continue-on-error: true
-        run: python -m pip check 2>&1 | tee pip-check.txt
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pip check 2>&1 | tee pip-check.txt
 
       - name: Audit production requirements for known vulnerabilities
         id: vulnerability_audit
@@ -95,10 +100,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Fail on policy, compatibility, vulnerability, or SBOM failure
-        if: >-
-          steps.policy.outcome == 'failure' ||
-          steps.pip_check.outcome == 'failure' ||
-          steps.vulnerability_audit.outcome == 'failure' ||
-          steps.sbom.outcome == 'failure'
-        run: exit 1
+      - name: Enforce supply-chain outcomes
+        if: always()
+        shell: bash
+        env:
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          PIP_CHECK_OUTCOME: ${{ steps.pip_check.outcome }}
+          AUDIT_OUTCOME: ${{ steps.vulnerability_audit.outcome }}
+          SBOM_OUTCOME: ${{ steps.sbom.outcome }}
+        run: |
+          test "$POLICY_OUTCOME" = "success"
+          test "$PIP_CHECK_OUTCOME" = "success"
+          test "$AUDIT_OUTCOME" = "success"
+          test "$SBOM_OUTCOME" = "success"
