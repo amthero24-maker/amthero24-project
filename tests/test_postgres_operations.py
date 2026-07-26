@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from schema_recovery import SchemaRecoveryError, expected_schema_identity
-from scripts.postgres_backup import create_backup
+from scripts.postgres_backup import _pg_dump_failure_code, create_backup
 from scripts.postgres_restore import restore_backup
 
 
@@ -69,6 +70,44 @@ def test_backup_schema_failure_prevents_pg_dump(tmp_path) -> None:
             create_backup(DATABASE_URL, tmp_path, encryption_key=key)
     assert raised.value.code == "database_schema_contract_invalid"
     run.assert_not_called()
+
+
+def test_pg_dump_failure_categories_exclude_stderr_and_connection_data() -> None:
+    mismatch = _pg_dump_failure_code(
+        b"pg_dump: error: server version: 16.10; pg_dump version: 14.19"
+    )
+    connection = _pg_dump_failure_code(
+        b"pg_dump: error: connection to server at host private.internal failed"
+    )
+    authentication = _pg_dump_failure_code(
+        b"pg_dump: error: password authentication failed for user postgres"
+    )
+
+    assert mismatch == "pg_dump_version_mismatch_server_16_client_14"
+    assert connection == "pg_dump_connection_failed"
+    assert authentication == "pg_dump_authentication_failed"
+    encoded = " ".join((mismatch, connection, authentication))
+    assert "private.internal" not in encoded
+    assert "postgresql://" not in encoded
+    assert "password" not in encoded
+
+
+def test_pg_dump_subprocess_error_is_rethrown_as_safe_code(tmp_path) -> None:
+    key = Fernet.generate_key().decode("ascii")
+    failure = subprocess.CalledProcessError(
+        1,
+        ["pg_dump"],
+        stderr=b"pg_dump: error: connection to server at host private.internal failed",
+    )
+    with patch("scripts.postgres_backup.shutil.which", return_value="/usr/bin/pg_dump"), patch(
+        "scripts.postgres_backup.inspect_database_schema", return_value=SCHEMA_IDENTITY
+    ), patch("scripts.postgres_backup.subprocess.run", side_effect=failure):
+        with pytest.raises(RuntimeError) as raised:
+            create_backup(DATABASE_URL, tmp_path, encryption_key=key)
+
+    assert str(raised.value) == "pg_dump_connection_failed"
+    assert "private.internal" not in str(raised.value)
+    assert DATABASE_URL not in str(raised.value)
 
 
 def _encrypted_fixture(tmp_path: Path) -> tuple[Path, str]:
