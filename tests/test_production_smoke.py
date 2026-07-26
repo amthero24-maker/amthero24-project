@@ -15,6 +15,8 @@ def _healthy(path: str) -> tuple[int, dict]:
             "components": {
                 "storage_backend": "postgresql",
                 "postgresql_schemas": "initialized",
+                "database_schema_migrations": "current",
+                "database_schema_version": 1,
                 "database_fallback": "fail-closed",
                 "process_lifecycle": "accepting",
                 "webhook_signature": "enforced",
@@ -48,6 +50,8 @@ def test_smoke_passes_for_healthy_production() -> None:
         "readiness",
         "storage_backend",
         "postgresql_schemas",
+        "database_schema_migrations",
+        "database_schema_version",
         "database_fallback",
         "process_lifecycle",
         "webhook_idempotency",
@@ -60,7 +64,7 @@ def test_smoke_passes_for_healthy_production() -> None:
     }
 
 
-def test_smoke_fails_on_storage_signature_delivery_and_lifecycle_misconfiguration() -> None:
+def test_smoke_fails_on_storage_schema_signature_delivery_and_lifecycle_misconfiguration() -> None:
     def response(base: str, path: str, **kwargs):
         if path == "/health":
             return 200, {"status": "ok", "version": "3.2.0"}
@@ -69,6 +73,8 @@ def test_smoke_fails_on_storage_signature_delivery_and_lifecycle_misconfiguratio
             "components": {
                 "storage_backend": "json-fallback",
                 "postgresql_schemas": "unavailable",
+                "database_schema_migrations": "unverified",
+                "database_schema_version": 0,
                 "database_fallback": "allowed",
                 "process_lifecycle": "draining",
                 "webhook_signature": "optional",
@@ -90,6 +96,8 @@ def test_smoke_fails_on_storage_signature_delivery_and_lifecycle_misconfiguratio
         "readiness",
         "storage_backend",
         "postgresql_schemas",
+        "database_schema_migrations",
+        "database_schema_version",
         "database_fallback",
         "process_lifecycle",
         "webhook_signature",
@@ -112,6 +120,24 @@ def test_disabled_durable_queue_is_allowed_during_safe_rollout() -> None:
         checks = production_smoke.run_smoke("https://example.test", require_signature=True)
 
     assert next(item for item in checks if item.name == "durable_inbound_queue").passed is True
+
+
+def test_non_postgres_smoke_can_explicitly_relax_schema_gate() -> None:
+    def response(base: str, path: str, **kwargs):
+        status, payload = _healthy(path)
+        if path == "/ready":
+            payload["components"]["storage_backend"] = "json"
+            payload["components"]["postgresql_schemas"] = "not-applicable"
+            payload["components"]["database_schema_migrations"] = "not-applicable"
+            payload["components"]["database_schema_version"] = 0
+            payload["components"]["database_fallback"] = "allowed"
+        return status, payload
+
+    with patch("production_smoke.fetch_json", side_effect=response):
+        checks = production_smoke.run_smoke("https://example.test", require_postgresql=False)
+
+    assert next(item for item in checks if item.name == "database_schema_migrations").passed is True
+    assert next(item for item in checks if item.name == "database_schema_version").passed is True
 
 
 def test_smoke_stops_cleanly_when_health_is_unavailable() -> None:
