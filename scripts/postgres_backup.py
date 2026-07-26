@@ -1,8 +1,8 @@
 """Create encrypted, integrity-checked PostgreSQL backups for AmtHero24.
 
 Designed for a Railway cron/service with the PostgreSQL private DATABASE_URL and a
-persistent backup volume. The database URL is passed to pg_dump through the child
-environment and is never printed or placed in command-line arguments.
+persistent backup volume. Connection values are passed only through the child environment
+and are never printed or placed in command-line arguments.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from postgres_cli_env import postgres_cli_environment
 from schema_recovery import inspect_database_schema
 
 
@@ -120,9 +121,7 @@ def create_backup(
 
     with tempfile.TemporaryDirectory(prefix="amthero24-backup-") as temp_dir:
         plain = Path(temp_dir) / "database.dump"
-        child_env = os.environ.copy()
-        child_env["PGDATABASE"] = url
-        child_env.pop("DATABASE_URL", None)
+        child_env = postgres_cli_environment(url, base_environment=os.environ)
         try:
             subprocess.run(
                 [binary, "--format=custom", "--no-owner", "--no-privileges", "--file", str(plain)],
