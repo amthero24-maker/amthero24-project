@@ -1,0 +1,138 @@
+name: Schema Recovery Safety
+
+on:
+  pull_request:
+    paths:
+      - schema_recovery.py
+      - postgres_cli_env.py
+      - database_migrations.py
+      - scripts/postgres_backup.py
+      - scripts/postgres_restore.py
+      - scripts/release_preflight.py
+      - tests/test_schema_recovery.py
+      - tests/test_postgres_operations.py
+      - tests/test_release_preflight.py
+      - tests/test_postgresql_recovery_drill.py
+      - .github/workflows/schema-recovery-safety.yml
+  push:
+    branches: [main]
+    paths:
+      - schema_recovery.py
+      - postgres_cli_env.py
+      - database_migrations.py
+      - scripts/postgres_backup.py
+      - scripts/postgres_restore.py
+      - scripts/release_preflight.py
+      - tests/test_schema_recovery.py
+      - tests/test_postgres_operations.py
+      - tests/test_release_preflight.py
+      - tests/test_postgresql_recovery_drill.py
+      - .github/workflows/schema-recovery-safety.yml
+  schedule:
+    - cron: "17 5 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schema-recovery-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: amthero24_source
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d amthero24_source"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RECOVERY_SOURCE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_source
+      RECOVERY_TARGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_restore
+      RECOVERY_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      RECOVERY_TARGET_DATABASE: amthero24_restore
+      DB_POOL_MAX: "4"
+      OUTBOUND_DELIVERY_RETENTION_DAYS: "30"
+      PROVIDER_TELEMETRY_ENABLED: "true"
+      GROQ_CIRCUIT_BREAKER_ENABLED: "true"
+      ABUSE_GUARD_ENABLED: "true"
+      ABUSE_GUARD_ENFORCEMENT_ENABLED: "true"
+      ENTITLEMENT_ENFORCEMENT_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install pinned development dependencies
+        run: python -m pip install --quiet -r requirements-dev.txt
+      - name: Generate isolated runtime encryption keys
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import secrets
+          for name in (
+              "MESSAGE_QUEUE_ENCRYPTION_KEY",
+              "REMINDER_ENCRYPTION_KEY",
+              "SUPPORT_ENCRYPTION_KEY",
+          ):
+              print(f"{name}={secrets.token_urlsafe(48)}")
+          PY
+      - name: Ensure PostgreSQL client tools
+        run: |
+          if ! command -v pg_dump >/dev/null || ! command -v pg_restore >/dev/null || ! command -v psql >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y postgresql-client
+          fi
+          pg_dump --version
+          pg_restore --version
+          psql --version
+      - name: Compile recovery modules
+        run: python -m py_compile schema_recovery.py postgres_cli_env.py scripts/postgres_backup.py scripts/postgres_restore.py scripts/release_preflight.py
+      - name: Run schema identity and operation policy tests
+        id: unit_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short --junitxml=schema-recovery-unit-junit.xml \
+            tests/test_schema_recovery.py \
+            tests/test_postgres_operations.py \
+            tests/test_release_preflight.py 2>&1 | tee schema-recovery-unit.log
+      - name: Run real encrypted PostgreSQL recovery drill in a fresh process
+        id: recovery_drill
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short --junitxml=schema-recovery-drill-junit.xml \
+            tests/test_postgresql_recovery_drill.py 2>&1 | tee schema-recovery-drill.log
+      - name: Upload sanitized recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-recovery-safety
+          path: |
+            schema-recovery-unit-junit.xml
+            schema-recovery-unit.log
+            schema-recovery-drill-junit.xml
+            schema-recovery-drill.log
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce schema recovery safety
+        if: steps.unit_tests.outcome == 'failure' || steps.recovery_drill.outcome == 'failure'
+        run: exit 1

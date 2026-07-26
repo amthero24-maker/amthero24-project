@@ -16,6 +16,7 @@ from psycopg.rows import dict_row
 
 from abuse_guard import AbuseGuardRepository
 from data_store import PostgresDataStore
+from database_migrations import run_database_migrations
 from document_action_repository import PendingDocumentRepository
 from durable_queue import DurableQueueRepository
 from entitlement_engine import EntitlementRepository
@@ -24,7 +25,7 @@ from hero_memory import HeroMemory
 from outbound_delivery import DeliveryReceipt, OutboundDeliveryRepository
 from provider_reliability import ProviderReliabilityRepository
 from reminder_engine import ReminderRepository, decrypt_recipient
-from schema_bootstrap import bootstrap_postgres_schemas
+from schema_recovery import inspect_database_schema
 from scripts.postgres_backup import create_backup
 from scripts.postgres_restore import restore_backup
 from support_handoff import SupportRepository
@@ -39,6 +40,7 @@ EXPECTED_TABLES = {
     "inbound_work_queue",
     "outbound_delivery_messages",
     "schema_migrations",
+    "amthero_schema_migrations",
     "hero_missions",
     "memory_consent_events",
     "hero_reminders",
@@ -55,7 +57,11 @@ EXPECTED_TABLES = {
     "anonymous_feedback",
 }
 COUNTED_TABLES = EXPECTED_TABLES - {
-    "schema_migrations", "abuse_blocks", "human_support_admin_events", "provider_circuit_state"
+    "schema_migrations",
+    "amthero_schema_migrations",
+    "abuse_blocks",
+    "human_support_admin_events",
+    "provider_circuit_state",
 }
 
 
@@ -85,7 +91,9 @@ def _counts(database_url: str) -> dict[str, int]:
 
 def _seed_source(database_url: str) -> dict[str, str]:
     store = PostgresDataStore(database_url)
-    bootstrap_postgres_schemas(store)
+    migration = run_database_migrations(store, app_version="4.7.0")
+    assert migration.status == "current"
+    assert migration.current_version >= 1
     memory = HeroMemory(store)
     reminders = ReminderRepository(store)
     pending = PendingDocumentRepository(store)
@@ -158,7 +166,7 @@ def _seed_source(database_url: str) -> dict[str, str]:
         store.close()
 
 
-def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) -> None:
+def test_encrypted_backup_restores_complete_schema_compatible_application_state(tmp_path: Path) -> None:
     source_url = os.environ["RECOVERY_SOURCE_DATABASE_URL"]
     target_url = os.environ["RECOVERY_TARGET_DATABASE_URL"]
     admin_url = os.environ["RECOVERY_ADMIN_DATABASE_URL"]
@@ -166,6 +174,7 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
     encryption_key = Fernet.generate_key().decode("ascii")
 
     identifiers = _seed_source(source_url)
+    source_identity = inspect_database_schema(source_url, require_current=True)
     source_tables = _table_names(source_url)
     source_counts = _counts(source_url)
     assert EXPECTED_TABLES <= source_tables
@@ -195,6 +204,10 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
 
     encrypted_bytes = artifact.read_bytes()
     assert manifest["encrypted"] is True
+    assert manifest["schema_version"] == source_identity.version
+    assert manifest["schema_checksum"] == source_identity.checksum
+    assert manifest["schema_ledger_entries"] == source_identity.ledger_entries
+    assert manifest["schema_contract"] == "valid"
     assert manifest_path.exists()
     assert PHONE.encode("utf-8") not in encrypted_bytes
     assert OUTBOUND_ID.encode("utf-8") not in encrypted_bytes
@@ -210,8 +223,17 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
         encryption_key=encryption_key,
         manifest_path=manifest_path,
     )
-    assert restored["status"] == "restored"
+    assert restored == {
+        "status": "verified",
+        "artifact": artifact.name,
+        "manifest": manifest_path.name,
+        "format": "pg_dump_custom",
+        "schema_version": source_identity.version,
+        "schema_contract": "valid",
+    }
 
+    target_identity = inspect_database_schema(target_url, require_current=True)
+    assert target_identity == source_identity
     target_tables = _table_names(target_url)
     target_counts = _counts(target_url)
     assert source_tables == target_tables
@@ -259,7 +281,13 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
                 "SELECT COUNT(*) AS count FROM hero_users WHERE phone_hash = %s",
                 (PHONE_HASH,),
             ).fetchone()
+            ledger = connection.execute(
+                "SELECT version, checksum FROM amthero_schema_migrations ORDER BY version"
+            ).fetchall()
         assert int(raw_phone["count"]) == 0
         assert int(hashed_phone["count"]) == 1
+        assert len(ledger) == source_identity.ledger_entries
+        assert int(ledger[-1]["version"]) == source_identity.version
+        assert str(ledger[-1]["checksum"]) == source_identity.checksum
     finally:
         target_store.close()
