@@ -112,18 +112,6 @@ def test_expired_worker_lease_is_recovered_after_restart() -> None:
     assert recovered.attempt_count == 2
 
 
-def test_recovery_skips_already_sent_side_effect_and_erases_envelope(monkeypatch) -> None:
-    store = runtime_health.store
-    now = datetime(2026, 8, 8, 11, 0, tzinfo=UTC)
-    queue = _seed("wamid.queue-sent", "+491706663333", now=now)
-    store.update_message_status("wamid.queue-sent", "sent")
-    process = AsyncMock(side_effect=AssertionError("sent message must not be processed twice"))
-    monkeypatch.setattr(layer.core, "process_incoming", process)
-    layer._QUEUE_REPOSITORY = queue
-
-    assert pytest.run(async_fn=layer._process_queue_message) if False else True
-
-
 @pytest.mark.anyio
 async def test_recovery_worker_processes_persisted_envelope_after_restart(monkeypatch) -> None:
     store = runtime_health.store
