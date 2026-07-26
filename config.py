@@ -8,7 +8,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+_DEFAULT_TEXT_MODEL = "openai/gpt-oss-120b"
+_DEPRECATED_TEXT_MODELS = {
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+}
+_requested_text_model = os.getenv("GROQ_MODEL", _DEFAULT_TEXT_MODEL).strip()
+GROQ_MODEL = (
+    _DEFAULT_TEXT_MODEL
+    if not _requested_text_model or _requested_text_model in _DEPRECATED_TEXT_MODELS
+    else _requested_text_model
+)
 
 _DEFAULT_VISION_MODEL = "qwen/qwen3.6-27b"
 _DEPRECATED_VISION_MODELS = {
@@ -25,7 +35,7 @@ GROQ_VISION_MODEL = (
 
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v22.0").strip()
 DATA_STORE_PATH = Path(os.getenv("DATA_STORE_PATH", "data/store.json"))
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.8.0"
 MAX_WHATSAPP_TEXT_LENGTH = 4096
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 

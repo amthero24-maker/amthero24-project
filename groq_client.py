@@ -38,12 +38,9 @@ def sanitize_model_reply(value: str) -> str:
         logger.error("Model returned internal reasoning instead of a final answer")
         raise GroqServiceError("Model returned an unsafe reasoning trace")
 
-    # Normalize compatibility forms and remove invisible formatting controls.
     reply = unicodedata.normalize("NFKC", reply)
     reply = "".join(ch for ch in reply if unicodedata.category(ch) not in {"Cf", "Cs"} or ch in {"\n", "\t"})
 
-    # The supported product languages do not use CJK ideographs. Remove isolated
-    # accidental ideographs that sometimes leak into Arabic OCR summaries.
     reply = re.sub(r"(?<![\u3400-\u9fff])[\u3400-\u9fff](?![\u3400-\u9fff])", "", reply)
     reply = re.sub(r"[ \t]{2,}", " ", reply)
     reply = re.sub(r" *\n *", "\n", reply).strip()
@@ -88,6 +85,9 @@ def generate_reply(*, system_prompt: str, user_text: str, image_bytes: bytes | N
         if model.startswith("qwen/"):
             request["reasoning_format"] = "hidden"
             request["reasoning_effort"] = "none"
+        elif model.startswith("openai/gpt-oss-"):
+            request["include_reasoning"] = False
+            request["reasoning_effort"] = "low"
 
         completion = client.chat.completions.create(**request)
         return sanitize_model_reply(completion.choices[0].message.content or "")
