@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -25,6 +26,7 @@ class ProcessLifecycle:
         self._accepting_work = False
         self._active_work = 0
         self._changed_at = datetime.now(UTC)
+        self._drain_started_monotonic: float | None = None
         self._idle = asyncio.Event()
         self._idle.set()
 
@@ -35,11 +37,14 @@ class ProcessLifecycle:
             return
         self._state = "accepting"
         self._accepting_work = True
+        self._drain_started_monotonic = None
         self._changed_at = datetime.now(UTC)
 
     def begin_drain(self) -> None:
         if self._state == "stopped":
             return
+        if self._drain_started_monotonic is None:
+            self._drain_started_monotonic = time.monotonic()
         self._state = "draining"
         self._accepting_work = False
         self._changed_at = datetime.now(UTC)
@@ -61,10 +66,21 @@ class ProcessLifecycle:
         if self._active_work == 0:
             self._idle.set()
 
+    def remaining_drain_seconds(self) -> float:
+        """Return the remaining process-wide drain budget."""
+        if self._drain_started_monotonic is None:
+            return float(drain_timeout_seconds())
+        elapsed = time.monotonic() - self._drain_started_monotonic
+        return max(0.0, float(drain_timeout_seconds()) - elapsed)
+
     async def wait_for_idle(self, timeout: float | None = None) -> bool:
-        seconds = drain_timeout_seconds() if timeout is None else max(0.0, float(timeout))
+        available = self.remaining_drain_seconds()
+        requested = available if timeout is None else max(0.0, float(timeout))
+        seconds = min(available, requested)
         if self._active_work == 0:
             return True
+        if seconds <= 0:
+            return False
         try:
             await asyncio.wait_for(self._idle.wait(), timeout=seconds)
             return True
@@ -85,7 +101,9 @@ def drain_timeout_seconds() -> int:
         value = int(os.getenv("GRACEFUL_DRAIN_TIMEOUT_SECONDS", "12").strip())
     except ValueError:
         value = 12
-    return min(max(value, 1), 25)
+    # Railway's configured drain window is 15 seconds. Keep application work below it so
+    # the interpreter and connection pools still have time to close.
+    return min(max(value, 1), 12)
 
 
 lifecycle = ProcessLifecycle()
