@@ -106,6 +106,9 @@ def run_smoke(
         fallback_ok = fallback == "fail-closed" or not require_postgresql
         checks.append(SmokeCheck("database_fallback", "pass" if fallback_ok else "fail", fallback))
 
+        process_lifecycle = str(components.get("process_lifecycle") or "missing")
+        checks.append(SmokeCheck("process_lifecycle", "pass" if process_lifecycle == "accepting" else "fail", process_lifecycle))
+
         signature = str(components.get("webhook_signature") or "missing")
         signature_ok = signature == "enforced" or not require_signature
         checks.append(SmokeCheck("webhook_signature", "pass" if signature_ok else "fail", signature))
