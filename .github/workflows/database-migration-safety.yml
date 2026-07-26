@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - database_migrations.py
+      - migration_policy.py
       - schema_bootstrap.py
       - storage_factory.py
       - runtime_health.py
       - production_smoke.py
       - data_store.py
       - tests/test_database_migrations.py
+      - tests/test_migration_policy.py
       - tests/test_postgresql_schema_migrations.py
       - tests/test_storage_factory.py
       - tests/test_runtime_health.py
@@ -20,12 +22,14 @@ on:
     branches: [main]
     paths:
       - database_migrations.py
+      - migration_policy.py
       - schema_bootstrap.py
       - storage_factory.py
       - runtime_health.py
       - production_smoke.py
       - data_store.py
       - tests/test_database_migrations.py
+      - tests/test_migration_policy.py
       - tests/test_postgresql_schema_migrations.py
       - tests/test_storage_factory.py
       - tests/test_runtime_health.py
@@ -81,7 +85,11 @@ jobs:
       - name: Install pinned development dependencies
         run: python -m pip install --quiet -r requirements-dev.txt
       - name: Compile migration and storage modules
-        run: python -m py_compile database_migrations.py schema_bootstrap.py storage_factory.py runtime_health.py production_smoke.py
+        run: python -m py_compile database_migrations.py migration_policy.py schema_bootstrap.py storage_factory.py runtime_health.py production_smoke.py
+      - name: Validate expand-only migration source
+        id: policy
+        continue-on-error: true
+        run: python migration_policy.py --json > migration-policy.json
       - name: Run migration policy and PostgreSQL concurrency tests
         id: tests
         continue-on-error: true
@@ -90,6 +98,7 @@ jobs:
           set -o pipefail
           python -m pytest -vv --tb=short --junitxml=migration-junit.xml \
             tests/test_database_migrations.py \
+            tests/test_migration_policy.py \
             tests/test_postgresql_schema_migrations.py \
             tests/test_storage_factory.py \
             tests/test_runtime_health.py \
@@ -100,10 +109,11 @@ jobs:
         with:
           name: database-migration-safety
           path: |
+            migration-policy.json
             migration-junit.xml
             migration-test.log
           if-no-files-found: error
           retention-days: 14
       - name: Enforce migration safety
-        if: steps.tests.outcome == 'failure'
+        if: steps.policy.outcome == 'failure' || steps.tests.outcome == 'failure'
         run: exit 1
