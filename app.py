@@ -24,8 +24,11 @@ from onboarding import (
     consent_prompt,
     is_enable_memory_request,
     is_memory_summary_request,
+    is_name_question,
     is_simple_greeting,
     memory_summary_message,
+    pending_name_message,
+    saved_name_message,
     welcome_message,
 )
 from product_knowledge import product_answer
@@ -188,13 +191,42 @@ async def process_incoming(message: IncomingMessage) -> None:
         )
         language = detect_language(message.text, previous_language) if message.text.strip() else previous_language
         lowered = message.text.casefold()
+        stage = str(profile.get("onboarding_stage") or "")
 
         if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "احذف بياناتي", "видали мої дані")):
             store.delete_user(message.sender)
             await _finish(message.message_id, _deletion_confirmation(language), message.sender)
             return
 
+        if is_name_question(message.text):
+            saved_name = str(profile.get("first_name") or "").strip()
+            pending_name = str(profile.get("pending_name") or "").strip()
+            if memory_enabled and saved_name:
+                await _finish(message.message_id, saved_name_message(language, saved_name), message.sender)
+                return
+            if pending_name and stage == "awaiting_consent":
+                await _finish(message.message_id, pending_name_message(language, pending_name), message.sender)
+                return
+            store.update_user(message.sender, {
+                "onboarding_stage": "awaiting_name",
+                "session_language": language,
+                "session_expires_at": _session_expiry(),
+            })
+            await _finish(message.message_id, ask_name_message(language), message.sender)
+            return
+
         if is_memory_summary_request(message.text):
+            if not memory_enabled:
+                pending_name = str(profile.get("pending_name") or "").strip()
+                next_stage = "awaiting_consent" if pending_name else "awaiting_name"
+                store.update_user(message.sender, {
+                    "onboarding_stage": next_stage,
+                    "session_language": language,
+                    "session_expires_at": _session_expiry(),
+                })
+                reply = pending_name_message(language, pending_name) if pending_name else memory_summary_message(language, profile)
+                await _finish(message.message_id, reply, message.sender)
+                return
             await _finish(message.message_id, memory_summary_message(language, profile), message.sender)
             return
 
@@ -238,7 +270,6 @@ async def process_incoming(message: IncomingMessage) -> None:
             stage = str(profile.get("onboarding_stage") or "")
 
         elif not profile.get("memory_consent") and not profile.get("intro_sent_at"):
-            # One-time consent repair for profiles created by older builds.
             pending_name = str(profile.get("first_name") or "").strip()
             repair_updates: dict[str, Any] = {
                 "intro_sent_at": _now().isoformat(),
@@ -258,6 +289,20 @@ async def process_incoming(message: IncomingMessage) -> None:
             if is_simple_greeting(message.text):
                 store.update_message_status(message.message_id, "sent")
                 return
+
+        if not memory_enabled and extracted_name and stage not in {"awaiting_name", "awaiting_consent"}:
+            profile = store.update_user(message.sender, {
+                "pending_name": extracted_name,
+                "pending_name_expires_at": _session_expiry(),
+                "onboarding_stage": "awaiting_consent",
+                "session_language": language,
+                "session_expires_at": _session_expiry(),
+            })
+            await send_whatsapp_message(message.sender, consent_prompt(language, extracted_name))
+            if _is_name_only(message.text, extracted_name):
+                store.update_message_status(message.message_id, "sent")
+                return
+            stage = "awaiting_consent"
 
         if stage == "awaiting_name" and extracted_name:
             profile = store.update_user(message.sender, {
