@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from durable_queue import queue_status as durable_queue_status
 from encryption_policy import (
     admin_api_token_status,
     legacy_reminder_decryption_enabled,
@@ -80,7 +81,9 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     production_store = globals().get("store")
     schemas_ready = backend != "postgresql" or store is not production_store or bool(_BOOTSTRAPPED_SCHEMAS)
     fallback_allowed = database_fallback_allowed()
-    ready = config_ok and storage_ok and schemas_ready
+    queue_component = durable_queue_status(store)
+    queue_ready = queue_component in {"disabled", "configured"}
+    ready = config_ok and storage_ok and schemas_ready and queue_ready
 
     if not reminder_worker_enabled:
         reminders_status = "disabled"
@@ -107,6 +110,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
             "webhook_signature": signature_status,
             "webhook_idempotency": "retry-safe",
+            "durable_inbound_queue": queue_component,
             "text_model": model,
             "document_actions": "enabled",
             "reminders": reminders_status,
@@ -133,7 +137,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
-from idempotency_extensions import app, store  # noqa: E402
+from durable_queue_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
