@@ -11,7 +11,12 @@ from enum import StrEnum
 from typing import Final
 
 from brief_scanner_adapter import BriefScannerAdapterError, parse_brief_scanner_model_output
-from brief_scanner_contract import BriefScannerFacts, BriefScannerState, initial_state
+from brief_scanner_contract import (
+    SUPPORTED_LANGUAGES,
+    BriefScannerFacts,
+    BriefScannerState,
+    initial_state,
+)
 
 
 class BriefScannerBoundaryStatus(StrEnum):
@@ -46,6 +51,8 @@ _DOCUMENT_QUALITY_CODES: Final[frozenset[str]] = frozenset({
 
 def build_brief_scanner_extraction_prompt(*, language: str) -> str:
     """Return a deterministic JSON-only extraction instruction for one document."""
+    if type(language) is not str or language not in SUPPORTED_LANGUAGES:
+        raise ValueError("unsupported_brief_scanner_language")
     return (
         "You extract administrative letter facts for AmtHero24. Return exactly one JSON object and "
         "nothing else: no markdown, comments, prose, or code fences. Never guess. Use null or an "
