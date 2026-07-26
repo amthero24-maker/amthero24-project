@@ -5,13 +5,16 @@ from typing import Any
 
 import admin_extensions as admin_module
 import durable_queue_extensions as composed
+import launch_extensions as launch_module
 import privacy_engine as privacy_module
 from durable_queue import DurableQueueRepository
+from queue_launch_policy import augment_launch_report
 from queue_observability import build_queue_overview
 
 core = composed.core
 _ORIGINAL_ADMIN_BUILD_OVERVIEW = admin_module.build_overview
 _ORIGINAL_PRIVACY_CLEANUP = privacy_module.cleanup_retention
+_ORIGINAL_BUILD_LAUNCH_REPORT = launch_module.build_launch_report
 _QUEUE_REPOSITORY: DurableQueueRepository | None = None
 
 
@@ -29,6 +32,10 @@ def _build_overview(store: Any, **kwargs: Any) -> dict[str, Any]:
     return payload
 
 
+def _build_launch_report(overview: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    return augment_launch_report(_ORIGINAL_BUILD_LAUNCH_REPORT(overview, **kwargs), overview)
+
+
 def _cleanup_retention(store: Any, **kwargs: Any) -> dict[str, int]:
     result = _ORIGINAL_PRIVACY_CLEANUP(store, **kwargs)
     if str(getattr(store, "backend_name", "json")) == "postgresql":
@@ -39,6 +46,7 @@ def _cleanup_retention(store: Any, **kwargs: Any) -> dict[str, int]:
 
 
 admin_module.build_overview = _build_overview
+launch_module.build_launch_report = _build_launch_report
 privacy_module.cleanup_retention = _cleanup_retention
 
 app = composed.app
