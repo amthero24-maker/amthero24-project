@@ -36,6 +36,7 @@ def _repository(store: Any | None = None) -> PendingDocumentRepository:
 def _normalize_command(text: str) -> str:
     value = str(text or "").casefold().strip()
     value = value.translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
+    value = re.sub(r"[\u064b-\u065f\u0670\u0640]", "", value)
     value = re.sub(r"[؟،؛!?.,:;]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
