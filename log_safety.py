@@ -76,6 +76,7 @@ _STANDARD_RECORD_FIELDS = {
     "processName",
     "process",
     "taskName",
+    "request_id",
 }
 
 _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
@@ -190,9 +191,17 @@ def _safe_exc_info(exc_info: Any, *, environment: Mapping[str, str] | None = Non
     exception = exc_info[1]
     safe_message = redact_text(str(exception), environment=environment)
     safe = RedactedLogException(f"{type(exception).__name__}: {safe_message}")
-    # Raw traceback source lines can contain a literal phone number, URL, or test fixture.
-    # Keep the exception category/message but drop frames before any formatter sees them.
     return (type(safe), safe, None)
+
+
+def _active_request_id() -> str:
+    """Resolve the current random correlation ID without creating an import cycle."""
+    try:
+        from http_boundary import current_request_id
+
+        return current_request_id()
+    except Exception:
+        return ""
 
 
 def sanitize_log_record(record: logging.LogRecord, *, environment: Mapping[str, str] | None = None) -> logging.LogRecord:
@@ -213,6 +222,13 @@ def sanitize_log_record(record: logging.LogRecord, *, environment: Mapping[str, 
         if key in _STANDARD_RECORD_FIELDS:
             continue
         record.__dict__[key] = redact_value(record.__dict__[key], key=key, environment=environment)
+
+    request_id = _active_request_id()
+    if request_id:
+        record.request_id = request_id
+        marker = f"[request_id={request_id}]"
+        if marker not in str(record.msg):
+            record.msg = f"{record.msg} {marker}"
     return record
 
 
