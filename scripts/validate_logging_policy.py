@@ -19,6 +19,7 @@ _LOG_METHODS = {"debug", "info", "warning", "warn", "error", "exception", "criti
 _SAFE_WRAPPERS = {"redact_text", "redact_value", "safe_log_value", "sanitize_log_record"}
 _SENSITIVE_PARTS = {
     "phone",
+    "phone_number",
     "recipient",
     "wa_id",
     "message",
@@ -44,6 +45,8 @@ _SENSITIVE_PARTS = {
     "raw",
 }
 _EXCLUDED_DIRS = {"tests", "scripts", ".git", ".venv", "venv", "__pycache__", ".pytest_cache"}
+_EXCLUDED_FILES = {"production_smoke.py"}  # explicit read-only operator CLI
+_RUNTIME_REDACTED_EXTRA_KEYS = {"message_id"}
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,8 @@ def _tracked_runtime_files(root: Path) -> list[Path]:
     return [
         path
         for path in candidates
-        if not any(part in _EXCLUDED_DIRS for part in path.relative_to(root).parts)
+        if path.relative_to(root).as_posix() not in _EXCLUDED_FILES
+        and not any(part in _EXCLUDED_DIRS for part in path.relative_to(root).parts)
     ]
 
 
@@ -95,8 +99,22 @@ def _identifier_parts(node: ast.AST) -> set[str]:
     return parts
 
 
+def _is_runtime_redacted_extra(node: ast.AST) -> bool:
+    """Allow only mappings whose keys are guaranteed redacted by ``log_safety``."""
+    if not isinstance(node, ast.Dict) or not node.keys:
+        return False
+    keys: set[str] = set()
+    for key in node.keys:
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            return False
+        keys.add(key.value.strip().casefold().replace("-", "_"))
+    return bool(keys) and keys.issubset(_RUNTIME_REDACTED_EXTRA_KEYS)
+
+
 def _sensitive_identifier(node: ast.AST) -> str:
     if isinstance(node, ast.Call) and _call_name(node.func) in _SAFE_WRAPPERS:
+        return ""
+    if _is_runtime_redacted_extra(node):
         return ""
     for part in sorted(_identifier_parts(node)):
         normalized = part.replace("-", "_")
@@ -106,6 +124,7 @@ def _sensitive_identifier(node: ast.AST) -> str:
             normalized.endswith(suffix)
             for suffix in (
                 "_phone",
+                "_phone_number",
                 "_recipient",
                 "_message",
                 "_text",
