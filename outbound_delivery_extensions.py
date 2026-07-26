@@ -25,6 +25,7 @@ from outbound_delivery import (
     record_receipts,
 )
 from outbound_delivery_policy import augment_launch_report
+from runtime_lifecycle import lifecycle
 
 logger = logging.getLogger("amthero24.outbound_delivery")
 core = composed.core
@@ -65,6 +66,12 @@ def _install_send_tracking() -> None:
 
 
 async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
+    if lifecycle.is_draining():
+        return JSONResponse(
+            {"status": "draining"},
+            status_code=503,
+            headers={"Retry-After": "10", "Cache-Control": "no-store"},
+        )
     try:
         payload = await request.json()
     except (ValueError, UnicodeDecodeError):
