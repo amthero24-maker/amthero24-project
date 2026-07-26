@@ -1,6 +1,6 @@
 # AmtHero24 Production Operations
 
-This runbook covers read-only production checks, fail-closed durable storage, encrypted PostgreSQL backups, restore drills, and safe application rollback. It deliberately avoids real credentials and user data.
+This runbook covers read-only production checks, fail-closed durable storage, dedicated encryption keys, encrypted PostgreSQL backups, restore drills, and safe application rollback. It deliberately avoids real credentials and user data.
 
 ## 1. Production smoke checks
 
@@ -24,7 +24,7 @@ For a strict Beta gate:
 python production_smoke.py --require-signature --require-launch-ready
 ```
 
-The smoke suite requires PostgreSQL, initialized application schemas, and `database_fallback=fail-closed` for a production pass.
+The smoke suite requires PostgreSQL, initialized application schemas, fail-closed database behavior, enabled reminder delivery, dedicated reminder encryption, and strong protected-admin access for a production pass.
 
 ### GitHub scheduled checks
 
@@ -44,7 +44,46 @@ When `DATABASE_URL` is configured and PostgreSQL cannot initialize, the producti
 
 `DATABASE_FALLBACK_ALLOWED=true` exists only as an explicit supervised emergency option. It causes `/ready` to remain unhealthy and blocks the controlled-Beta launch report. Do not use it to hide a database incident.
 
-## 2. Encrypted PostgreSQL backups
+## 2. Dedicated encryption and operator secrets
+
+Reminder recipients and human-support contacts are reversible because the service must contact them later. They must therefore use dedicated secrets that are independent from WhatsApp, Groq, and database credentials.
+
+Generate unique values of at least 32 characters in a trusted local environment. One safe option is:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Generate a different value for each setting:
+
+```text
+REMINDER_ENCRYPTION_KEY
+ADMIN_API_TOKEN
+SUPPORT_ENCRYPTION_KEY
+SUPPORT_API_TOKEN
+```
+
+Do not reuse `WHATSAPP_TOKEN` as an encryption key. New reminder records are refused when `REMINDER_ENCRYPTION_KEY` is missing or weak, and the reminder worker does not start. The rest of Sam continues operating and the user receives a localized temporary-unavailability message.
+
+Human support remains disabled unless both its dedicated encryption key and its separate operator API token pass the strength policy.
+
+### Historical reminder compatibility
+
+Earlier versions could derive reminder encryption from `WHATSAPP_TOKEN`. Version 3.2 keeps a temporary read-only compatibility path:
+
+```text
+REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=true
+```
+
+This flag never permits new encryption with the WhatsApp token. It only allows historical ciphertext to be read while it is migrated. The launch report shows a warning until active reminder records are re-encrypted and the flag is changed to:
+
+```text
+REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=false
+```
+
+Never rotate or remove the old WhatsApp token before historical reminder migration is complete when old reminders may exist.
+
+## 3. Encrypted PostgreSQL backups
 
 Run backups inside Railway or another environment that can access the private `DATABASE_URL`.
 
@@ -87,7 +126,7 @@ python scripts/postgres_backup.py
 
 Use a daily schedule during Beta. Keep at least 14 successful backups. A backup stored only on the bot container's ephemeral filesystem is not a valid backup.
 
-## 3. Restore drill
+## 4. Restore drill
 
 A restore is destructive. Always test against a separate empty PostgreSQL service first.
 
@@ -120,7 +159,7 @@ A backup strategy is considered complete only after a successful restore drill h
 
 Every pull request also runs an isolated automated recovery drill. CI creates representative application data, encrypts a real `pg_dump`, restores it into a separate database, and verifies table, row-count, mission, reminder, support, and privacy parity. This proves the recovery code continuously but does not replace testing an actual Railway backup from its persistent volume.
 
-## 4. Application rollback
+## 5. Application rollback
 
 Use the GitHub Actions workflow `Create Rollback PR`.
 
@@ -133,19 +172,19 @@ The workflow does not force-push and does not deploy directly. It creates a norm
 
 This rollback affects application code only. It does not reverse database data or schema changes. Database recovery must use a verified backup or a separately reviewed forward migration.
 
-## 5. Incident order
+## 6. Incident order
 
 For a production incident:
 
 1. Check Railway deployment and `/health`.
-2. Check `/ready` and identify configuration, storage, schema, or provider failure.
+2. Check `/ready` and identify configuration, storage, schema, encryption, or provider failure.
 3. Check `/admin/launch-readiness` using the protected token.
-4. Pause Beta invitations; do not disable privacy, signature verification, or fail-closed database policy to hide the symptom.
+4. Pause Beta invitations; do not disable privacy, signature verification, fail-closed database policy, or encryption checks to hide the symptom.
 5. For a code regression, create a rollback PR to the last known-good commit.
 6. For database corruption, stop writes, preserve evidence, and restore first into a separate service.
 7. Run the smoke suite before directing traffic to the recovered version.
 
-## 6. Required production settings
+## 7. Required production settings
 
 Before controlled Beta, the launch report should confirm:
 
@@ -154,11 +193,13 @@ Before controlled Beta, the launch report should confirm:
 - `DATABASE_FALLBACK_ALLOWED=false`
 - `META_APP_SECRET` configured
 - `WEBHOOK_SIGNATURE_REQUIRED=true`
-- `ADMIN_API_TOKEN` configured
+- strong unique `ADMIN_API_TOKEN`
+- strong unique `REMINDER_ENCRYPTION_KEY`
+- `REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=false` after migration
 - privacy retention enabled
 - provider telemetry enabled
 - abuse protection enabled
-- reminder encryption configured
 - approved Meta utility template configured for reminders outside the 24-hour window
+- strong unique support encryption/API tokens before enabling human support
 
 Never place real values in GitHub files, issues, screenshots, or chat messages.
