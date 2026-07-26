@@ -58,9 +58,10 @@ def test_accepts_constant_events_and_explicit_redaction(tmp_path) -> None:
     assert validate_logging_policy(tmp_path, files=[source]) == []
 
 
-def test_scripts_and_tests_are_excluded_from_runtime_policy(tmp_path) -> None:
+def test_scripts_tests_and_operator_smoke_cli_are_excluded(tmp_path) -> None:
     _write(tmp_path / "scripts" / "cli.py", 'print("operator output")\n')
     _write(tmp_path / "tests" / "test_debug.py", 'print("test output")\n')
+    _write(tmp_path / "production_smoke.py", 'print("read-only smoke output")\n')
     _write(tmp_path / "service.py", "value = 1\n")
 
     assert validate_logging_policy(tmp_path) == []
@@ -78,3 +79,29 @@ def test_sensitive_extra_mapping_is_detected(tmp_path) -> None:
     findings = validate_logging_policy(tmp_path, files=[source])
 
     assert any(item.identifier == "authorization" for item in findings)
+
+
+def test_message_id_extra_is_allowed_only_because_runtime_always_redacts_it(tmp_path) -> None:
+    source = tmp_path / "service.py"
+    _write(
+        source,
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        'logger.exception("message failed", extra={"message_id": message.message_id})\n',
+    )
+
+    assert validate_logging_policy(tmp_path, files=[source]) == []
+
+
+def test_mixed_extra_mapping_still_rejects_sensitive_data(tmp_path) -> None:
+    source = tmp_path / "service.py"
+    _write(
+        source,
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        'logger.info("request failed", extra={"message_id": message.message_id, "payload": payload})\n',
+    )
+
+    findings = validate_logging_policy(tmp_path, files=[source])
+
+    assert any(item.identifier in {"message", "payload"} for item in findings)
