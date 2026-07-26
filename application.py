@@ -1,7 +1,7 @@
 """Production composition root for AmtHero24.
 
-The stable webhook remains in ``app.py``. This module layers the relationship
-and mission intelligence on top without duplicating the webhook implementation.
+The stable webhook remains in ``app.py``. This module layers relationship,
+mission, and voice intelligence on top without duplicating the webhook.
 """
 from __future__ import annotations
 
@@ -17,11 +17,13 @@ from relationship_engine import (
     preference_ack,
     serialize_style,
 )
+from voice_service import VoiceServiceError, transcribe_audio
 
 _ORIGINAL_PROCESS_INCOMING = core.process_incoming
 _ORIGINAL_BUILD_SYSTEM_PROMPT = core.build_system_prompt
 _ORIGINAL_DETECT_MISSION_INTENT = core.detect_mission_intent
 _ORIGINAL_MISSION_TITLE = core.mission_title
+_ORIGINAL_MESSAGE_FROM_PAYLOAD = core._message_from_payload
 
 
 def build_system_prompt(**kwargs: Any) -> str:
@@ -47,8 +49,62 @@ def mission_title(intent, *, current_topic: str = "", last_message: str = "") ->
     )
 
 
+def message_from_payload(message: dict[str, Any]) -> core.IncomingMessage | None:
+    if str(message.get("type") or "") != "audio":
+        return _ORIGINAL_MESSAGE_FROM_PAYLOAD(message)
+    message_id = str(message.get("id") or "").strip()
+    sender = str(message.get("from") or "").strip()
+    audio = message.get("audio") if isinstance(message.get("audio"), dict) else {}
+    media_id = str(audio.get("id") or "").strip()
+    if not message_id or not sender or not media_id:
+        return None
+    mime_type = str(audio.get("mime_type") or "audio/ogg")
+    return core.IncomingMessage(message_id, sender, "", "audio", media_id, mime_type)
+
+
+def _voice_failure(language: str) -> str:
+    return {
+        "ar": "ما قدرت أفهم التسجيل بوضوح 🎙️ جرّب تبعته مرة ثانية بمكان أهدى، أو اكتبلي المطلوب بجملة قصيرة.",
+        "de": "Ich konnte die Sprachnachricht nicht klar verstehen 🎙️ Sende sie bitte noch einmal in ruhigerer Umgebung oder schreib den Wunsch kurz.",
+        "en": "I could not understand the voice note clearly 🎙️ Please resend it somewhere quieter or type the request briefly.",
+        "uk": "Не вдалося чітко розпізнати голосове повідомлення 🎙️ Надішли його ще раз у тихішому місці або коротко напиши запит.",
+        "el": "Δεν μπόρεσα να καταλάβω καθαρά το φωνητικό μήνυμα 🎙️ Στείλε το ξανά σε πιο ήσυχο μέρος ή γράψε σύντομα το αίτημα.",
+    }.get(language, "I could not understand the voice note clearly. Please resend it.")
+
+
+async def _transcribe_message(message: core.IncomingMessage) -> core.IncomingMessage:
+    profile = core.store.get_user(message.sender)
+    memory_enabled = profile.get("memory_consent") == "granted"
+    language = str(
+        profile.get("preferred_language") if memory_enabled else profile.get("session_language")
+        or profile.get("preferred_language")
+        or "de"
+    )
+    media_url = await core.get_media_url(str(message.media_id))
+    audio_bytes = await core.download_media_bytes(media_url)
+    transcript = await core.anyio.to_thread.run_sync(
+        lambda: transcribe_audio(audio_bytes, mime_type=message.mime_type, language_hint=language)
+    )
+    return core.IncomingMessage(message.message_id, message.sender, transcript, "text")
+
+
 async def process_incoming(message: core.IncomingMessage) -> None:
-    """Persist explicit preferences and adapt the current session before routing."""
+    """Transcribe voice, persist explicit preferences, then route normally."""
+    if message.message_type == "audio":
+        profile = core.store.get_user(message.sender)
+        memory_enabled = profile.get("memory_consent") == "granted"
+        language = str(
+            profile.get("preferred_language") if memory_enabled else profile.get("session_language")
+            or profile.get("preferred_language")
+            or "de"
+        )
+        try:
+            message = await _transcribe_message(message)
+        except (VoiceServiceError, RuntimeError, ValueError):
+            core.store.update_message_status(message.message_id, "failed")
+            await core.send_whatsapp_message(message.sender, _voice_failure(language))
+            return
+
     profile = core.store.get_user(message.sender)
     memory_enabled = profile.get("memory_consent") == "granted"
     previous_language = str(
@@ -83,7 +139,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     await _ORIGINAL_PROCESS_INCOMING(message)
 
 
-# Patch the globals resolved by app.receive_webhook at request time.
+# Patch globals resolved by app.receive_webhook and app.extract_incoming_messages.
+core._message_from_payload = message_from_payload
 core.build_system_prompt = build_system_prompt
 core.memory_summary_message = human_memory_summary
 core._export_reply = human_export_reply
