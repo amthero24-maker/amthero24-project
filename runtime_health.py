@@ -57,6 +57,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     secret_present = bool(os.getenv("META_APP_SECRET", "").strip())
     signature_status = "enforced" if secret_present else ("missing" if required else "optional")
     entitlement_enforced = os.getenv("ENTITLEMENT_ENFORCEMENT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
+    abuse_enabled = os.getenv("ABUSE_GUARD_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
+    abuse_enforced = os.getenv("ABUSE_GUARD_ENFORCEMENT_ENABLED", "true").strip().casefold() in {"1", "true", "yes", "on"}
     ready = config_ok and storage_ok
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
@@ -75,13 +77,14 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "entitlements": "enforced" if entitlement_enforced else "observe-only",
             "default_plan": os.getenv("ENTITLEMENT_DEFAULT_PLAN", "beta").strip().casefold() or "beta",
             "payments": "disabled",
+            "abuse_guard": "disabled" if not abuse_enabled else ("enforced" if abuse_enforced else "observe-only"),
         },
     }
     return payload, 200 if ready else 503
 
 
 # Import all production composition layers after defining pure health helpers.
-from entitlement_extensions import app, store  # noqa: E402
+from abuse_extensions import app, store  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
 
