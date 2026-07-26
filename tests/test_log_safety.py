@@ -24,6 +24,16 @@ def test_redact_text_removes_environment_secret_bearer_database_and_phone() -> N
     assert "[REDACTED_PHONE]" in redacted
 
 
+def test_durable_queue_encryption_key_is_redacted_as_an_exact_environment_secret() -> None:
+    key = "durable-queue-private-key-2026-unique-A7mQ2xP9"
+    redacted = redact_text(
+        f"queue initialization failed for key={key}",
+        environment={"MESSAGE_QUEUE_ENCRYPTION_KEY": key},
+    )
+    assert key not in redacted
+    assert "[REDACTED]" in redacted
+
+
 def test_redact_text_removes_sensitive_json_fields_and_query_values() -> None:
     text = (
         'payload={"message":"private user words","token":"abc123456789",'
