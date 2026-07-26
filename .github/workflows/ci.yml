@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet -r requirements.txt
       - name: Compile
-        run: python -m compileall -q app.py application.py config.py conversation_intelligence.py data_store.py document_extensions.py document_service.py groq_client.py hero_memory.py mission_engine.py mission_intelligence.py onboarding.py privacy_engine.py privacy_extensions.py product_knowledge.py prompts.py relationship_engine.py reminder_engine.py reminder_extensions.py runtime_health.py voice_service.py webhook_security.py whatsapp.py main.py
+        run: python -m compileall -q app.py application.py config.py conversation_intelligence.py data_store.py document_action_extensions.py document_action_repository.py document_extensions.py document_intelligence.py document_service.py groq_client.py hero_memory.py mission_engine.py mission_intelligence.py onboarding.py privacy_engine.py privacy_extensions.py product_knowledge.py prompts.py relationship_engine.py reminder_engine.py reminder_extensions.py runtime_health.py voice_service.py webhook_security.py whatsapp.py main.py
       - name: Conversation intelligence tests
         run: python -m pytest -q tests/test_conversation_intelligence.py
       - name: Product knowledge tests
@@ -37,20 +37,18 @@ jobs:
         run: python -m pytest -q tests/test_relationship_engine.py tests/test_application_composition.py
       - name: Voice Input tests
         run: python -m pytest -q tests/test_voice_service.py tests/test_application_voice.py
-      - name: Document AI tests
+      - name: Document extraction tests
         run: python -m pytest -q tests/test_document_service.py tests/test_application_documents.py tests/test_document_extensions.py
+      - name: Document fact extraction tests
+        run: python -m pytest -q tests/test_document_intelligence.py
+      - name: Pending document repository tests
+        run: python -m pytest -q tests/test_document_action_repository.py
+      - name: Document action WhatsApp tests
+        run: python -m pytest -q tests/test_document_action_extensions.py
       - name: Reminder Engine tests
         run: python -m pytest -q tests/test_reminder_engine.py tests/test_reminder_extensions.py
-      - name: Privacy complete deletion test
-        run: python -m pytest -q tests/test_privacy_engine.py::test_complete_deletion_removes_all_user_linked_json_data
-      - name: Privacy safe export test
-        run: python -m pytest -q tests/test_privacy_engine.py::test_export_includes_safe_reminders_without_delivery_secrets
-      - name: Privacy retention test
-        run: python -m pytest -q tests/test_privacy_engine.py::test_retention_removes_old_closed_records_but_keeps_active_work
-      - name: WhatsApp privacy deletion test
-        run: python -m pytest -q tests/test_privacy_extensions.py::test_whatsapp_delete_command_removes_profile_missions_and_reminders
-      - name: WhatsApp privacy export test
-        run: python -m pytest -q tests/test_privacy_extensions.py::test_whatsapp_export_mentions_active_reminder_without_ciphertext
+      - name: Privacy and retention tests
+        run: python -m pytest -q tests/test_privacy_engine.py tests/test_privacy_extensions.py
       - name: Production and webhook security tests
         run: python -m pytest -q tests/test_runtime_health.py tests/test_webhook_security.py
       - name: Application mission tests
