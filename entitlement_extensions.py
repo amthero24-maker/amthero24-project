@@ -7,6 +7,7 @@ from typing import Any
 import admin_extensions as composed
 import privacy_extensions as privacy_composed
 from entitlement_engine import EntitlementRepository, limit_reached_message, plan_summary_message
+from entitlement_metrics import build_entitlement_overview
 from hero_memory import HeroMemory
 
 core = composed.core
@@ -14,6 +15,7 @@ _ORIGINAL_PROCESS_INCOMING = core.process_incoming
 _ORIGINAL_EXPORT_USER_DATA = HeroMemory.export_user_data
 _ORIGINAL_EXPORT_REPLY = core._export_reply
 _ORIGINAL_PRIVACY_DELETE = privacy_composed.delete_all_user_data
+_ORIGINAL_ADMIN_BUILD_OVERVIEW = composed.build_overview
 _ENTITLEMENT_REPOSITORY: EntitlementRepository | None = None
 
 
@@ -111,10 +113,17 @@ def _delete_all_user_data(store: Any, phone: str) -> bool:
     return bool(_ORIGINAL_PRIVACY_DELETE(store, phone) or entitlement_deleted)
 
 
+def _build_overview(store: Any, **kwargs: Any) -> dict[str, Any]:
+    payload = _ORIGINAL_ADMIN_BUILD_OVERVIEW(store, **kwargs)
+    payload["entitlements"] = build_entitlement_overview(store, now=kwargs.get("now"))
+    return payload
+
+
 _repository()
 HeroMemory.export_user_data = _export_user_data
 core._export_reply = _export_reply
 privacy_composed.delete_all_user_data = _delete_all_user_data
+composed.build_overview = _build_overview
 core.process_incoming = process_incoming
 
 app = composed.app
