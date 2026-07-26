@@ -8,7 +8,13 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import runtime_health
+from storage_factory import install_production_storage_policy
+
+# Railway starts `webhook_security:app`. Install durable-storage policy before the
+# application composition imports `app.py` and creates its global store.
+install_production_storage_policy()
+
+import runtime_health  # noqa: E402
 
 _MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
 
