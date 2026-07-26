@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from cryptography.fernet import Fernet
 
+from postgres_cli_env import postgres_cli_environment
 from schema_recovery import SchemaRecoveryError, expected_schema_identity
 from scripts.postgres_backup import _pg_dump_failure_code, create_backup
 from scripts.postgres_restore import restore_backup
@@ -20,12 +21,34 @@ DATABASE_URL = "postgresql://db.internal/amthero24_test"
 SCHEMA_IDENTITY = expected_schema_identity()
 
 
+def test_cli_environment_parses_url_and_clears_conflicting_pg_values() -> None:
+    environment = postgres_cli_environment(
+        "postgresql://hero:private-value@db.internal:5433/amthero24_test?sslmode=require",
+        base_environment={
+            "DATABASE_URL": "postgresql://wrong.invalid/other",
+            "PGHOST": "wrong.invalid",
+            "PGDATABASE": "other",
+            "SAFE_FLAG": "kept",
+        },
+    )
+
+    assert environment["PGHOST"] == "db.internal"
+    assert environment["PGPORT"] == "5433"
+    assert environment["PGUSER"] == "hero"
+    assert environment["PGPASSWORD"] == "private-value"
+    assert environment["PGDATABASE"] == "amthero24_test"
+    assert environment["PGSSLMODE"] == "require"
+    assert environment["SAFE_FLAG"] == "kept"
+    assert "DATABASE_URL" not in environment
+    assert "wrong.invalid" not in str(environment)
+
+
 def test_backup_is_encrypted_schema_bound_and_database_url_is_not_in_argv(tmp_path) -> None:
     key = Fernet.generate_key().decode("ascii")
-    commands: list[list[str]] = []
+    calls: list[tuple[list[str], dict]] = []
 
     def fake_run(command, **kwargs):
-        commands.append(list(command))
+        calls.append((list(command), kwargs))
         output = Path(command[command.index("--file") + 1])
         output.write_bytes(b"custom-postgres-dump")
 
@@ -39,6 +62,7 @@ def test_backup_is_encrypted_schema_bound_and_database_url_is_not_in_argv(tmp_pa
             now=datetime(2026, 7, 26, 12, tzinfo=UTC),
         )
 
+    command, kwargs = calls[0]
     assert artifact.name.endswith(".dump.fernet")
     assert artifact.read_bytes() != b"custom-postgres-dump"
     assert Fernet(key.encode("ascii")).decrypt(artifact.read_bytes()) == b"custom-postgres-dump"
@@ -48,7 +72,10 @@ def test_backup_is_encrypted_schema_bound_and_database_url_is_not_in_argv(tmp_pa
     assert manifest["schema_checksum"] == SCHEMA_IDENTITY.checksum
     assert manifest["schema_ledger_entries"] == SCHEMA_IDENTITY.ledger_entries
     assert manifest["schema_contract"] == "valid"
-    assert DATABASE_URL not in " ".join(commands[0])
+    assert DATABASE_URL not in " ".join(command)
+    assert kwargs["env"]["PGHOST"] == "db.internal"
+    assert kwargs["env"]["PGDATABASE"] == "amthero24_test"
+    assert "DATABASE_URL" not in kwargs["env"]
 
 
 def test_backup_refuses_plaintext_before_schema_inspection(tmp_path) -> None:
@@ -170,7 +197,7 @@ def test_incompatible_manifest_blocks_restore_before_subprocess(tmp_path) -> Non
     run.assert_not_called()
 
 
-def test_restore_verifies_schema_then_uses_pgdatabase_without_url_argv(tmp_path) -> None:
+def test_restore_verifies_schema_then_uses_private_libpq_environment(tmp_path) -> None:
     artifact, key = _encrypted_fixture(tmp_path)
     calls: list[tuple[list[str], dict]] = []
 
@@ -209,4 +236,6 @@ def test_restore_verifies_schema_then_uses_pgdatabase_without_url_argv(tmp_path)
         assert DATABASE_URL not in " ".join(command)
     psql_command, psql_kwargs = calls[1]
     assert psql_command[0] == "/usr/bin/psql"
-    assert psql_kwargs["env"]["PGDATABASE"] == DATABASE_URL
+    assert psql_kwargs["env"]["PGHOST"] == "db.internal"
+    assert psql_kwargs["env"]["PGDATABASE"] == "amthero24_test"
+    assert "DATABASE_URL" not in psql_kwargs["env"]
