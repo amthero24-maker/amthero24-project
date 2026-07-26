@@ -1,59 +1,97 @@
-"""Application, integration boundary, and prompt tests."""
+"""Application and webhook tests."""
+from __future__ import annotations
+
 import os
-import time
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from fastapi import BackgroundTasks, HTTPException
+from fastapi.testclient import TestClient
+
 os.environ.setdefault("VERIFY_TOKEN", "qa-token")
+
 import app
-from config import GROQ_MODEL, PHONE_NUMBER_ID, required_env
+from data_store import JsonDataStore
 
-def payload(message_id: str = "wamid.1") -> dict:
-    return {"entry": [{"changes": [{"value": {"messages": [{"id": message_id, "from": "49123", "type": "text", "text": {"body": "Hilfe"}}]}}]}]}
 
-def test_model_and_phone_configuration() -> None:
-    assert GROQ_MODEL == "llama-3.3-70b-versatile"
-    assert PHONE_NUMBER_ID == "1264010770128749"
+def payload(message: dict | None = None) -> dict:
+    message = message or {
+        "id": "wamid.1",
+        "from": "49123",
+        "type": "text",
+        "text": {"body": "Hilfe"},
+    }
+    return {"entry": [{"changes": [{"value": {"messages": [message]}}]}]}
 
-def test_required_env() -> None:
-    with patch.dict(os.environ, {"GROQ_API_KEY": " key "}, clear=True):
-        assert required_env("GROQ_API_KEY") == "key"
-    with patch.dict(os.environ, {}, clear=True), pytest.raises(RuntimeError, match="GROQ_API_KEY"):
-        required_env("GROQ_API_KEY")
 
-def test_extract_messages_and_ignore_statuses() -> None:
+def test_extract_text_button_interactive_and_ignore_statuses() -> None:
     assert app.extract_text_messages(payload()) == [("wamid.1", "49123", "Hilfe")]
-    assert app.extract_text_messages({"entry": [{"changes": [{"value": {"statuses": [{}]}}]}]}) == []
+    button = payload({"id": "2", "from": "49123", "type": "button", "button": {"text": "Ja"}})
+    assert app.extract_text_messages(button) == [("2", "49123", "Ja")]
+    interactive = payload({"id": "3", "from": "49123", "type": "interactive", "interactive": {"button_reply": {"id": "yes", "title": "Ja"}}})
+    assert app.extract_text_messages(interactive) == [("3", "49123", "Ja")]
+    assert app.extract_incoming_messages({"entry": [{"changes": [{"value": {"statuses": [{}]}}]}]}) == []
 
-def test_verification() -> None:
+
+def test_extract_name_keeps_single_name_flow() -> None:
+    assert app.extract_name("وسام") == "وسام"
+    assert app.extract_name("مرحبا") == ""
+    assert app.extract_name("Mein Name ist Anna") == "Anna"
+
+
+def test_verification_success_failure_and_missing_env() -> None:
+    client = TestClient(app.app)
     with patch.dict(os.environ, {"VERIFY_TOKEN": "qa-token"}, clear=True):
-        assert app.verify_webhook("subscribe", "qa-token", "123").body == b"123"
-        with pytest.raises(HTTPException) as error:
-            app.verify_webhook("subscribe", "wrong", "123")
-        assert error.value.status_code == 403
+        response = client.get("/webhook", params={"hub.mode": "subscribe", "hub.verify_token": "qa-token", "hub.challenge": "123"})
+        assert response.status_code == 200
+        assert response.text == "123"
+        assert client.get("/webhook", params={"hub.mode": "subscribe", "hub.verify_token": "wrong", "hub.challenge": "123"}).status_code == 403
+    with patch.dict(os.environ, {}, clear=True):
+        assert client.get("/webhook").status_code == 503
 
-def test_webhook_only_queues_work_and_is_fast() -> None:
-    tasks = BackgroundTasks()
-    started = time.perf_counter()
-    assert app.receive_webhook(payload(), tasks) == {"status": "accepted"}
-    assert time.perf_counter() - started < 0.1
-    assert len(tasks.tasks) == 1
 
-def test_groq_receives_configured_model() -> None:
-    completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Antwort"))])
-    client = MagicMock()
-    client.chat.completions.create.return_value = completion
-    with patch.object(app, "Groq", return_value=client), patch.dict(os.environ, {"GROQ_API_KEY": "secret"}, clear=True):
-        assert app.generate_reply("Hallo") == "Antwort"
-    assert client.chat.completions.create.call_args.kwargs["model"] == GROQ_MODEL
-    assert "Keine Rechtsberatung" in app.SYSTEM_PROMPT
+def test_webhook_malformed_status_and_duplicate(tmp_path) -> None:
+    client = TestClient(app.app)
+    app.store = JsonDataStore(tmp_path / "store.json")
+    assert client.post("/webhook", content=b"not-json", headers={"content-type": "application/json"}).status_code == 200
+    assert client.post("/webhook", json={"entry": [{"changes": [{"value": {"statuses": [{}]}}]}]}).json() == {"status": "accepted"}
+    assert client.post("/webhook", json=payload()).status_code == 200
+    assert client.post("/webhook", json=payload()).status_code == 200
+    assert len(app.store.snapshot()["messages"]) == 1
 
-def test_process_message_deduplicates(tmp_path) -> None:
-    app.store = app.JsonDataStore(tmp_path / "store.json")
-    with patch.object(app, "generate_reply", return_value="Antwort") as generate, patch.object(app, "send_whatsapp_message") as send:
-        app.process_message("same", "49123", "Hallo")
-        app.process_message("same", "49123", "Hallo")
-    generate.assert_called_once()
-    send.assert_called_once_with("49123", "Antwort")
-    assert app.store.snapshot()["messages"]["same"]["status"] == "sent"
+
+@pytest.mark.anyio
+async def test_process_incoming_success_and_groq_failure(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    message = app.IncomingMessage("one", "49123", "Hallo", "text")
+    app.store.claim_message("one", "49123", "Hallo")
+    with patch.object(app, "generate_reply", return_value="Antwort"), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(message)
+        send.assert_awaited_once_with("49123", "Antwort")
+        assert app.store.snapshot()["messages"]["one"]["status"] == "sent"
+
+    failed = app.IncomingMessage("two", "49123", "Hallo", "text")
+    app.store.claim_message("two", "49123", "Hallo")
+    with patch.object(app, "generate_reply", side_effect=RuntimeError("boom")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(failed)
+        assert send.await_count == 1
+        assert app.store.snapshot()["messages"]["two"]["status"] == "failed"
+
+
+@pytest.mark.anyio
+async def test_media_download_failure_gets_safe_reply(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    message = app.IncomingMessage("image", "49123", "", "image", "media-1", "image/jpeg")
+    app.store.claim_message("image", "49123", "", message_type="image", media_id="media-1")
+    with patch.object(app, "get_media_url", new=AsyncMock(side_effect=RuntimeError("fail"))), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(message)
+        assert send.await_count == 1
+        assert app.store.snapshot()["messages"]["image"]["status"] == "failed"
+
+
+def test_health_does_not_leak_secrets() -> None:
+    response = TestClient(app.app).get("/health")
+    body = response.text
+    assert response.status_code == 200
+    assert "WHATSAPP_TOKEN" not in body
+    assert "GROQ_API_KEY" not in body
+    assert "PHONE_NUMBER_ID" not in body

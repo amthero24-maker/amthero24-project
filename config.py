@@ -1,9 +1,24 @@
+"""Environment-backed configuration for AmtHero24."""
+from __future__ import annotations
+
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
+
 load_dotenv()
-GROQ_API_KEY=os.getenv("GROQ_API_KEY","")
-WHATSAPP_TOKEN=os.getenv("WHATSAPP_TOKEN","")
-PHONE_NUMBER_ID=os.getenv("PHONE_NUMBER_ID","1264010770128749")
-WABA_ID=os.getenv("WABA_ID","2178786346022357")
-VERIFY_TOKEN=os.getenv("VERIFY_TOKEN","amthero24_verify_2026")
-GROQ_MODEL=os.getenv("GROQ_MODEL","llama-3.3-70b-versatile")
+
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview").strip()
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v22.0").strip()
+DATA_STORE_PATH = Path(os.getenv("DATA_STORE_PATH", "data/store.json"))
+APP_VERSION = "1.5.0"
+MAX_WHATSAPP_TEXT_LENGTH = 4096
+MAX_MEDIA_BYTES = 20 * 1024 * 1024
+
+
+def required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
