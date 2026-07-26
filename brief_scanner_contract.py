@@ -120,7 +120,8 @@ def aggregate_events_for_analysis(facts: BriefScannerFacts) -> tuple[BriefScanne
     """Return content-free events suitable for aggregate product telemetry."""
     state = initial_state(facts)
     events: list[BriefScannerEvent] = [BriefScannerEvent.SCANNER_STARTED]
-    events.append(BriefScannerEvent.DOCUMENT_UNREADABLE if state == BriefScannerState.NEEDS_BETTER_DOCUMENT else BriefScannerEvent.DOCUMENT_READABLE)
+    document_is_readable = facts.readable and not facts.missing_pages
+    events.append(BriefScannerEvent.DOCUMENT_READABLE if document_is_readable else BriefScannerEvent.DOCUMENT_UNREADABLE)
     if state == BriefScannerState.BLOCKED_OR_ESCALATED:
         events.append(BriefScannerEvent.MISSION_BLOCKED_OR_ESCALATED)
     elif state == BriefScannerState.ANALYZED:
