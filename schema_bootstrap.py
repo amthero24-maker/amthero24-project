@@ -15,6 +15,7 @@ from entitlement_engine import EntitlementRepository
 from feedback_engine import FeedbackRepository
 from hero_memory import HeroMemory
 from message_idempotency import MessageClaimRepository
+from outbound_delivery import OutboundDeliveryRepository
 from provider_reliability import ProviderReliabilityRepository
 from reminder_engine import ReminderRepository
 from support_handoff import SupportRepository
@@ -29,6 +30,7 @@ def bootstrap_postgres_schemas(store: Any) -> tuple[str, ...]:
         ("hero_memory", HeroMemory),
         ("message_idempotency", MessageClaimRepository),
         ("durable_inbound_queue", DurableQueueRepository),
+        ("outbound_delivery", OutboundDeliveryRepository),
         ("reminders", ReminderRepository),
         ("pending_documents", PendingDocumentRepository),
         ("entitlements", EntitlementRepository),
