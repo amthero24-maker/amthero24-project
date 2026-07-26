@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from abuse_guard import AbuseGuardRepository
 from data_store import PostgresDataStore
 from document_action_repository import PendingDocumentRepository
+from durable_queue import DurableQueueRepository
 from entitlement_engine import EntitlementRepository
 from feedback_engine import FeedbackRepository
 from hero_memory import HeroMemory
@@ -33,6 +34,7 @@ PHONE_HASH = hashlib.sha256(PHONE.encode("utf-8")).hexdigest()
 EXPECTED_TABLES = {
     "hero_users",
     "inbound_messages",
+    "inbound_work_queue",
     "schema_migrations",
     "hero_missions",
     "memory_consent_events",
@@ -87,6 +89,7 @@ def _seed_source(database_url: str) -> dict[str, str]:
     provider = ProviderReliabilityRepository(store)
     support = SupportRepository(store)
     feedback = FeedbackRepository(store)
+    durable_queue = DurableQueueRepository(store)
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
 
     try:
@@ -99,6 +102,7 @@ def _seed_source(database_url: str) -> dict[str, str]:
         })
         store.claim_message("wamid.recovery-drill", PHONE, "recovery test message")
         store.update_message_status("wamid.recovery-drill", "sent")
+        durable_queue.enqueue("wamid.recovery-drill", PHONE, now=now)
         memory.record_consent(PHONE, "granted", "recovery-v1")
         mission = memory.create_mission(
             PHONE,
@@ -156,6 +160,7 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
     assert all(source_counts.get(table, 0) >= 1 for table in (
         "hero_users",
         "inbound_messages",
+        "inbound_work_queue",
         "hero_missions",
         "hero_reminders",
         "pending_document_actions",
@@ -204,6 +209,14 @@ def test_encrypted_backup_restores_complete_application_state(tmp_path: Path) ->
         assert profile["first_name"] == "RecoveryTest"
         assert profile["preferred_language"] == "ar"
         assert target_store.recent_user_messages(PHONE) == ["recovery test message"]
+
+        queue_item = DurableQueueRepository(target_store).claim(
+            "wamid.recovery-drill",
+            now=datetime(2026, 7, 26, 12, tzinfo=UTC),
+        )
+        assert queue_item is not None
+        assert queue_item.sender == PHONE
+        assert queue_item.inbound_status == "sent"
 
         reminder = ReminderRepository(target_store).list(PHONE, active_only=False, limit=10)[0]
         assert reminder["reminder_id"] == identifiers["reminder_id"]
