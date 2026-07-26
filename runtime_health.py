@@ -16,6 +16,7 @@ from encryption_policy import (
     support_encryption_status,
     support_security_ready,
 )
+from runtime_lifecycle import lifecycle
 from storage_factory import database_fallback_allowed
 
 _REQUIRED_RUNTIME_ENV = (
@@ -83,7 +84,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     fallback_allowed = database_fallback_allowed()
     queue_component = durable_queue_status(store)
     queue_ready = queue_component in {"disabled", "configured"}
-    ready = config_ok and storage_ok and schemas_ready and queue_ready
+    lifecycle_phase = lifecycle.snapshot().phase
+    ready = config_ok and storage_ok and schemas_ready and queue_ready and lifecycle_phase != "draining"
 
     if not reminder_worker_enabled:
         reminders_status = "disabled"
@@ -108,6 +110,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "storage_backend": backend,
             "database_fallback": "allowed" if fallback_allowed else "fail-closed",
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
+            "runtime_lifecycle": lifecycle_phase,
             "webhook_signature": signature_status,
             "webhook_idempotency": "retry-safe",
             "durable_inbound_queue": queue_component,
@@ -138,7 +141,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
-from outbound_delivery_extensions import app, store  # noqa: E402
+from graceful_shutdown_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
