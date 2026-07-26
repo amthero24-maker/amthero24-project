@@ -155,6 +155,14 @@ def _is_os_environ(node: ast.AST) -> bool:
     )
 
 
+def _uses_literal_local_environment(node: ast.Call) -> bool:
+    """Return True for helper validation against an explicit in-memory fixture map."""
+    return any(
+        keyword.arg == "environment" and isinstance(keyword.value, ast.Dict)
+        for keyword in node.keywords
+    )
+
+
 class _EnvironmentVisitor(ast.NodeVisitor):
     def __init__(self, path: Path, root: Path) -> None:
         self.path = path
@@ -170,6 +178,7 @@ class _EnvironmentVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         variable: str | None = None
+        call_name = _call_name(node.func)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "getenv"
@@ -183,8 +192,11 @@ class _EnvironmentVisitor(ast.NodeVisitor):
             and _is_os_environ(node.func.value)
         ):
             variable = _literal_env_name(node.args[0] if node.args else None)
-        elif _WRAPPER_PATTERN.fullmatch(_call_name(node.func)):
-            variable = _literal_env_name(node.args[0] if node.args else None)
+        elif _WRAPPER_PATTERN.fullmatch(call_name):
+            # assess_secret is also used to validate an already-supplied value during
+            # migration. A literal local map is not a process environment dependency.
+            if call_name != "assess_secret" or not _uses_literal_local_environment(node):
+                variable = _literal_env_name(node.args[0] if node.args else None)
         self._record(variable, node)
         self.generic_visit(node)
 
