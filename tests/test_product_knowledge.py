@@ -21,6 +21,13 @@ def test_capability_answer_mentions_documents_and_official_german() -> None:
     assert "شرح صغير بالعربي" in reply
 
 
+def test_simple_feature_menu_command_is_supported() -> None:
+    result = product_answer("الميزات", "ar")
+    assert result is not None
+    assert result[1] == "capabilities"
+    assert "الفواتير" in result[0]
+
+
 def test_short_more_followup_continues_previous_product_topic() -> None:
     language_reply = product_answer("تاني؟", "ar", "languages")
     capability_reply = product_answer("شو كمان؟", "ar", "capabilities")
