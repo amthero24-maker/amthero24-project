@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
+from encryption_policy import (
+    admin_api_token_status,
+    legacy_reminder_decryption_enabled,
+    reminder_encryption_status,
+    support_api_token_status,
+    support_encryption_status,
+)
+
 
 @dataclass(frozen=True)
 class LaunchCheck:
@@ -117,10 +125,16 @@ def build_launch_report(
     else:
         checks.append(LaunchCheck("meta_signature", "blocked", "Meta webhook authenticity is not configured.", "Add META_APP_SECRET and set WEBHOOK_SIGNATURE_REQUIRED=true."))
 
+    admin_status = admin_api_token_status(environment=environment)
     checks.append(
-        LaunchCheck("admin_access", "ready", "Protected admin access is configured.")
-        if str(environment.get("ADMIN_API_TOKEN", "")).strip()
-        else LaunchCheck("admin_access", "blocked", "Protected admin access is disabled.", "Add a strong ADMIN_API_TOKEN in Railway.")
+        LaunchCheck("admin_access", "ready", "Protected admin access uses a strong dedicated token.")
+        if admin_status == "configured"
+        else LaunchCheck(
+            "admin_access",
+            "blocked",
+            f"Protected admin access token is {admin_status}.",
+            "Set ADMIN_API_TOKEN to a unique random value of at least 32 characters.",
+        )
     )
 
     privacy_enabled = _flag(environment, "PRIVACY_RETENTION_ENABLED", True)
@@ -131,13 +145,52 @@ def build_launch_report(
     )
 
     reminder_enabled = _flag(environment, "REMINDER_WORKER_ENABLED", True)
+    reminder_key_status = reminder_encryption_status(environment=environment)
     reminder_template = bool(str(environment.get("WHATSAPP_REMINDER_TEMPLATE", "")).strip())
-    if reminder_enabled and reminder_template:
-        checks.append(LaunchCheck("reminder_delivery", "ready", "Reminder worker and approved template are configured."))
+    if reminder_enabled and reminder_key_status != "configured":
+        checks.append(LaunchCheck(
+            "reminder_encryption",
+            "blocked",
+            f"Reminder encryption key is {reminder_key_status}; new reminders and delivery are disabled.",
+            "Set REMINDER_ENCRYPTION_KEY to a unique random value of at least 32 characters.",
+        ))
     elif reminder_enabled:
-        checks.append(LaunchCheck("reminder_delivery", "warning", "Reminders work only inside the 24-hour service window.", "Approve and configure WHATSAPP_REMINDER_TEMPLATE before testing long-term reminders."))
+        checks.append(LaunchCheck("reminder_encryption", "ready", "Reminder recipients use a dedicated strong encryption key."))
     else:
+        checks.append(LaunchCheck("reminder_encryption", "warning", "Reminder worker is disabled.", "Enable it after reminder encryption and delivery are configured."))
+
+    if reminder_enabled and reminder_key_status == "configured" and reminder_template:
+        checks.append(LaunchCheck("reminder_delivery", "ready", "Reminder worker and approved template are configured."))
+    elif reminder_enabled and reminder_key_status == "configured":
+        checks.append(LaunchCheck("reminder_delivery", "warning", "Reminders work only inside the 24-hour service window.", "Approve and configure WHATSAPP_REMINDER_TEMPLATE before testing long-term reminders."))
+    elif not reminder_enabled:
         checks.append(LaunchCheck("reminder_delivery", "warning", "Reminder worker is disabled.", "Enable it when reminder delivery is ready for Beta testing."))
+
+    if legacy_reminder_decryption_enabled(environment=environment):
+        checks.append(LaunchCheck(
+            "reminder_legacy_decryption",
+            "warning",
+            "Temporary WhatsApp-token decryption compatibility is enabled for historical reminders.",
+            "Migrate active reminder ciphertext to the dedicated key, then set REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED=false.",
+        ))
+    else:
+        checks.append(LaunchCheck("reminder_legacy_decryption", "ready", "Legacy WhatsApp-token decryption is disabled."))
+
+    support_enabled = _flag(environment, "HUMAN_SUPPORT_ENABLED", False)
+    if support_enabled:
+        support_key = support_encryption_status(environment=environment)
+        support_token = support_api_token_status(environment=environment)
+        if support_key == "configured" and support_token == "configured":
+            checks.append(LaunchCheck("human_support_security", "ready", "Human support uses dedicated strong encryption and API tokens."))
+        else:
+            checks.append(LaunchCheck(
+                "human_support_security",
+                "blocked",
+                f"Human support encryption is {support_key} and operator token is {support_token}.",
+                "Use unique random values of at least 32 characters for SUPPORT_ENCRYPTION_KEY and SUPPORT_API_TOKEN.",
+            ))
+    else:
+        checks.append(LaunchCheck("human_support_security", "ready", "Human support is disabled until an operator team is configured."))
 
     messages = overview.get("messages_24h", {}) if isinstance(overview.get("messages_24h"), dict) else {}
     message_total = int(messages.get("total", 0) or 0)
