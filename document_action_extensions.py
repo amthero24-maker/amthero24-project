@@ -6,6 +6,7 @@ from typing import Any
 
 import application as application_layer
 import document_extensions as office_layer
+import privacy_engine as privacy_module
 import privacy_extensions as composed
 from document_action_repository import PendingDocumentRepository
 from document_intelligence import analyze_document_text, prompt_facts
@@ -19,13 +20,16 @@ from document_service import (
 
 core = application_layer.core
 _ORIGINAL_PROCESS_INCOMING = core.process_incoming
+_ORIGINAL_PRIVACY_DELETE = composed.delete_all_user_data
+_ORIGINAL_PRIVACY_CLEANUP = privacy_module.cleanup_retention
 _PENDING_REPOSITORY: PendingDocumentRepository | None = None
 
 
-def _repository() -> PendingDocumentRepository:
+def _repository(store: Any | None = None) -> PendingDocumentRepository:
     global _PENDING_REPOSITORY
-    if _PENDING_REPOSITORY is None or _PENDING_REPOSITORY.store is not core.store:
-        _PENDING_REPOSITORY = PendingDocumentRepository(core.store)
+    target = store or core.store
+    if _PENDING_REPOSITORY is None or _PENDING_REPOSITORY.store is not target:
+        _PENDING_REPOSITORY = PendingDocumentRepository(target)
     return _PENDING_REPOSITORY
 
 
@@ -170,9 +174,22 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     await _ORIGINAL_PROCESS_INCOMING(message)
 
 
+def _privacy_delete_with_pending(store: Any, phone: str) -> bool:
+    pending_deleted = _repository(store).delete(phone)
+    return bool(_ORIGINAL_PRIVACY_DELETE(store, phone) or pending_deleted)
+
+
+def _privacy_cleanup_with_pending(store: Any, **kwargs: Any) -> dict[str, int]:
+    result = _ORIGINAL_PRIVACY_CLEANUP(store, **kwargs)
+    result["pending_documents"] = _repository(store).cleanup_expired(now=kwargs.get("now"))
+    return result
+
+
 # Patch extraction points after all lower document layers are loaded.
 application_layer._extract_pdf_message = _extract_pdf_message
 office_layer._normalize_document = _normalize_office_document
+composed.delete_all_user_data = _privacy_delete_with_pending
+privacy_module.cleanup_retention = _privacy_cleanup_with_pending
 core.process_incoming = process_incoming
 
 app = composed.app
