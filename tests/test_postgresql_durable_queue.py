@@ -1,4 +1,4 @@
-"""Real PostgreSQL crash-recovery tests for the encrypted inbound work queue."""
+"""Real PostgreSQL crash-recovery tests for durable workers and graceful drain."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import durable_queue_extensions as layer
+import reminder_extensions as reminder_layer
 import runtime_health
 from durable_queue import DurableQueueRepository
 from message_idempotency import MessageClaimRepository
@@ -21,12 +22,14 @@ def clean_queue(monkeypatch) -> None:
     store = runtime_health.store
     assert store.backend_name == "postgresql"
     with store.pool.connection() as connection:
-        connection.execute("TRUNCATE inbound_work_queue, inbound_messages")
+        connection.execute("TRUNCATE inbound_work_queue, inbound_messages, hero_reminders")
     layer._QUEUE_REPOSITORY = None
+    reminder_layer._REMINDER_REPOSITORY = None
     yield
     with store.pool.connection() as connection:
-        connection.execute("TRUNCATE inbound_work_queue, inbound_messages")
+        connection.execute("TRUNCATE inbound_work_queue, inbound_messages, hero_reminders")
     layer._QUEUE_REPOSITORY = None
+    reminder_layer._REMINDER_REPOSITORY = None
 
 
 def _seed(message_id: str, phone: str, *, media_id: str | None = None, now: datetime) -> DurableQueueRepository:
@@ -105,7 +108,6 @@ def test_queue_envelope_is_encrypted_and_exactly_one_replica_claims_it() -> None
 def test_expired_worker_lease_is_recovered_after_restart() -> None:
     now = datetime(2026, 8, 8, 10, 0, tzinfo=UTC)
     queue = _seed("wamid.queue-stale", "+491706662222", now=now)
-
     assert queue.claim("wamid.queue-stale", now=now) is not None
     assert queue.claim("wamid.queue-stale", now=now + timedelta(minutes=10)) is None
     recovered = queue.claim("wamid.queue-stale", now=now + timedelta(minutes=16))
@@ -138,6 +140,43 @@ def test_graceful_drain_releases_only_current_process_owned_lease() -> None:
     assert states["wamid.owned"]["lease_owner"] is None
     assert states["wamid.other"]["status"] == "processing"
     assert states["wamid.other"]["lease_owner"] == "different-process"
+
+
+def test_graceful_drain_releases_only_current_process_reminder_lease() -> None:
+    store = runtime_health.store
+    now = datetime(2026, 8, 8, 11, 30, tzinfo=UTC)
+    repository = reminder_layer.ResilientReminderRepository(store)
+    first = repository.create(
+        "+491706663341",
+        title="Owned reminder",
+        scheduled_at=now - timedelta(minutes=1),
+        language="de",
+    )
+    second = repository.create(
+        "+491706663342",
+        title="Other reminder",
+        scheduled_at=now - timedelta(minutes=1),
+        language="de",
+    )
+    claimed = repository.claim_due(now=now, limit=10)
+    assert {item["reminder_id"] for item in claimed} == {first["reminder_id"], second["reminder_id"]}
+    with store.pool.connection() as connection:
+        connection.execute(
+            "UPDATE hero_reminders SET lease_owner = 'different-process' WHERE reminder_id = %s",
+            (second["reminder_id"],),
+        )
+
+    assert repository.release_owned(now=now + timedelta(seconds=1)) == 1
+    with store.pool.connection() as connection:
+        rows = connection.execute(
+            "SELECT reminder_id, status, lease_owner, last_error FROM hero_reminders ORDER BY reminder_id"
+        ).fetchall()
+    states = {row["reminder_id"]: dict(row) for row in rows}
+    assert states[first["reminder_id"]]["status"] == "failed"
+    assert states[first["reminder_id"]]["lease_owner"] is None
+    assert states[first["reminder_id"]]["last_error"] == "process_draining"
+    assert states[second["reminder_id"]]["status"] == "processing"
+    assert states[second["reminder_id"]]["lease_owner"] == "different-process"
 
 
 @pytest.mark.anyio
