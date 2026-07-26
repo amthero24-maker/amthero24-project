@@ -10,15 +10,11 @@ from typing import Any
 
 from log_safety import install_logging_safety
 
-# Railway starts `webhook_security:app`. Install logging safety before any storage,
-# provider, webhook, or application module can create a record containing request data.
 install_logging_safety()
 
 from encryption_policy import install_encryption_policy  # noqa: E402
 from storage_factory import install_production_storage_policy  # noqa: E402
 
-# Install durable-storage and reversible-encryption policies before application
-# composition imports modules and binds them.
 install_production_storage_policy()
 install_encryption_policy()
 
@@ -33,7 +29,6 @@ def signature_required() -> bool:
 
 
 def verify_meta_signature(body: bytes, signature: str, app_secret: str) -> bool:
-    """Validate Meta's sha256 HMAC signature using constant-time comparison."""
     if not body or not app_secret or not signature.startswith("sha256="):
         return False
     supplied = signature.split("=", 1)[1].strip().casefold()
@@ -63,7 +58,7 @@ async def _json_response(
 
 
 class DeploymentDrainMiddleware:
-    """Stop new webhook work before Railway terminates an old deployment."""
+    """Reject new webhooks during drain and track admitted request/background work."""
 
     def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
         self.app = app
@@ -74,11 +69,21 @@ class DeploymentDrainMiddleware:
         receive: Callable[..., Awaitable[dict[str, Any]]],
         send: Callable[..., Awaitable[None]],
     ) -> None:
-        if scope.get("type") == "http" and scope.get("method") == "POST" and scope.get("path") == "/webhook":
-            if not lifecycle.snapshot().accepting_work:
-                await _json_response(send, 503, {"status": "draining"}, retry_after="10")
-                return
-        await self.app(scope, receive, send)
+        is_webhook = (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") == "/webhook"
+        )
+        if not is_webhook:
+            await self.app(scope, receive, send)
+            return
+        if not lifecycle.work_started():
+            await _json_response(send, 503, {"status": "draining"}, retry_after="10")
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            lifecycle.work_finished()
 
 
 class MetaWebhookSignatureMiddleware:
