@@ -9,6 +9,8 @@ import pytest
 import reminder_extensions
 from data_store import JsonDataStore
 
+STRONG_REMINDER_KEY = "reminder-key-2026-unique-7fA9xQ2mLp8V"
+
 
 def _seed_user_and_mission(store: JsonDataStore) -> None:
     store.update_user("49123", {
@@ -33,7 +35,7 @@ def _seed_user_and_mission(store: JsonDataStore) -> None:
 @pytest.mark.anyio
 async def test_reminder_command_creates_consent_backed_followup(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "test-secret")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
     store = JsonDataStore(tmp_path / "store.json")
     reminder_extensions.core.store = store
     reminder_extensions.core._hero_memory_store = reminder_extensions.core.HeroMemory(store)
@@ -56,9 +58,33 @@ async def test_reminder_command_creates_consent_backed_followup(tmp_path, monkey
 
 
 @pytest.mark.anyio
+async def test_missing_or_weak_key_refuses_new_reminder_without_calling_groq(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "weak-key")
+    monkeypatch.setenv("WHATSAPP_TOKEN", "long-whatsapp-token-must-not-be-used-for-new-reminders")
+    store = JsonDataStore(tmp_path / "store.json")
+    reminder_extensions.core.store = store
+    reminder_extensions.core._hero_memory_store = reminder_extensions.core.HeroMemory(store)
+    reminder_extensions._REMINDER_REPOSITORY = None
+    _seed_user_and_mission(store)
+    message = reminder_extensions.core.IncomingMessage(
+        "reminder-unavailable", "49123", "ذكرني قبلها بيوم", "text"
+    )
+    store.claim_message(message.message_id, message.sender, message.text)
+
+    with patch.object(reminder_extensions.core, "generate_reply", side_effect=AssertionError("Groq must not run")), patch.object(
+        reminder_extensions.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminder_extensions.process_incoming(message)
+
+    assert "متوقفة مؤقتًا" in send.await_args.args[1]
+    assert reminder_extensions._repository().list("49123") == []
+
+
+@pytest.mark.anyio
 async def test_reminder_list_and_cancel_do_not_call_groq(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "test-secret")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
     store = JsonDataStore(tmp_path / "store.json")
     reminder_extensions.core.store = store
     reminder_extensions.core._hero_memory_store = reminder_extensions.core.HeroMemory(store)
@@ -89,7 +115,7 @@ async def test_reminder_list_and_cancel_do_not_call_groq(tmp_path, monkeypatch) 
 
 
 def test_expired_delivery_lease_is_reclaimed_after_restart(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "test-secret")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
     store = JsonDataStore(tmp_path / "store.json")
     repository = reminder_extensions.ResilientReminderRepository(store)
