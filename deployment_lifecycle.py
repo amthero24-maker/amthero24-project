@@ -29,7 +29,9 @@ class ProcessLifecycle:
         self._idle.set()
 
     def start_accepting(self) -> None:
-        if self._state in {"draining", "stopped"}:
+        # A fresh ASGI lifespan may start again in the same interpreter during tests or
+        # controlled embedding. Reopening is safe only after every prior task drained.
+        if self._active_work != 0:
             return
         self._state = "accepting"
         self._accepting_work = True
