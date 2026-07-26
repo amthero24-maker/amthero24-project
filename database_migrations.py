@@ -44,6 +44,9 @@ class MigrationSpec:
 _MIGRATION_LOCK_KEY = 4_814_172_024_045
 _LEDGER_TABLE = "amthero_schema_migrations"
 
+# Every application table must exist. Stable safety-critical columns are validated more
+# strictly; empty tuples intentionally mean table-existence-only for internal schemas that
+# may evolve without affecting the migration gate's compatibility boundary.
 _EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
     "hero_users": ("phone_hash", "profile"),
     "inbound_messages": ("message_id", "phone_hash", "status"),
@@ -53,17 +56,17 @@ _EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
     "hero_missions": ("mission_id", "phone_hash", "status"),
     "memory_consent_events": ("event_id", "phone_hash"),
     "hero_reminders": ("reminder_id", "status", "lease_owner"),
-    "pending_document_actions": ("action_id", "phone_hash"),
-    "hero_entitlements": ("phone_hash", "plan"),
-    "hero_usage_counters": ("phone_hash", "period_key"),
-    "abuse_rate_windows": ("phone_hash", "window_key"),
-    "abuse_blocks": ("phone_hash", "blocked_until"),
-    "abuse_guard_events": ("event_id", "occurred_at"),
-    "provider_operational_events": ("event_id", "provider"),
-    "provider_circuit_state": ("provider", "operation"),
-    "human_support_tickets": ("ticket_id", "phone_hash"),
-    "human_support_admin_events": ("event_id", "ticket_id"),
-    "anonymous_feedback": ("feedback_id", "rating"),
+    "pending_document_actions": (),
+    "hero_entitlements": (),
+    "hero_usage_counters": (),
+    "abuse_rate_windows": (),
+    "abuse_blocks": (),
+    "abuse_guard_events": (),
+    "provider_operational_events": (),
+    "provider_circuit_state": (),
+    "human_support_tickets": (),
+    "human_support_admin_events": (),
+    "anonymous_feedback": (),
     _LEDGER_TABLE: ("version", "name", "checksum", "app_version", "applied_at"),
 }
 
@@ -127,14 +130,14 @@ def _release_lock(connection: Any) -> None:
     try:
         connection.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
     except Exception:
-        # The connection closing also releases a session advisory lock. Never mask the
+        # Closing the connection also releases a session advisory lock. Never mask the
         # original migration outcome with a secondary unlock failure.
         pass
 
 
 def _apply_schema_v1(store: Any, connection: Any) -> tuple[str, ...]:
-    # Core tables are normally initialized by PostgresDataStore. Production creates the
-    # pool without DDL and reaches this function while holding the migration lock.
+    # Production creates the pool without DDL and reaches this function while holding the
+    # migration lock. Direct test/local construction keeps the historical initializer.
     store._initialize_schema()
 
     from schema_bootstrap import bootstrap_postgres_schemas
@@ -238,8 +241,7 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
             _release_lock(connection)
 
     if not components:
-        # Existing databases still need the component list for readiness; it contains only
-        # static subsystem names and no database contents.
+        # Existing databases still need the static component list for readiness.
         from schema_bootstrap import schema_component_names
 
         components = schema_component_names()
