@@ -40,13 +40,9 @@ class MigrationSpec:
     apply: Callable[[Any, Any], tuple[str, ...]]
 
 
-# Stable signed bigint used only for pg advisory locking. It is not a secret.
 _MIGRATION_LOCK_KEY = 4_814_172_024_045
 _LEDGER_TABLE = "amthero_schema_migrations"
 
-# Every application table must exist. Stable safety-critical columns are validated more
-# strictly; empty tuples intentionally mean table-existence-only for internal schemas that
-# may evolve without affecting the migration gate's compatibility boundary.
 _EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
     "hero_users": ("phone_hash", "profile"),
     "inbound_messages": ("message_id", "phone_hash", "status"),
@@ -71,7 +67,7 @@ _EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
 }
 
 
-def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
         value = float(os.getenv(name, str(default)).strip())
     except ValueError:
@@ -80,7 +76,7 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
 
 
 def migration_lock_timeout_seconds() -> float:
-    return _bounded_float("SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS", 30.0, 1.0, 120.0)
+    return _env_float("SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS", 30.0, 1.0, 120.0)
 
 
 def migration_lock_key() -> int:
@@ -130,14 +126,10 @@ def _release_lock(connection: Any) -> None:
     try:
         connection.execute("SELECT pg_advisory_unlock(%s)", (_MIGRATION_LOCK_KEY,))
     except Exception:
-        # Closing the connection also releases a session advisory lock. Never mask the
-        # original migration outcome with a secondary unlock failure.
         pass
 
 
 def _apply_schema_v1(store: Any, connection: Any) -> tuple[str, ...]:
-    # Production creates the pool without DDL and reaches this function while holding the
-    # migration lock. Direct test/local construction keeps the historical initializer.
     store._initialize_schema()
 
     from schema_bootstrap import bootstrap_postgres_schemas
@@ -176,7 +168,6 @@ def _applied_rows(connection: Any) -> dict[int, dict[str, Any]]:
 
 
 def validate_schema_contract(connection: Any) -> tuple[bool, tuple[str, ...]]:
-    """Validate required public-schema tables and columns without reading application rows."""
     rows = connection.execute(
         """
         SELECT table_name, column_name
@@ -201,7 +192,6 @@ def validate_schema_contract(connection: Any) -> tuple[bool, tuple[str, ...]]:
 
 
 def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
-    """Apply ordered migrations under one bounded PostgreSQL advisory lock."""
     if str(getattr(store, "backend_name", "json")) != "postgresql":
         return MigrationReport("not-applicable", 0, LATEST_SCHEMA_VERSION, (), (), "")
 
@@ -241,7 +231,6 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
             _release_lock(connection)
 
     if not components:
-        # Existing databases still need the static component list for readiness.
         from schema_bootstrap import schema_component_names
 
         components = schema_component_names()
