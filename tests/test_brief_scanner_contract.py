@@ -70,6 +70,22 @@ def test_high_risk_categories_fail_closed_to_escalation(risk_category: str) -> N
     )
 
 
+def test_unreadable_high_risk_document_escalates_without_false_readable_event() -> None:
+    facts = BriefScannerFacts(
+        language="de",
+        readable=False,
+        uncertainty="image_quality_low",
+        risk_category="court_litigation",
+    )
+
+    assert initial_state(facts) == BriefScannerState.BLOCKED_OR_ESCALATED
+    assert aggregate_events_for_analysis(facts) == (
+        BriefScannerEvent.SCANNER_STARTED,
+        BriefScannerEvent.DOCUMENT_UNREADABLE,
+        BriefScannerEvent.MISSION_BLOCKED_OR_ESCALATED,
+    )
+
+
 def test_transition_replay_is_idempotent_and_invalid_jump_is_rejected() -> None:
     assert require_transition(BriefScannerState.ANALYZED, BriefScannerState.ANALYZED) == BriefScannerState.ANALYZED
     assert require_transition(BriefScannerState.ANALYZED, BriefScannerState.ACTION_SELECTED) == BriefScannerState.ACTION_SELECTED
