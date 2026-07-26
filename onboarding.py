@@ -16,6 +16,7 @@ def _lang(language: str) -> str:
 def _normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").casefold().strip()
     value = re.sub(r"[\u064b-\u065f\u0670\u0640]", "", value)
+    value = re.sub(r"[؟،؛!?.,:;]+", " ", value)
     value = re.sub(r"[^\w\u0600-\u06ff\u0370-\u03ff\u0400-\u04ff]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
