@@ -53,6 +53,31 @@ async def test_send_uses_environment_phone_id() -> None:
 
 
 @pytest.mark.anyio
+async def test_send_template_uses_approved_name_language_and_parameters() -> None:
+    response = MagicMock()
+    response.json.return_value = {"messages": [{"id": "template-1"}]}
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.post.return_value = response
+    with patch.object(whatsapp.httpx, "AsyncClient", return_value=client), patch.dict(
+        os.environ,
+        {"WHATSAPP_TOKEN": "secret", "PHONE_NUMBER_ID": "phone-123"},
+        clear=True,
+    ):
+        result = await whatsapp.send_whatsapp_template(
+            "49123", "amthero24_mission_reminder", "de", ["Wissam", "WKK", "10.08.2026"]
+        )
+    assert result == {"messages": [{"id": "template-1"}]}
+    payload = client.post.call_args.kwargs["json"]
+    assert payload["type"] == "template"
+    assert payload["template"]["name"] == "amthero24_mission_reminder"
+    assert payload["template"]["language"]["code"] == "de"
+    assert [item["text"] for item in payload["template"]["components"][0]["parameters"]] == [
+        "Wissam", "WKK", "10.08.2026"
+    ]
+
+
+@pytest.mark.anyio
 async def test_send_empty_text_is_rejected_before_network() -> None:
     with pytest.raises(whatsapp.WhatsAppServiceError):
         await whatsapp.send_whatsapp_message("49123", "   ")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from typing import Any
 
 import httpx
 
@@ -48,29 +49,74 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {required_env('WHATSAPP_TOKEN')}", "Content-Type": "application/json"}
 
 
+def _messages_url() -> str:
+    phone_id = required_env("PHONE_NUMBER_ID")
+    return f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_id}/messages"
+
+
+async def _post_message(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(_messages_url(), headers=_headers(), json=payload)
+            response.raise_for_status()
+            parsed = response.json()
+    except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+        logger.exception("WhatsApp send failed")
+        raise WhatsAppServiceError("WhatsApp send failed") from exc
+    return parsed if isinstance(parsed, dict) else {}
+
+
 async def send_whatsapp_message(to: str, text: str) -> list[dict]:
     if not to:
         raise WhatsAppServiceError("Missing recipient")
     if not str(text or "").strip():
         raise WhatsAppServiceError("Message text is empty")
-    phone_id = required_env("PHONE_NUMBER_ID")
-    url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_id}/messages"
     responses: list[dict] = []
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            for chunk in split_message(text):
-                response = await client.post(url, headers=_headers(), json={
-                    "messaging_product": "whatsapp",
-                    "to": to,
-                    "type": "text",
-                    "text": {"body": chunk, "preview_url": False},
-                })
-                response.raise_for_status()
-                responses.append(response.json())
-    except (httpx.HTTPError, ValueError, RuntimeError) as exc:
-        logger.exception("WhatsApp send failed")
-        raise WhatsAppServiceError("WhatsApp send failed") from exc
+    for chunk in split_message(text):
+        responses.append(await _post_message({
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": chunk, "preview_url": False},
+        }))
     return responses
+
+
+async def send_whatsapp_template(
+    to: str,
+    template_name: str,
+    language_code: str,
+    body_parameters: list[str] | tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Send an already-approved Meta utility template.
+
+    AmtHero24 expects a template with three optional body placeholders:
+    user display name, mission title, and reminder date. The template itself must
+    be created and approved in WhatsApp Manager before this path is enabled.
+    """
+    if not to:
+        raise WhatsAppServiceError("Missing recipient")
+    safe_name = str(template_name or "").strip()
+    safe_language = str(language_code or "").strip()
+    if not safe_name or not safe_language:
+        raise WhatsAppServiceError("Missing template configuration")
+    components: list[dict[str, Any]] = []
+    parameters = [
+        {"type": "text", "text": str(value or " ")[:1024]}
+        for value in body_parameters
+    ]
+    if parameters:
+        components.append({"type": "body", "parameters": parameters})
+    return await _post_message({
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {
+            "name": safe_name,
+            "language": {"code": safe_language},
+            "components": components,
+        },
+    })
 
 
 async def get_media_url(media_id: str) -> str:
