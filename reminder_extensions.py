@@ -203,8 +203,8 @@ reminder_module.render_reminder = _render_reminder
 composed.process_incoming = process_incoming
 core.process_incoming = process_incoming
 core.mission_created_message = mission_created_message
-core.app.add_event_handler("startup", _start_worker)
-core.app.add_event_handler("shutdown", _stop_worker)
+core.app.router.add_event_handler("startup", _start_worker)
+core.app.router.add_event_handler("shutdown", _stop_worker)
 
 app = composed.app
 store = composed.store
