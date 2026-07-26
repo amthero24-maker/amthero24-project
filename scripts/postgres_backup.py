@@ -20,6 +20,8 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from schema_recovery import inspect_database_schema
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -75,19 +77,21 @@ def create_backup(
     pg_dump_binary: str = "pg_dump",
     now: datetime | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
-    """Create one atomic custom-format backup and a non-secret manifest."""
+    """Create one atomic custom-format backup and a schema-bound manifest."""
     url = _database_url(database_url)
-    binary = shutil.which(pg_dump_binary)
-    if not binary:
-        raise RuntimeError(f"{pg_dump_binary} is not installed")
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     current = (now or datetime.now(UTC)).astimezone(UTC)
-    stamp = current.strftime("%Y%m%dT%H%M%SZ")
     encrypted = bool(str(encryption_key or "").strip())
     if not encrypted and not allow_unencrypted:
         raise ValueError("Refusing an unencrypted backup; provide BACKUP_ENCRYPTION_KEY or --allow-unencrypted")
+
+    binary = shutil.which(pg_dump_binary)
+    if not binary:
+        raise RuntimeError(f"{pg_dump_binary} is not installed")
+    schema_identity = inspect_database_schema(url, require_current=True)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = current.strftime("%Y%m%dT%H%M%SZ")
 
     with tempfile.TemporaryDirectory(prefix="amthero24-backup-") as temp_dir:
         plain = Path(temp_dir) / "database.dump"
@@ -126,6 +130,7 @@ def create_backup(
         "artifact_sha256": _sha256(final_path),
         "plaintext_sha256": plaintext_sha,
         "restore_confirmation": "RESTORE_AMTHERO24",
+        **schema_identity.manifest_fields(),
     }
     manifest_path = final_path.with_name(final_path.name + ".manifest.json")
     temporary_manifest = manifest_path.with_name("." + manifest_path.name + ".tmp")
@@ -166,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Backup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps({"status": "created", "artifact": str(artifact), "manifest": str(manifest), "size_bytes": metadata["artifact_size_bytes"]}))
+    print(json.dumps({"status": "created", "artifact": str(artifact), "manifest": str(manifest), "size_bytes": metadata["artifact_size_bytes"], "schema_version": metadata["schema_version"]}))
     return 0
 
 
