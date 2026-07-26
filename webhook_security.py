@@ -8,11 +8,13 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from encryption_policy import install_encryption_policy
 from storage_factory import install_production_storage_policy
 
-# Railway starts `webhook_security:app`. Install durable-storage policy before the
-# application composition imports `app.py` and creates its global store.
+# Railway starts `webhook_security:app`. Install durable-storage and reversible-
+# encryption policies before application composition imports modules and binds them.
 install_production_storage_policy()
+install_encryption_policy()
 
 import runtime_health  # noqa: E402
 

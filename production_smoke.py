@@ -110,6 +110,15 @@ def run_smoke(
         signature_ok = signature == "enforced" or not require_signature
         checks.append(SmokeCheck("webhook_signature", "pass" if signature_ok else "fail", signature))
 
+        reminders = str(components.get("reminders") or "missing")
+        checks.append(SmokeCheck("reminders", "pass" if reminders == "enabled" else "fail", reminders))
+        reminder_encryption = str(components.get("reminder_encryption") or "missing")
+        checks.append(SmokeCheck("reminder_encryption", "pass" if reminder_encryption == "configured" else "fail", reminder_encryption))
+
+        if admin_token:
+            admin_status = str(components.get("admin_overview") or "missing")
+            checks.append(SmokeCheck("admin_secret", "pass" if admin_status == "configured" else "fail", admin_status))
+
         for component in ("privacy_retention", "provider_telemetry", "abuse_guard"):
             value = str(components.get(component) or "missing")
             okay = value not in {"missing", "disabled", "unavailable"}
