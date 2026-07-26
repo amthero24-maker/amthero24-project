@@ -43,6 +43,10 @@ _PLACEHOLDER_WORDS = {
     "isolated",
     "test-key",
     "test-token",
+    "test-",
+    "ci-",
+    "recovery",
+    "fixture",
     "local-only",
 }
 _LOCAL_DATABASE_HOSTS = {"127.0.0.1", "localhost", "postgres", "db"}
