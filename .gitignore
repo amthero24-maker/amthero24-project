@@ -21,6 +21,9 @@ secret-scan.json
 production-monitor.json
 dependency-policy.json
 environment-contract.json
+logging-policy.json
+log-safety-junit.xml
+log-safety-tests.log
 pip-audit.json
 resolved-audit-environment.txt
 sbom*.json
