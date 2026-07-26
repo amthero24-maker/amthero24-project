@@ -60,7 +60,6 @@ jobs:
       RECOVERY_TARGET_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_restore
       RECOVERY_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
       RECOVERY_TARGET_DATABASE: amthero24_restore
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_source
       DB_POOL_MAX: "4"
       OUTBOUND_DELIVERY_RETENTION_DAYS: "30"
       PROVIDER_TELEMETRY_ENABLED: "true"
