@@ -9,6 +9,7 @@ from typing import Any
 from data_store import JsonDataStore, PostgresDataStore
 
 logger = logging.getLogger("amthero24.storage_policy")
+_POLICY_INSTALLED = False
 
 
 class StorageInitializationError(RuntimeError):
@@ -66,3 +67,23 @@ def create_runtime_store(path: str | Path) -> Any:
         raise StorageInitializationError(
             "Configured PostgreSQL storage is unavailable; refusing unsafe JSON fallback"
         ) from exc
+
+
+def _production_new(cls: type[JsonDataStore], path: str | Path) -> Any:
+    if cls is JsonDataStore:
+        return create_runtime_store(path)
+    return object.__new__(cls)
+
+
+def install_production_storage_policy() -> None:
+    """Install the strict selector before importing the production ASGI composition.
+
+    Unit tests and local modules that import `app` directly keep the historical JSON
+    behavior. The deployed `webhook_security:app` entrypoint installs this policy
+    first, so a configured production database can never silently diverge to JSON.
+    """
+    global _POLICY_INSTALLED
+    if _POLICY_INSTALLED:
+        return
+    JsonDataStore.__new__ = _production_new  # type: ignore[method-assign]
+    _POLICY_INSTALLED = True
