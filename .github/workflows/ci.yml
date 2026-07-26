@@ -27,7 +27,7 @@ jobs:
         run: python -m pytest -q tests/test_app.py
       - name: Data store tests
         run: python -m pytest -q tests/test_data_store.py
-      - name: Groq safety tests
-        run: python -m pytest -q tests/test_groq_safety.py
+      - name: Groq reasoning safety tests
+        run: python -m pytest -q tests/test_groq_reasoning.py
       - name: WhatsApp tests
         run: python -m pytest -q tests/test_whatsapp.py
