@@ -152,7 +152,7 @@ async def _begin_drain_before_workers() -> None:
     lifecycle.begin_drain()
 
 
-app.router.on_startup.append(_accept_after_startup)
+app.router.on_startup.insert(0, _accept_after_startup)
 app.router.on_shutdown.insert(0, _begin_drain_before_workers)
 
 
