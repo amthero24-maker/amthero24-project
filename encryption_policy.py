@@ -11,7 +11,7 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Mapping
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -40,14 +40,25 @@ class SecretAssessment:
         return self.status == "configured"
 
 
-def _flag(name: str, default: bool = False) -> bool:
+def _environment_value(name: str, environment: Mapping[str, str] | None = None) -> str:
+    source = environment if environment is not None else os.environ
+    return str(source.get(name, "")).strip()
+
+
+def _flag(name: str, default: bool = False, *, environment: Mapping[str, str] | None = None) -> bool:
+    source = environment if environment is not None else os.environ
     fallback = "true" if default else "false"
-    return os.getenv(name, fallback).strip().casefold() in {"1", "true", "yes", "on"}
+    return str(source.get(name, fallback)).strip().casefold() in {"1", "true", "yes", "on"}
 
 
-def assess_secret(name: str, *, minimum_length: int = _MIN_SECRET_LENGTH) -> SecretAssessment:
+def assess_secret(
+    name: str,
+    *,
+    minimum_length: int = _MIN_SECRET_LENGTH,
+    environment: Mapping[str, str] | None = None,
+) -> SecretAssessment:
     """Classify one secret without returning its value or any derived material."""
-    value = os.getenv(name, "").strip()
+    value = _environment_value(name, environment)
     if not value:
         return SecretAssessment(name, "missing", minimum_length)
     normalized = value.casefold()
@@ -59,32 +70,35 @@ def assess_secret(name: str, *, minimum_length: int = _MIN_SECRET_LENGTH) -> Sec
     return SecretAssessment(name, "configured", minimum_length)
 
 
-def reminder_encryption_status() -> str:
-    return assess_secret("REMINDER_ENCRYPTION_KEY").status
+def reminder_encryption_status(*, environment: Mapping[str, str] | None = None) -> str:
+    return assess_secret("REMINDER_ENCRYPTION_KEY", environment=environment).status
 
 
-def reminder_encryption_ready() -> bool:
-    return reminder_encryption_status() == "configured"
+def reminder_encryption_ready(*, environment: Mapping[str, str] | None = None) -> bool:
+    return reminder_encryption_status(environment=environment) == "configured"
 
 
-def legacy_reminder_decryption_enabled() -> bool:
-    return _flag("REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED", True)
+def legacy_reminder_decryption_enabled(*, environment: Mapping[str, str] | None = None) -> bool:
+    return _flag("REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED", True, environment=environment)
 
 
-def support_encryption_status() -> str:
-    return assess_secret("SUPPORT_ENCRYPTION_KEY").status
+def support_encryption_status(*, environment: Mapping[str, str] | None = None) -> str:
+    return assess_secret("SUPPORT_ENCRYPTION_KEY", environment=environment).status
 
 
-def support_api_token_status() -> str:
-    return assess_secret("SUPPORT_API_TOKEN").status
+def support_api_token_status(*, environment: Mapping[str, str] | None = None) -> str:
+    return assess_secret("SUPPORT_API_TOKEN", environment=environment).status
 
 
-def admin_api_token_status() -> str:
-    return assess_secret("ADMIN_API_TOKEN").status
+def admin_api_token_status(*, environment: Mapping[str, str] | None = None) -> str:
+    return assess_secret("ADMIN_API_TOKEN", environment=environment).status
 
 
-def support_security_ready() -> bool:
-    return support_encryption_status() == "configured" and support_api_token_status() == "configured"
+def support_security_ready(*, environment: Mapping[str, str] | None = None) -> bool:
+    return (
+        support_encryption_status(environment=environment) == "configured"
+        and support_api_token_status(environment=environment) == "configured"
+    )
 
 
 def _fernet_from_secret(secret: str) -> Fernet:
@@ -96,7 +110,7 @@ def _required_strong_secret(name: str, error_type: type[RuntimeError], error_cod
     assessment = assess_secret(name)
     if not assessment.ready:
         raise error_type(error_code)
-    return os.getenv(name, "").strip()
+    return _environment_value(name)
 
 
 def encrypt_reminder_recipient(phone: str) -> str:
@@ -118,11 +132,11 @@ def decrypt_reminder_recipient(ciphertext: str) -> str:
     import reminder_engine
 
     candidates: list[str] = []
-    dedicated = os.getenv("REMINDER_ENCRYPTION_KEY", "").strip()
+    dedicated = _environment_value("REMINDER_ENCRYPTION_KEY")
     if dedicated:
         candidates.append(dedicated)
     if legacy_reminder_decryption_enabled():
-        legacy = os.getenv("WHATSAPP_TOKEN", "").strip()
+        legacy = _environment_value("WHATSAPP_TOKEN")
         if legacy and legacy not in candidates:
             candidates.append(legacy)
 
