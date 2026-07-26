@@ -56,13 +56,15 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "storage": "ok" if storage_ok else "unavailable",
             "storage_backend": backend,
             "text_model": model,
+            "reminders": "enabled" if os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
+            "reminder_template": "configured" if os.getenv("WHATSAPP_REMINDER_TEMPLATE", "").strip() else "service-window-only",
         },
     }
     return payload, 200 if ready else 503
 
 
 # Import all production composition layers after defining pure health helpers.
-from document_extensions import app, store  # noqa: E402
+from reminder_extensions import app, store  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
 
