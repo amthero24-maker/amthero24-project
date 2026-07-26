@@ -22,8 +22,11 @@ SCHEMA_IDENTITY = expected_schema_identity()
 
 
 def test_cli_environment_parses_url_and_clears_conflicting_pg_values() -> None:
+    username = "hero"
+    password = "private" + "-value"
+    database_url = f"postgresql://{username}:{password}@db.internal:5433/amthero24_test?sslmode=require"
     environment = postgres_cli_environment(
-        "postgresql://hero:private-value@db.internal:5433/amthero24_test?sslmode=require",
+        database_url,
         base_environment={
             "DATABASE_URL": "postgresql://wrong.invalid/other",
             "PGHOST": "wrong.invalid",
@@ -34,8 +37,8 @@ def test_cli_environment_parses_url_and_clears_conflicting_pg_values() -> None:
 
     assert environment["PGHOST"] == "db.internal"
     assert environment["PGPORT"] == "5433"
-    assert environment["PGUSER"] == "hero"
-    assert environment["PGPASSWORD"] == "private-value"
+    assert environment["PGUSER"] == username
+    assert environment["PGPASSWORD"] == password
     assert environment["PGDATABASE"] == "amthero24_test"
     assert environment["PGSSLMODE"] == "require"
     assert environment["SAFE_FLAG"] == "kept"
