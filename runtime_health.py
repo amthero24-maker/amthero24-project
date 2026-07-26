@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from deployment_lifecycle import lifecycle
 from durable_queue import queue_status as durable_queue_status
 from encryption_policy import (
     admin_api_token_status,
@@ -83,7 +84,9 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     fallback_allowed = database_fallback_allowed()
     queue_component = durable_queue_status(store)
     queue_ready = queue_component in {"disabled", "configured"}
-    ready = config_ok and storage_ok and schemas_ready and queue_ready
+    process = lifecycle.snapshot()
+    lifecycle_ready = process.accepting_work and process.state == "accepting"
+    ready = config_ok and storage_ok and schemas_ready and queue_ready and lifecycle_ready
 
     if not reminder_worker_enabled:
         reminders_status = "disabled"
@@ -108,6 +111,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "storage_backend": backend,
             "database_fallback": "allowed" if fallback_allowed else "fail-closed",
             "postgresql_schemas": "initialized" if schemas_ready else "unavailable",
+            "process_lifecycle": process.state,
+            "active_work": process.active_work,
             "webhook_signature": signature_status,
             "webhook_idempotency": "retry-safe",
             "durable_inbound_queue": queue_component,
@@ -145,7 +150,21 @@ from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 _BOOTSTRAPPED_SCHEMAS = bootstrap_postgres_schemas(store)
 
 
+async def _accept_after_startup() -> None:
+    lifecycle.start_accepting()
+
+
+async def _begin_drain_before_workers() -> None:
+    lifecycle.begin_drain()
+
+
+# Shutdown handlers execute in registration order. Insert drain first so every worker
+# observes the process as unavailable before it stops claiming or sending work.
+app.router.on_startup.append(_accept_after_startup)
+app.router.on_shutdown.insert(0, _begin_drain_before_workers)
+
+
 @app.get("/ready", include_in_schema=False)
 async def ready() -> JSONResponse:
     payload, status_code = readiness_payload(store, version=APP_VERSION, model=GROQ_MODEL)
-    return JSONResponse(payload, status_code=status_code)
+    return JSONResponse(payload, status_code=status_code, headers={"Cache-Control": "no-store"})
