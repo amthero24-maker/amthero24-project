@@ -18,36 +18,15 @@ from typing import Iterable
 from urllib.parse import urlsplit
 
 _MAX_FILE_BYTES = 2 * 1024 * 1024
+_CONFIG_SUFFIXES = {".env", ".ini", ".cfg", ".conf", ".json", ".toml", ".yaml", ".yml"}
 _SENSITIVE_NAMES = {
-    "GROQ_API_KEY",
-    "WHATSAPP_TOKEN",
-    "META_APP_SECRET",
-    "VERIFY_TOKEN",
-    "ADMIN_API_TOKEN",
-    "REMINDER_ENCRYPTION_KEY",
-    "REMINDER_OLD_ENCRYPTION_KEY",
-    "REMINDER_LEGACY_WHATSAPP_TOKEN",
-    "SUPPORT_API_TOKEN",
-    "SUPPORT_ENCRYPTION_KEY",
-    "BACKUP_ENCRYPTION_KEY",
-    "DATABASE_URL",
+    "GROQ_API_KEY", "WHATSAPP_TOKEN", "META_APP_SECRET", "VERIFY_TOKEN", "ADMIN_API_TOKEN",
+    "REMINDER_ENCRYPTION_KEY", "REMINDER_OLD_ENCRYPTION_KEY", "REMINDER_LEGACY_WHATSAPP_TOKEN",
+    "SUPPORT_API_TOKEN", "SUPPORT_ENCRYPTION_KEY", "BACKUP_ENCRYPTION_KEY", "DATABASE_URL",
 }
 _PLACEHOLDER_WORDS = {
-    "example",
-    "placeholder",
-    "dummy",
-    "changeme",
-    "replace-me",
-    "set-locally",
-    "your-",
-    "isolated",
-    "test-key",
-    "test-token",
-    "test-",
-    "ci-",
-    "recovery",
-    "fixture",
-    "local-only",
+    "example", "placeholder", "dummy", "changeme", "replace-me", "set-locally", "your-",
+    "isolated", "test-key", "test-token", "test-", "ci-", "recovery", "fixture", "local-only",
 }
 _LOCAL_DATABASE_HOSTS = {"127.0.0.1", "localhost", "postgres", "db"}
 _PRIVATE_KEY_PREFIX = "-----BEGIN "
@@ -62,13 +41,8 @@ _TOKEN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
     ("meta-access-token", re.compile(r"\bEAA[A-Za-z0-9]{50,}\b")),
 )
-_ASSIGNMENT_PATTERN = re.compile(
-    r"^\s*(?:export\s+)?[\"']?(?P<name>[A-Z][A-Z0-9_]+)[\"']?\s*[:=]\s*(?P<value>.+?)\s*,?\s*$"
-)
-_DATABASE_URL_PATTERN = re.compile(
-    r"\b(?:postgres(?:ql)?|mysql|redis|mongodb(?:\+srv)?)://[^\s'\"<>]+",
-    re.IGNORECASE,
-)
+_ASSIGNMENT_PATTERN = re.compile(r"^\s*(?:export\s+)?[\"']?(?P<name>[A-Z][A-Z0-9_]+)[\"']?\s*[:=]\s*(?P<value>.+?)\s*,?\s*$")
+_DATABASE_URL_PATTERN = re.compile(r"\b(?:postgres(?:ql)?|mysql|redis|mongodb(?:\+srv)?)://[^\s'\"<>]+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -86,12 +60,7 @@ def _fingerprint(value: str) -> str:
 
 def _tracked_files(root: Path) -> list[Path]:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        result = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         return [root / item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
         return [path for path in root.rglob("*") if path.is_file() and ".git" not in path.parts]
@@ -136,10 +105,11 @@ def _database_url_is_safe_fixture(candidate: str) -> bool:
     host = (parsed.hostname or "").casefold()
     password = parsed.password or ""
     username = parsed.username or ""
-    return host in _LOCAL_DATABASE_HOSTS and password in {"postgres", "test", "password"} and username in {
-        "postgres",
-        "test",
-    }
+    return host in _LOCAL_DATABASE_HOSTS and password in {"postgres", "test", "password"} and username in {"postgres", "test"}
+
+
+def _is_config_file(path: Path) -> bool:
+    return path.name == ".env" or path.name.startswith(".env.") or path.suffix.casefold() in _CONFIG_SUFFIXES
 
 
 def _finding(path: Path, root: Path, line: int, rule: str, value: str, message: str) -> SecretFinding:
@@ -153,6 +123,7 @@ def _finding(path: Path, root: Path, line: int, rule: str, value: str, message: 
 def scan_text(path: Path, text: str, root: Path) -> list[SecretFinding]:
     findings: list[SecretFinding] = []
     seen: set[tuple[int, str, str]] = set()
+    check_assignments = _is_config_file(path)
 
     for line_number, line in enumerate(text.splitlines(), start=1):
         for rule, pattern in _TOKEN_PATTERNS:
@@ -161,9 +132,7 @@ def scan_text(path: Path, text: str, root: Path) -> list[SecretFinding]:
                 key = (line_number, rule, _fingerprint(value))
                 if key not in seen:
                     seen.add(key)
-                    findings.append(
-                        _finding(path, root, line_number, rule, value, "possible credential material is committed")
-                    )
+                    findings.append(_finding(path, root, line_number, rule, value, "possible credential material is committed"))
 
         for match in _DATABASE_URL_PATTERN.finditer(line):
             value = match.group(0).rstrip(".,);]")
@@ -177,36 +146,24 @@ def scan_text(path: Path, text: str, root: Path) -> list[SecretFinding]:
                 key = (line_number, "database-credential", _fingerprint(value))
                 if key not in seen:
                     seen.add(key)
-                    findings.append(
-                        _finding(
-                            path,
-                            root,
-                            line_number,
-                            "database-credential",
-                            value,
-                            "database URL contains an embedded password",
-                        )
-                    )
+                    findings.append(_finding(path, root, line_number, "database-credential", value, "database URL contains an embedded password"))
 
+        if not check_assignments:
+            continue
         assignment = _ASSIGNMENT_PATTERN.match(line)
         if not assignment or assignment.group("name") not in _SENSITIVE_NAMES:
             continue
         value = _clean_assignment_value(assignment.group("value"))
+        if assignment.group("name") == "DATABASE_URL":
+            candidates = list(_DATABASE_URL_PATTERN.finditer(value))
+            if not candidates or all(_database_url_is_safe_fixture(item.group(0)) for item in candidates):
+                continue
         if _looks_placeholder(value):
             continue
         key = (line_number, "sensitive-assignment", _fingerprint(value))
         if key not in seen:
             seen.add(key)
-            findings.append(
-                _finding(
-                    path,
-                    root,
-                    line_number,
-                    "sensitive-assignment",
-                    value,
-                    f"{assignment.group('name')} has a committed non-placeholder value",
-                )
-            )
+            findings.append(_finding(path, root, line_number, "sensitive-assignment", value, f"{assignment.group('name')} has a committed non-placeholder value"))
     return findings
 
 
@@ -226,13 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-
     findings = scan_repository(args.root)
-    report = {
-        "status": "pass" if not findings else "fail",
-        "finding_count": len(findings),
-        "findings": [asdict(item) for item in findings],
-    }
+    report = {"status": "pass" if not findings else "fail", "finding_count": len(findings), "findings": [asdict(item) for item in findings]}
     if args.json:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     elif findings:
