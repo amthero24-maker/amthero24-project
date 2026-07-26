@@ -35,6 +35,7 @@ def test_extract_text_button_interactive_and_ignore_statuses() -> None:
 def test_extract_name_keeps_single_name_flow() -> None:
     assert app.extract_name("وسام") == "وسام"
     assert app.extract_name("مرحبا") == ""
+    assert app.extract_name("تاني") == ""
     assert app.extract_name("Mein Name ist Anna") == "Anna"
 
 
@@ -75,6 +76,22 @@ async def test_process_incoming_success_and_groq_failure(tmp_path) -> None:
         await app.process_incoming(failed)
         assert send.await_count == 1
         assert app.store.snapshot()["messages"]["two"]["status"] == "failed"
+
+
+@pytest.mark.anyio
+async def test_product_language_question_is_authoritative_and_skips_groq(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    message = app.IncomingMessage("languages", "49123", "شو اللغات يلي بتحكيها؟", "text")
+    app.store.claim_message("languages", "49123", message.text)
+    with patch.object(app, "generate_reply", side_effect=AssertionError("Groq must not be called")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(message)
+    reply = send.await_args.args[1]
+    for language in ("العربية", "الألمانية", "الإنجليزية", "الأوكرانية", "اليونانية"):
+        assert language in reply
+    profile = app.store.get_user("49123")
+    assert profile["preferred_language"] == "ar"
+    assert profile["current_topic"] == "languages"
+    assert app.store.snapshot()["messages"]["languages"]["status"] == "sent"
 
 
 @pytest.mark.anyio
