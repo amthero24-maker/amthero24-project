@@ -1,8 +1,7 @@
 """Versioned PostgreSQL schema migrations with bounded cross-replica locking.
 
-The migration ledger stores only schema metadata: integer version, migration name,
-checksum, application version, and timestamps. It never receives or stores user data,
-message content, phone hashes, provider payloads, or credentials.
+The migration ledger stores only schema metadata. Startup migrations are expand-only and
+all direct SQL passes through a runtime online-safety validator before PostgreSQL sees it.
 """
 from __future__ import annotations
 
@@ -13,6 +12,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from migration_policy import require_online_safe_sql
+
 
 class SchemaMigrationError(RuntimeError):
     """Fail-closed migration error identified by a non-sensitive operational code."""
@@ -20,6 +21,22 @@ class SchemaMigrationError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class OnlineMigrationExecutor:
+    """Execute one literal expand-only DDL statement after runtime policy validation."""
+
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+    def execute(self, statement: str, params: Any | None = None) -> Any:
+        try:
+            require_online_safe_sql(statement)
+        except ValueError as exc:
+            raise SchemaMigrationError("unsafe_online_migration_sql") from exc
+        if params is None:
+            return self.connection.execute(statement)
+        return self.connection.execute(statement, params)
 
 
 @dataclass(frozen=True)
@@ -37,7 +54,9 @@ class MigrationSpec:
     version: int
     name: str
     checksum: str
-    apply: Callable[[Any, Any], tuple[str, ...]]
+    apply: Callable[[Any, OnlineMigrationExecutor], tuple[str, ...]]
+    phase: str
+    legacy_bootstrap: bool = False
 
 
 _MIGRATION_LOCK_KEY = 4_814_172_024_045
@@ -129,23 +148,25 @@ def _release_lock(connection: Any) -> None:
         pass
 
 
-def _apply_schema_v1(store: Any, connection: Any) -> tuple[str, ...]:
+def _apply_schema_v1(store: Any, executor: OnlineMigrationExecutor) -> tuple[str, ...]:
+    # Version 1 records the legacy idempotent schema foundation. Future migrations must not
+    # invoke repository bootstrap and must express all SQL through this executor.
     store._initialize_schema()
 
     from schema_bootstrap import bootstrap_postgres_schemas
 
     components = bootstrap_postgres_schemas(store)
-    connection.execute(
+    executor.execute(
         "ALTER TABLE inbound_work_queue ADD COLUMN IF NOT EXISTS lease_owner TEXT"
     )
-    connection.execute(
+    executor.execute(
         "CREATE INDEX IF NOT EXISTS inbound_work_queue_owner_idx "
         "ON inbound_work_queue (lease_owner) WHERE status = 'processing'"
     )
-    connection.execute(
+    executor.execute(
         "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS lease_owner TEXT"
     )
-    connection.execute(
+    executor.execute(
         "CREATE INDEX IF NOT EXISTS hero_reminders_owner_idx "
         "ON hero_reminders (lease_owner) WHERE status = 'processing'"
     )
@@ -155,7 +176,14 @@ def _apply_schema_v1(store: Any, connection: Any) -> tuple[str, ...]:
 _SCHEMA_V1_NAME = "production_schema_v1"
 _SCHEMA_V1_CHECKSUM = _contract_checksum(1, _SCHEMA_V1_NAME, _EXPECTED_SCHEMA)
 _MIGRATIONS = (
-    MigrationSpec(1, _SCHEMA_V1_NAME, _SCHEMA_V1_CHECKSUM, _apply_schema_v1),
+    MigrationSpec(
+        version=1,
+        name=_SCHEMA_V1_NAME,
+        checksum=_SCHEMA_V1_CHECKSUM,
+        apply=_apply_schema_v1,
+        phase="expand",
+        legacy_bootstrap=True,
+    ),
 )
 LATEST_SCHEMA_VERSION = _MIGRATIONS[-1].version
 
@@ -191,10 +219,25 @@ def validate_schema_contract(connection: Any) -> tuple[bool, tuple[str, ...]]:
     return not missing, tuple(sorted(missing))
 
 
+def _validate_registry() -> None:
+    versions = [migration.version for migration in _MIGRATIONS]
+    if versions != list(range(1, len(versions) + 1)):
+        raise SchemaMigrationError("migration_version_sequence")
+    names = [migration.name for migration in _MIGRATIONS]
+    if len(names) != len(set(names)):
+        raise SchemaMigrationError("migration_name_duplicate")
+    for migration in _MIGRATIONS:
+        if migration.phase != "expand":
+            raise SchemaMigrationError("unsafe_migration_phase")
+        if migration.legacy_bootstrap and migration.version != 1:
+            raise SchemaMigrationError("unsafe_legacy_bootstrap")
+
+
 def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
     if str(getattr(store, "backend_name", "json")) != "postgresql":
         return MigrationReport("not-applicable", 0, LATEST_SCHEMA_VERSION, (), (), "")
 
+    _validate_registry()
     applied_now: list[int] = []
     components: tuple[str, ...] = ()
     with store.pool.connection() as connection:
@@ -205,6 +248,7 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
             if applied and max(applied) > LATEST_SCHEMA_VERSION:
                 raise SchemaMigrationError("database_schema_ahead")
 
+            executor = OnlineMigrationExecutor(connection)
             for migration in _MIGRATIONS:
                 existing = applied.get(migration.version)
                 if existing:
@@ -214,7 +258,7 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
                         raise SchemaMigrationError("migration_checksum_mismatch")
                     continue
 
-                components = migration.apply(store, connection)
+                components = migration.apply(store, executor)
                 connection.execute(
                     f"""
                     INSERT INTO {_LEDGER_TABLE} (version, name, checksum, app_version)
