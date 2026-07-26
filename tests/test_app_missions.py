@@ -46,6 +46,35 @@ async def test_create_list_and_complete_mission_without_groq(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_update_mission_progress_and_show_summary_without_groq(tmp_path) -> None:
+    app.store = JsonDataStore(tmp_path / "store.json")
+    seed_consented_user(app.store)
+
+    messages = (
+        ("create-v2", "تابعلي هالموضوع فاتورة WKK", "مهمة مفتوحة"),
+        ("action-v2", "آخر إجراء: بعتت الاعتراض", "بعتت الاعتراض"),
+        ("next-v2", "الخطوة الجاية: انتظر الرد", "انتظر الرد"),
+        ("waiting-v2", "هلأ ناطر رد", "بانتظار الرد"),
+        ("due-v2", "المهلة 10.08.2026", "2026-08-10"),
+    )
+    for message_id, text, expected in messages:
+        message = app.IncomingMessage(message_id, "49123", text, "text")
+        app.store.claim_message(message.message_id, message.sender, message.text)
+        with patch.object(app, "generate_reply", side_effect=AssertionError("Groq must not be called")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+            await app.process_incoming(message)
+        assert expected in send.await_args.args[1]
+
+    summary = app.IncomingMessage("summary-v2", "49123", "وين وصلنا؟", "text")
+    app.store.claim_message(summary.message_id, summary.sender, summary.text)
+    with patch.object(app, "generate_reply", side_effect=AssertionError("Groq must not be called")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(summary)
+    reply = send.await_args.args[1]
+    assert "بعتت الاعتراض" in reply
+    assert "انتظر الرد" in reply
+    assert "2026-08-10" in reply
+
+
+@pytest.mark.anyio
 async def test_mission_requires_memory_consent(tmp_path) -> None:
     app.store = JsonDataStore(tmp_path / "store.json")
     app.store.update_user("49123", {
