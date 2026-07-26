@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=Path("railway-contract.json"))
     args = parser.parse_args(argv)
     payload = report_payload(validate_railway_contract(args.root))
-    print(write_report(payload, args.output))
+    sys.stdout.write(write_report(payload, args.output) + "\n")
     return 0 if payload["passed"] else 1
 
 
