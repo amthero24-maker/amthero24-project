@@ -9,6 +9,7 @@ from typing import Any
 
 import document_extensions as composed
 import reminder_engine as reminder_module
+from encryption_policy import reminder_encryption_ready
 from reminder_engine import (
     ReminderRepository,
     detect_reminder_intent,
@@ -102,9 +103,20 @@ def _reminder_prompt(language: str) -> str:
     }.get(language, "Say ‘remind me one day before’ to save a reminder.")
 
 
+def reminder_unavailable_message(language: str) -> str:
+    """Explain a configuration outage without exposing secret names or internals."""
+    return {
+        "ar": "التذكيرات متوقفة مؤقتًا لحماية بياناتك. باقي خدمات سام شغّالة، وما حفظت هالتذكير.",
+        "de": "Erinnerungen sind zum Schutz deiner Daten vorübergehend deaktiviert. Die übrigen Funktionen bleiben verfügbar; diese Erinnerung wurde nicht gespeichert.",
+        "en": "Reminders are temporarily disabled to protect your data. Other features remain available, and this reminder was not saved.",
+        "uk": "Нагадування тимчасово вимкнено для захисту твоїх даних. Інші функції працюють; це нагадування не збережено.",
+        "el": "Οι υπενθυμίσεις είναι προσωρινά απενεργοποιημένες για την προστασία των δεδομένων σου. Οι άλλες λειτουργίες παραμένουν διαθέσιμες και αυτή η υπενθύμιση δεν αποθηκεύτηκε.",
+    }.get(language, "Reminders are temporarily unavailable and this reminder was not saved.")
+
+
 def mission_created_message(language: str, mission: dict[str, Any]) -> str:
     reply = _ORIGINAL_MISSION_CREATED_MESSAGE(language, mission)
-    if str(mission.get("_operation") or "") == "due" and mission.get("due_at"):
+    if reminder_encryption_ready() and str(mission.get("_operation") or "") == "due" and mission.get("due_at"):
         return reply + "\n\n" + _reminder_prompt(language)
     return reply
 
@@ -146,6 +158,10 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         await core._finish(message.message_id, reminder_cancelled_message(language, count), message.sender)
         return
 
+    if not reminder_encryption_ready():
+        await core._finish(message.message_id, reminder_unavailable_message(language), message.sender)
+        return
+
     mission = core._hero_memory().get_latest_mission(message.sender)
     scheduled_at = resolve_reminder_schedule(intent, mission)
     if scheduled_at is None:
@@ -166,7 +182,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
 async def _start_worker() -> None:
     global _WORKER_TASK, _WORKER_STOP
     enabled = os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
-    if not enabled or str(getattr(core.store, "backend_name", "json")) != "postgresql":
+    if not enabled or not reminder_encryption_ready() or str(getattr(core.store, "backend_name", "json")) != "postgresql":
         return
     if _WORKER_TASK and not _WORKER_TASK.done():
         return
