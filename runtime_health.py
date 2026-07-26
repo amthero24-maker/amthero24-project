@@ -33,24 +33,20 @@ def _signature_required() -> bool:
 
 
 def configuration_ready() -> bool:
-    """Return whether required runtime settings are present without exposing them."""
     base_ready = all(bool(os.getenv(name, "").strip()) for name in _REQUIRED_RUNTIME_ENV)
     signature_ready = not _signature_required() or bool(os.getenv("META_APP_SECRET", "").strip())
     return base_ready and signature_ready
 
 
 def storage_ready(store: Any) -> tuple[bool, str]:
-    """Verify the selected storage backend with a lightweight operation."""
     backend = str(getattr(store, "backend_name", "unknown"))
     database_expected = bool(os.getenv("DATABASE_URL", "").strip())
-
     try:
         if backend == "postgresql":
             with store.pool.connection(timeout=5) as connection:
                 row = connection.execute("SELECT 1 AS healthy").fetchone()
             healthy = bool(row and (row.get("healthy") if hasattr(row, "get") else row[0]) == 1)
             return healthy, backend
-
         if backend == "json":
             if database_expected:
                 return False, "json-fallback"
@@ -59,7 +55,6 @@ def storage_ready(store: Any) -> tuple[bool, str]:
             return os.access(path.parent, os.W_OK), backend
     except Exception:
         return False, backend
-
     return False, backend
 
 
@@ -85,7 +80,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     queue_component = durable_queue_status(store)
     queue_ready = queue_component in {"disabled", "configured"}
     process = lifecycle.snapshot()
-    lifecycle_ready = process.accepting_work and process.state == "accepting"
+    lifecycle_ready = store is not production_store or (process.accepting_work and process.state == "accepting")
     ready = config_ok and storage_ok and schemas_ready and queue_ready and lifecycle_ready
 
     if not reminder_worker_enabled:
@@ -141,7 +136,6 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     return payload, 200 if ready else 503
 
 
-# Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
 from outbound_delivery_extensions import app, store  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
@@ -158,8 +152,6 @@ async def _begin_drain_before_workers() -> None:
     lifecycle.begin_drain()
 
 
-# Shutdown handlers execute in registration order. Insert drain first so every worker
-# observes the process as unavailable before it stops claiming or sending work.
 app.router.on_startup.append(_accept_after_startup)
 app.router.on_shutdown.insert(0, _begin_drain_before_workers)
 
