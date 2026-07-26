@@ -21,6 +21,12 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from backup_freshness import (
+    BackupFreshnessError,
+    record_backup_failure,
+    record_backup_success,
+    safe_backup_failure_code,
+)
 from postgres_cli_env import postgres_cli_environment
 from schema_recovery import inspect_database_schema
 
@@ -134,7 +140,7 @@ def create_backup(
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(_pg_dump_failure_code(exc.stderr)) from exc
         if not plain.exists() or plain.stat().st_size <= 0:
-            raise RuntimeError("pg_dump completed without producing a backup")
+            raise RuntimeError("pg_dump_empty_artifact")
 
         plaintext_sha = _sha256(plain)
         final_name = f"amthero24-{stamp}.dump.fernet" if encrypted else f"amthero24-{stamp}.dump"
@@ -175,6 +181,13 @@ def decrypt_backup(artifact: Path, destination: Path, *, encryption_key: str) ->
         raise ValueError("Backup decryption failed") from exc
 
 
+def _try_record_failure(database_url: str, code: str) -> None:
+    try:
+        record_backup_failure(database_url, code)
+    except (BackupFreshnessError, ValueError, OSError):
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create an encrypted AmtHero24 PostgreSQL backup.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL", ""))
@@ -195,10 +208,28 @@ def main(argv: list[str] | None = None) -> int:
             pg_dump_binary=args.pg_dump,
         )
     except (ValueError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
-        print(f"Backup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        code = safe_backup_failure_code(exc)
+        _try_record_failure(str(args.database_url), code)
+        sys.stderr.write(f"Backup failed: {code}\n")
         return 1
 
-    print(json.dumps({"status": "created", "artifact": str(artifact), "manifest": str(manifest), "size_bytes": metadata["artifact_size_bytes"], "schema_version": metadata["schema_version"]}))
+    status = "created_unmonitored"
+    if bool(metadata.get("encrypted")):
+        try:
+            record_backup_success(str(args.database_url), metadata)
+            status = "created_and_recorded"
+        except (BackupFreshnessError, ValueError, OSError) as exc:
+            code = safe_backup_failure_code(exc)
+            sys.stderr.write(f"Backup failed: {code}\n")
+            return 1
+
+    sys.stdout.write(json.dumps({
+        "status": status,
+        "artifact": artifact.name,
+        "manifest": manifest.name,
+        "size_bytes": metadata["artifact_size_bytes"],
+        "schema_version": metadata["schema_version"],
+    }) + "\n")
     return 0
 
 
