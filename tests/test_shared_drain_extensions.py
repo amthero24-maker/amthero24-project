@@ -98,9 +98,11 @@ async def test_reminder_worker_uses_no_new_timeout_after_budget_expires(monkeypa
     lifecycle.begin_drain()
     monkeypatch.setattr(lifecycle, "remaining_drain_seconds", lambda: 0.0)
     stop = asyncio.Event()
+    started = asyncio.Event()
     cancelled = asyncio.Event()
 
     async def worker() -> None:
+        started.set()
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -108,6 +110,7 @@ async def test_reminder_worker_uses_no_new_timeout_after_budget_expires(monkeypa
             raise
 
     task = asyncio.create_task(worker())
+    await started.wait()
     reminder_module._WORKER_STOP = stop
     reminder_module._WORKER_TASK = task
 
@@ -138,9 +141,11 @@ async def test_privacy_worker_uses_remaining_shared_budget_and_clears_globals(mo
     lifecycle.begin_drain()
     monkeypatch.setattr(lifecycle, "remaining_drain_seconds", lambda: 0.001)
     stop = asyncio.Event()
+    started = asyncio.Event()
     cancelled = asyncio.Event()
 
     async def worker() -> None:
+        started.set()
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -149,6 +154,7 @@ async def test_privacy_worker_uses_remaining_shared_budget_and_clears_globals(mo
 
     privacy_module._RETENTION_STOP = stop
     privacy_module._RETENTION_TASK = asyncio.create_task(worker())
+    await started.wait()
 
     await layer._stop_privacy_worker()
 
