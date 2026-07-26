@@ -80,6 +80,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "admin_overview": "configured" if admin_configured else "disabled",
             "beta_launch_report": "configured" if admin_configured else "disabled",
             "human_support": "configured" if support_configured else ("misconfigured" if support_enabled else "disabled"),
+            "anonymous_feedback": "enabled",
             "entitlements": "enforced" if entitlement_enforced else "observe-only",
             "default_plan": os.getenv("ENTITLEMENT_DEFAULT_PLAN", "beta").strip().casefold() or "beta",
             "payments": "disabled",
@@ -93,7 +94,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 # Import all production composition layers after defining pure health helpers.
 import provider_extensions as provider_layer  # noqa: E402
-from support_extensions import app, store  # noqa: E402
+from feedback_extensions import app, store  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
 
