@@ -89,8 +89,15 @@ class JsonDataStore:
             return deepcopy(self._read_unlocked().get("users", {}).get(_phone_hash(phone), {}))
 
     def update_user(self, phone: str, updates: dict[str, Any]) -> dict[str, Any]:
-        allowed = {"first_name", "city", "preferred_language", "last_seen", "last_message", "name_prompted"}
+        allowed = {
+            "first_name", "city", "preferred_language", "last_seen", "last_message", "name_prompted",
+            "current_topic", "last_assistant_reply", "conversation_summary", "last_message_type",
+        }
         clean = {key: value for key, value in updates.items() if key in allowed}
+        if "last_assistant_reply" in clean:
+            clean["last_assistant_reply"] = str(clean["last_assistant_reply"])[:1800]
+        if "conversation_summary" in clean:
+            clean["conversation_summary"] = str(clean["conversation_summary"])[:600]
         key = _phone_hash(phone)
 
         def update(data: dict[str, Any]) -> dict[str, Any]:
