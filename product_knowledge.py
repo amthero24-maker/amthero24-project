@@ -24,10 +24,11 @@ _LANGUAGE_PATTERNS = (
 
 _CAPABILITY_PATTERNS = (
     "شو بتقدم", "شو بتعمل", "شو بتقدر", "بشو بتساعد", "كيف بتساعد", "شو خدماتك", "شو فيك تعمل",
-    "was kannst du", "wobei hilfst du", "was machst du", "deine funktionen",
-    "what can you do", "how can you help", "what do you offer",
-    "що ти можеш", "чим ти допомагаєш",
-    "τι μπορεις να κανεις", "πως μπορεις να βοηθησεις",
+    "الميزات", "ميزاتك", "شو الميزات", "الخدمات", "اعرض الميزات", "ورجيني الميزات",
+    "was kannst du", "wobei hilfst du", "was machst du", "deine funktionen", "funktionen", "leistungen",
+    "what can you do", "how can you help", "what do you offer", "features", "show features",
+    "що ти можеш", "чим ти допомагаєш", "можливості",
+    "τι μπορεις να κανεις", "πως μπορεις να βοηθησεις", "δυνατοτητες",
 )
 
 _MORE_PATTERNS = {
