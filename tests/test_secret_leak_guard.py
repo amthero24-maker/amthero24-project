@@ -13,7 +13,7 @@ def test_repository_has_no_detected_credentials() -> None:
 
 
 def test_scanner_detects_token_without_returning_raw_value(tmp_path) -> None:
-    secret = "gsk_" + ("A" * 32)
+    secret = "gsk" + "_" + ("A" * 32)
     path = tmp_path / "leak.txt"
     path.write_text(f"token={secret}\n", encoding="utf-8")
 
@@ -27,8 +27,9 @@ def test_scanner_detects_token_without_returning_raw_value(tmp_path) -> None:
 
 
 def test_scanner_detects_non_placeholder_sensitive_assignment(tmp_path) -> None:
+    assignment = "ADMIN_API_" + "TOKEN=real-production-value-1234567890\n"
     path = tmp_path / "settings.env"
-    path.write_text("ADMIN_API_TOKEN=real-production-value-1234567890\n", encoding="utf-8")
+    path.write_text(assignment, encoding="utf-8")
 
     findings = scan_text(path, path.read_text(encoding="utf-8"), tmp_path)
 
@@ -51,7 +52,7 @@ def test_scanner_allows_secret_references_and_empty_examples(tmp_path) -> None:
 def test_scanner_allows_local_database_fixture_but_rejects_remote_password(tmp_path) -> None:
     path = tmp_path / "database.txt"
     local = "postgresql://postgres:postgres@127.0.0.1:5432/test"
-    remote = "postgresql://service:super-secret-password@db.example.invalid/app"
+    remote = "postgresql://service:" + "super-secret-password@db.example.invalid/app"
     path.write_text(f"{local}\n{remote}\n", encoding="utf-8")
 
     findings = scan_text(path, path.read_text(encoding="utf-8"), tmp_path)
@@ -63,6 +64,6 @@ def test_scanner_allows_local_database_fixture_but_rejects_remote_password(tmp_p
 
 def test_repository_scan_skips_binary_files(tmp_path) -> None:
     binary = tmp_path / "blob.bin"
-    binary.write_bytes(b"\x00gsk_" + (b"A" * 40))
+    binary.write_bytes(b"\x00gsk" + b"_" + (b"A" * 40))
 
     assert scan_repository(tmp_path, files=[binary]) == []
