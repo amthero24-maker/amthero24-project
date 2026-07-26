@@ -56,8 +56,12 @@ _LONG_TERM_MEMORY_FIELDS = {
     "conversation_summary", "communication_style",
 }
 _EXPORT_PATTERNS = (
-    "صدر بياناتي", "صدّر بياناتي", "اعطيني نسخة من بياناتي", "نسخة من بياناتي",
-    "meine daten exportieren", "export my data", "експортуй мої дані", "εξαγωγη δεδομενων",
+    "صدر بياناتي", "صدّر بياناتي", "نزّل بياناتي", "نزل بياناتي", "حمّل بياناتي", "حمل بياناتي",
+    "اعطيني نسخة من بياناتي", "أعطيني نسخة من بياناتي", "نسخة من بياناتي", "بدي نسخة من بياناتي",
+    "meine daten exportieren", "meine daten herunterladen", "kopie meiner daten",
+    "export my data", "download my data", "give me a copy of my data",
+    "експортуй мої дані", "завантаж мої дані", "копію моїх даних",
+    "εξαγωγη δεδομενων", "κατεβασε τα δεδομενα μου", "αντιγραφο των δεδομενων μου",
 )
 
 
