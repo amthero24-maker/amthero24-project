@@ -49,6 +49,7 @@ def test_redact_value_preserves_safe_structure_and_removes_sensitive_keys() -> N
         "authorization": "Bearer hidden-token-value",
         "payload": {"text": "private message", "attempt": 2},
         "items": ["safe", {"recipient": "+4915123456789"}],
+        "message_id": "wamid.platform-identifier-123456789",
         "binary": b"private document bytes",
     }
 
@@ -59,11 +60,13 @@ def test_redact_value_preserves_safe_structure_and_removes_sensitive_keys() -> N
     assert redacted["authorization"] == "[REDACTED]"
     assert redacted["payload"] == "[REDACTED]"
     assert redacted["items"][1]["recipient"] == "[REDACTED]"
+    assert redacted["message_id"] == "[REDACTED]"
     assert redacted["binary"].startswith("[REDACTED_BYTES")
 
 
 def test_sanitize_log_record_redacts_args_extras_and_exception_message() -> None:
     secret = "runtime-secret-value-abcdefgh"
+    message_id = "wamid.platform-identifier-123456789"
     try:
         raise RuntimeError(f"request failed with Bearer {secret} for +4915123456789")
     except RuntimeError:
@@ -79,13 +82,15 @@ def test_sanitize_log_record_redacts_args_extras_and_exception_message() -> None
         exc_info=exc_info,
     )
     record.phone = "+4915123456789"
+    record.message_id = message_id
     sanitize_log_record(record, environment={"ADMIN_API_TOKEN": secret})
 
-    rendered = logging.Formatter("%(message)s %(phone)s").format(record)
+    rendered = logging.Formatter("%(message)s %(phone)s %(message_id)s").format(record)
 
     assert secret not in rendered
     assert "private body" not in rendered
     assert "+4915123456789" not in rendered
+    assert message_id not in rendered
     assert "RuntimeError" in rendered
     assert "[REDACTED]" in rendered
 
