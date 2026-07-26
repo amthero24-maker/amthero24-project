@@ -1,7 +1,7 @@
 """Application-level reminder command tests."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -86,3 +86,30 @@ async def test_reminder_list_and_cancel_do_not_call_groq(tmp_path, monkeypatch) 
         assert "ألغيت" in send.await_args.args[1]
 
     assert repository.list("49123") == []
+
+
+def test_expired_delivery_lease_is_reclaimed_after_restart(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "test-secret")
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    store = JsonDataStore(tmp_path / "store.json")
+    repository = reminder_extensions.ResilientReminderRepository(store)
+    reminder = repository.create(
+        "49123",
+        title="WKK",
+        scheduled_at=now - timedelta(minutes=10),
+        language="de",
+    )
+
+    def leave_stale_lease(data: dict) -> None:
+        item = data["reminders"][reminder["reminder_id"]]
+        item["status"] = "processing"
+        item["lease_until"] = (now - timedelta(minutes=1)).isoformat()
+        item["next_attempt_at"] = (now - timedelta(minutes=10)).isoformat()
+
+    store._transaction(leave_stale_lease)
+    claimed = repository.claim_due(now=now, limit=5)
+
+    assert len(claimed) == 1
+    assert claimed[0]["reminder_id"] == reminder["reminder_id"]
+    assert claimed[0]["status"] == "processing"
+    assert claimed[0]["last_error"] == "expired_delivery_lease"
