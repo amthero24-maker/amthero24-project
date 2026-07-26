@@ -22,11 +22,7 @@ from durable_queue import (
     queue_status,
 )
 from queue_drain import release_processing_item
-from runtime_lifecycle import (
-    lifecycle,
-    shutdown_grace_seconds,
-    shutdown_retry_delay_seconds,
-)
+from runtime_lifecycle import lifecycle, shutdown_retry_delay_seconds
 
 logger = logging.getLogger("amthero24.durable_queue")
 core = composed.core
@@ -98,9 +94,6 @@ async def _process_queue_message(message_id: str | None = None) -> bool:
         )
         try:
             await core.process_incoming(message)
-        except asyncio.CancelledError:
-            _settle_interrupted_item(item.message_id)
-            raise
         except Exception:
             logger.exception("Unhandled durable queue processing failure", extra={"message_id": item.message_id})
             repository.retry(item.message_id, "unhandled_processing_error")
@@ -234,21 +227,23 @@ async def _stop_worker() -> None:
         _WORKER_STOP = None
         return
 
-    idle = await lifecycle.wait_for_idle(shutdown_grace_seconds())
-    if not idle and not task.done():
-        task.cancel()
     try:
-        await asyncio.wait_for(task, timeout=2)
-    except TimeoutError:
+        idle = await lifecycle.wait_for_idle()
+        if not idle and not task.done():
+            task.cancel()
+        if not task.done():
+            await asyncio.wait_for(task, timeout=max(0.05, lifecycle.remaining_grace_seconds()))
+        else:
+            await task
+    except (TimeoutError, asyncio.CancelledError):
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
-    except asyncio.CancelledError:
-        pass
-    _WORKER_TASK = None
-    _WORKER_STOP = None
+    finally:
+        _WORKER_TASK = None
+        _WORKER_STOP = None
 
 
 def _install_webhook_route() -> None:
