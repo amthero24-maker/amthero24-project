@@ -17,6 +17,7 @@ from message_idempotency import MessageClaimRepository
 def clean_queue(monkeypatch) -> None:
     monkeypatch.setenv("DURABLE_QUEUE_ENABLED", "true")
     monkeypatch.setenv("MESSAGE_QUEUE_ENCRYPTION_KEY", "queue-ci-2026-unique-7rT4mQ9xLp2V8nK5")
+    layer.lifecycle.start_accepting()
     store = runtime_health.store
     assert store.backend_name == "postgresql"
     with store.pool.connection() as connection:
@@ -110,6 +111,33 @@ def test_expired_worker_lease_is_recovered_after_restart() -> None:
     recovered = queue.claim("wamid.queue-stale", now=now + timedelta(minutes=16))
     assert recovered is not None
     assert recovered.attempt_count == 2
+
+
+def test_graceful_drain_releases_only_current_process_owned_lease() -> None:
+    store = runtime_health.store
+    now = datetime(2026, 8, 8, 11, 0, tzinfo=UTC)
+    _seed("wamid.owned", "+491706663331", now=now)
+    _seed("wamid.other", "+491706663332", now=now)
+    owned = layer.OwnedDurableQueueRepository(store)
+
+    assert owned.claim("wamid.owned", now=now) is not None
+    assert owned.claim("wamid.other", now=now) is not None
+    with store.pool.connection() as connection:
+        connection.execute(
+            "UPDATE inbound_work_queue SET lease_owner = 'different-process' WHERE message_id = %s",
+            ("wamid.other",),
+        )
+
+    assert owned.release_owned(now=now + timedelta(seconds=1)) == 1
+    with store.pool.connection() as connection:
+        rows = connection.execute(
+            "SELECT message_id, status, lease_owner FROM inbound_work_queue ORDER BY message_id"
+        ).fetchall()
+    states = {row["message_id"]: dict(row) for row in rows}
+    assert states["wamid.owned"]["status"] == "queued"
+    assert states["wamid.owned"]["lease_owner"] is None
+    assert states["wamid.other"]["status"] == "processing"
+    assert states["wamid.other"]["lease_owner"] == "different-process"
 
 
 @pytest.mark.anyio
