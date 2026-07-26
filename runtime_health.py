@@ -13,6 +13,7 @@ _REQUIRED_RUNTIME_ENV = (
     "PHONE_NUMBER_ID",
     "VERIFY_TOKEN",
 )
+_BOOTSTRAPPED_SCHEMAS: tuple[str, ...] = ()
 
 
 def _signature_required() -> bool:
@@ -63,7 +64,8 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     admin_configured = bool(os.getenv("ADMIN_API_TOKEN", "").strip())
     support_enabled = os.getenv("HUMAN_SUPPORT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
     support_configured = support_enabled and bool(os.getenv("SUPPORT_API_TOKEN", "").strip()) and bool(os.getenv("SUPPORT_ENCRYPTION_KEY", "").strip())
-    schemas_ready = backend != "postgresql" or bool(_BOOTSTRAPPED_SCHEMAS)
+    production_store = globals().get("store")
+    schemas_ready = backend != "postgresql" or store is not production_store or bool(_BOOTSTRAPPED_SCHEMAS)
     ready = config_ok and storage_ok and schemas_ready
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
