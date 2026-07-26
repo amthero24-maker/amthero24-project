@@ -7,6 +7,14 @@ from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from encryption_policy import (
+    admin_api_token_status,
+    legacy_reminder_decryption_enabled,
+    reminder_encryption_status,
+    support_api_token_status,
+    support_encryption_status,
+    support_security_ready,
+)
 from storage_factory import database_fallback_allowed
 
 _REQUIRED_RUNTIME_ENV = (
@@ -63,13 +71,31 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     abuse_enabled = os.getenv("ABUSE_GUARD_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
     abuse_enforced = os.getenv("ABUSE_GUARD_ENFORCEMENT_ENABLED", "true").strip().casefold() in {"1", "true", "yes", "on"}
     provider = provider_layer.provider_status()
-    admin_configured = bool(os.getenv("ADMIN_API_TOKEN", "").strip())
+    admin_status = admin_api_token_status()
     support_enabled = os.getenv("HUMAN_SUPPORT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
-    support_configured = support_enabled and bool(os.getenv("SUPPORT_API_TOKEN", "").strip()) and bool(os.getenv("SUPPORT_ENCRYPTION_KEY", "").strip())
+    reminder_worker_enabled = os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
+    reminder_key_status = reminder_encryption_status()
+    support_key_status = support_encryption_status()
+    support_token_status = support_api_token_status()
     production_store = globals().get("store")
     schemas_ready = backend != "postgresql" or store is not production_store or bool(_BOOTSTRAPPED_SCHEMAS)
     fallback_allowed = database_fallback_allowed()
     ready = config_ok and storage_ok and schemas_ready
+
+    if not reminder_worker_enabled:
+        reminders_status = "disabled"
+    elif reminder_key_status == "configured":
+        reminders_status = "enabled"
+    else:
+        reminders_status = "misconfigured"
+
+    if not support_enabled:
+        support_status = "disabled"
+    elif support_security_ready():
+        support_status = "configured"
+    else:
+        support_status = "misconfigured"
+
     payload: dict[str, object] = {
         "status": "ready" if ready else "not_ready",
         "version": version,
@@ -82,12 +108,16 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "webhook_signature": signature_status,
             "text_model": model,
             "document_actions": "enabled",
-            "reminders": "enabled" if os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
+            "reminders": reminders_status,
+            "reminder_encryption": reminder_key_status,
+            "reminder_legacy_decryption": "enabled" if legacy_reminder_decryption_enabled() else "disabled",
             "reminder_template": "configured" if os.getenv("WHATSAPP_REMINDER_TEMPLATE", "").strip() else "service-window-only",
             "privacy_retention": "enabled" if os.getenv("PRIVACY_RETENTION_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
-            "admin_overview": "configured" if admin_configured else "disabled",
-            "beta_launch_report": "configured" if admin_configured else "disabled",
-            "human_support": "configured" if support_configured else ("misconfigured" if support_enabled else "disabled"),
+            "admin_overview": admin_status,
+            "beta_launch_report": admin_status,
+            "human_support": support_status,
+            "support_encryption": support_key_status,
+            "support_api_token": support_token_status,
             "anonymous_feedback": "enabled",
             "entitlements": "enforced" if entitlement_enforced else "observe-only",
             "default_plan": os.getenv("ENTITLEMENT_DEFAULT_PLAN", "beta").strip().casefold() or "beta",
