@@ -85,6 +85,20 @@ def test_collects_os_environ_and_wrapper_calls(tmp_path) -> None:
     }
 
 
+def test_virtual_secret_label_with_literal_local_map_is_not_runtime_environment(tmp_path) -> None:
+    source = tmp_path / "migration.py"
+    _write(
+        source,
+        'assessment = assess_secret("VIRTUAL_KEY", environment={"VIRTUAL_KEY": supplied_value})\n'
+        'runtime = assess_secret("REAL_RUNTIME_KEY")\n',
+    )
+
+    uses, findings = collect_environment_uses(tmp_path, files=[source])
+
+    assert findings == []
+    assert {item.variable for item in uses} == {"REAL_RUNTIME_KEY"}
+
+
 def test_test_files_do_not_define_runtime_contract(tmp_path) -> None:
     _write(tmp_path / "tests" / "test_settings.py", 'import os\nvalue = os.getenv("TEST_ONLY_VARIABLE")\n')
     _write(tmp_path / "app.py", 'import os\nvalue = os.getenv("REAL_VARIABLE")\n')
