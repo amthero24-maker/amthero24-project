@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any
 
 import document_extensions as composed
+import reminder_engine as reminder_module
 from reminder_engine import (
     ReminderRepository,
     deliver_due_reminders,
@@ -22,6 +24,7 @@ from whatsapp import send_whatsapp_template
 core = composed.core
 _ORIGINAL_PROCESS_INCOMING = composed.process_incoming
 _ORIGINAL_MISSION_CREATED_MESSAGE = core.mission_created_message
+_ORIGINAL_RENDER_REMINDER = reminder_module.render_reminder
 _REMINDER_REPOSITORY: ReminderRepository | None = None
 _WORKER_TASK: asyncio.Task[None] | None = None
 _WORKER_STOP: asyncio.Event | None = None
@@ -36,6 +39,19 @@ def _repository() -> ReminderRepository:
 
 def _language(profile: dict[str, Any]) -> str:
     return composed.composed._preferred_language(profile) if hasattr(composed, "composed") else "de"
+
+
+def _command_text(text: str) -> str:
+    """Normalize common Arabic spelling variants before deterministic parsing."""
+    value = str(text or "").translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
+    value = re.sub(r"(قبلها|قبل الموعد|قبل المهلة)\s+بيومين\b", r"\1 2 ايام", value)
+    value = re.sub(r"(قبلها|قبل الموعد|قبل المهلة)\s+بيوم\b", r"\1 1 يوم", value)
+    return value
+
+
+def _render_reminder(language: str, title: str) -> str:
+    """Keep every reminder entirely in the user's selected language."""
+    return _ORIGINAL_RENDER_REMINDER(language, title).replace("offene متابعة", "offene Aufgabe")
 
 
 def _reminder_prompt(language: str) -> str:
@@ -59,7 +75,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     profile = core.store.get_user(message.sender)
     language = _language(profile)
     stage = str(profile.get("onboarding_stage") or "")
-    intent = detect_reminder_intent(message.text) if message.message_type == "text" else None
+    intent = detect_reminder_intent(_command_text(message.text)) if message.message_type == "text" else None
 
     # Let onboarding and consent handling run before long-term reminder commands.
     if intent is None or stage != "complete":
@@ -145,6 +161,7 @@ async def _stop_worker() -> None:
 
 
 # Replace request-time targets after all lower composition layers are loaded.
+reminder_module.render_reminder = _render_reminder
 composed.process_incoming = process_incoming
 core.process_incoming = process_incoming
 core.mission_created_message = mission_created_message
