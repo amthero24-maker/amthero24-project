@@ -21,16 +21,20 @@ jobs:
         run: python -m pip install --quiet -r requirements.txt
       - name: Compile
         run: python -m compileall -q app.py config.py data_store.py groq_client.py prompts.py whatsapp.py main.py
-      - name: Test text parsing
-        run: python -c 'import app; p={"entry":[{"changes":[{"value":{"messages":[{"id":"1","from":"49123","type":"text","text":{"body":"Hilfe"}}]}}]}]}; assert app.extract_text_messages(p)==[("1","49123","Hilfe")]'
-      - name: Test button parsing
-        run: python -c 'import app; p={"entry":[{"changes":[{"value":{"messages":[{"id":"2","from":"49123","type":"button","button":{"text":"Ja"}}]}}]}]}; assert app.extract_text_messages(p)==[("2","49123","Ja")]'
-      - name: Test interactive parsing
-        run: python -c 'import app; p={"entry":[{"changes":[{"value":{"messages":[{"id":"3","from":"49123","type":"interactive","interactive":{"button_reply":{"id":"yes","title":"Ja"}}}]}}]}]}; assert app.extract_text_messages(p)==[("3","49123","Ja")]'
-      - name: Test status ignored
-        run: python -c 'import app; p={"entry":[{"changes":[{"value":{"statuses":[{}]}}]}]}; assert app.extract_incoming_messages(p)==[]'
-      - name: Test application suite
-        run: pytest -q tests/test_app.py --tb=short
+      - name: Test parser suite
+        run: pytest -q tests/test_app.py::test_extract_text_button_interactive_and_ignore_statuses --tb=short
+      - name: Test name suite
+        run: pytest -q tests/test_app.py::test_extract_name_keeps_single_name_flow --tb=short
+      - name: Test verification suite
+        run: pytest -q tests/test_app.py::test_verification_success_failure_and_missing_env --tb=short
+      - name: Test webhook suite
+        run: pytest -q tests/test_app.py::test_webhook_malformed_status_and_duplicate --tb=short
+      - name: Test processing suite
+        run: pytest -q tests/test_app.py::test_process_incoming_success_and_groq_failure --tb=short
+      - name: Test media suite
+        run: pytest -q tests/test_app.py::test_media_download_failure_gets_safe_reply --tb=short
+      - name: Test health suite
+        run: pytest -q tests/test_app.py::test_health_does_not_leak_secrets --tb=short
       - name: Test data store
         run: pytest -q tests/test_data_store.py --tb=short
       - name: Test WhatsApp client
