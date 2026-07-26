@@ -60,7 +60,7 @@ async def test_wait_for_idle_respects_short_requested_timeout() -> None:
 def test_shutdown_settings_are_bounded(monkeypatch) -> None:
     monkeypatch.setenv("SHUTDOWN_GRACE_SECONDS", "999")
     monkeypatch.setenv("SHUTDOWN_RETRY_DELAY_SECONDS", "1")
-    assert shutdown_grace_seconds() == 25
+    assert shutdown_grace_seconds() == 12
     assert shutdown_retry_delay_seconds() == 5
 
     monkeypatch.setenv("SHUTDOWN_GRACE_SECONDS", "invalid")
