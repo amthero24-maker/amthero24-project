@@ -18,10 +18,11 @@ As soon as draining starts:
 
 ## One shared shutdown budget
 
-`SHUTDOWN_GRACE_SECONDS` defaults to 10 seconds and is bounded between 1 and 25 seconds.
-The deadline is created once when draining starts. Durable queue, reminder, privacy, and
-other registered shutdown handlers consume the same deadline; they do not each receive a
-fresh timeout.
+`SHUTDOWN_GRACE_SECONDS` defaults to 10 seconds and is bounded between 1 and 12 seconds.
+The maximum remains below Railway's 15-second drain window, leaving time for the process
+itself to finish exiting. The deadline is created once when draining starts. Durable
+queue, reminder, privacy, and other registered shutdown handlers consume the same
+deadline; they do not each receive a fresh timeout.
 
 Worker shutdown priority is:
 
