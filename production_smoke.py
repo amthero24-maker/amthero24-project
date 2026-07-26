@@ -98,6 +98,14 @@ def run_smoke(
         backend_ok = backend == "postgresql" or not require_postgresql
         checks.append(SmokeCheck("storage_backend", "pass" if backend_ok else "fail", backend))
 
+        schemas = str(components.get("postgresql_schemas") or "missing")
+        schemas_ok = schemas == "initialized" or not require_postgresql
+        checks.append(SmokeCheck("postgresql_schemas", "pass" if schemas_ok else "fail", schemas))
+
+        fallback = str(components.get("database_fallback") or "missing")
+        fallback_ok = fallback == "fail-closed" or not require_postgresql
+        checks.append(SmokeCheck("database_fallback", "pass" if fallback_ok else "fail", fallback))
+
         signature = str(components.get("webhook_signature") or "missing")
         signature_ok = signature == "enforced" or not require_signature
         checks.append(SmokeCheck("webhook_signature", "pass" if signature_ok else "fail", signature))

@@ -56,7 +56,7 @@ jobs:
       - name: Provider reliability tests
         run: python -m pytest -q tests/test_provider_reliability.py tests/test_provider_extensions.py
       - name: Beta launch readiness tests
-        run: python -m pytest -q tests/test_launch_readiness.py tests/test_launch_extensions.py
+        run: python -m pytest -q tests/test_launch_readiness.py tests/test_launch_extensions.py tests/test_storage_launch_policy.py
       - name: Human support tests
         run: python -m pytest -q tests/test_support_handoff.py tests/test_support_extensions.py
       - name: Anonymous feedback tests
@@ -68,7 +68,7 @@ jobs:
       - name: Admin protected endpoint tests
         run: python -m pytest -q tests/test_admin_extensions.py
       - name: Production and webhook security tests
-        run: python -m pytest -q tests/test_runtime_health.py tests/test_webhook_security.py
+        run: python -m pytest -q tests/test_runtime_health.py tests/test_webhook_security.py tests/test_storage_factory.py
       - name: Application mission tests
         run: python -m pytest -q tests/test_app_missions.py
       - name: Application tests
@@ -99,6 +99,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amthero24_test
+      DATABASE_FALLBACK_ALLOWED: "false"
       DB_POOL_MAX: "4"
       GROQ_API_KEY: integration-groq-key
       WHATSAPP_TOKEN: integration-whatsapp-token
