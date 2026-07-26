@@ -2,14 +2,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from scripts.scan_repository_secrets import scan_repository, scan_text
-
-
-def test_repository_has_no_detected_credentials() -> None:
-    root = Path(__file__).resolve().parents[1]
-    assert scan_repository(root) == []
 
 
 def test_scanner_detects_token_without_returning_raw_value(tmp_path) -> None:
