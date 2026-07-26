@@ -1,9 +1,11 @@
-"""Safe liveness/readiness diagnostics for AmtHero24 production."""
+"""Safe liveness/readiness diagnostics and production entrypoint."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from typing import Any
+
+from fastapi.responses import JSONResponse
 
 _REQUIRED_RUNTIME_ENV = (
     "GROQ_API_KEY",
@@ -59,3 +61,14 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
         },
     }
     return payload, 200 if ready else 503
+
+
+# Import the fully composed application only after defining pure health helpers.
+from application import app, store  # noqa: E402
+from config import APP_VERSION, GROQ_MODEL  # noqa: E402
+
+
+@app.get("/ready", include_in_schema=False)
+async def ready() -> JSONResponse:
+    payload, status_code = readiness_payload(store, version=APP_VERSION, model=GROQ_MODEL)
+    return JSONResponse(payload, status_code=status_code)
