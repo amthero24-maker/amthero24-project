@@ -17,6 +17,11 @@ data/*.json
 *.sqlite
 *.sqlite3
 secret-scan-report.json
+secret-scan.json
+production-monitor.json
+dependency-policy.json
+pip-audit.json
+resolved-audit-environment.txt
 sbom*.json
 audit*.json
 /backups/
