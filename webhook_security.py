@@ -15,6 +15,7 @@ from log_safety import install_logging_safety
 install_logging_safety()
 
 from encryption_policy import install_encryption_policy  # noqa: E402
+from http_boundary import HttpBoundaryMiddleware, webhook_body_limit  # noqa: E402
 from storage_factory import install_production_storage_policy  # noqa: E402
 
 # Install durable-storage and reversible-encryption policies before application
@@ -23,8 +24,6 @@ install_production_storage_policy()
 install_encryption_policy()
 
 import runtime_health  # noqa: E402
-
-_MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
 
 
 def signature_required() -> bool:
@@ -78,13 +77,14 @@ class MetaWebhookSignatureMiddleware:
 
         chunks: list[bytes] = []
         size = 0
+        limit = webhook_body_limit()
         while True:
             message = await receive()
             if message.get("type") != "http.request":
                 continue
             chunk = bytes(message.get("body") or b"")
             size += len(chunk)
-            if size > _MAX_WEBHOOK_BODY_BYTES:
+            if size > limit:
                 await _json_response(send, 413, {"status": "rejected"})
                 return
             chunks.append(chunk)
@@ -113,4 +113,5 @@ class MetaWebhookSignatureMiddleware:
         await self.app(scope, replay_receive, send)
 
 
-app = MetaWebhookSignatureMiddleware(runtime_health.app)
+_signed_app = MetaWebhookSignatureMiddleware(runtime_health.app)
+app = HttpBoundaryMiddleware(_signed_app)
