@@ -8,7 +8,7 @@ import production_smoke
 
 def _healthy(path: str) -> tuple[int, dict]:
     if path == "/health":
-        return 200, {"status": "ok", "version": "3.1.0", "storage": "postgresql"}
+        return 200, {"status": "ok", "version": "3.2.0", "storage": "postgresql"}
     if path == "/ready":
         return 200, {
             "status": "ready",
@@ -17,6 +17,9 @@ def _healthy(path: str) -> tuple[int, dict]:
                 "postgresql_schemas": "initialized",
                 "database_fallback": "fail-closed",
                 "webhook_signature": "enforced",
+                "reminders": "enabled",
+                "reminder_encryption": "configured",
+                "admin_overview": "configured",
                 "privacy_retention": "enabled",
                 "provider_telemetry": "enabled",
                 "abuse_guard": "enforced",
@@ -30,7 +33,7 @@ def test_smoke_passes_for_healthy_production() -> None:
         checks = production_smoke.run_smoke(
             "https://example.test",
             admin_token="secret",
-            expected_version="3.1.0",
+            expected_version="3.2.0",
             require_signature=True,
             require_launch_ready=True,
         )
@@ -42,14 +45,17 @@ def test_smoke_passes_for_healthy_production() -> None:
         "storage_backend",
         "postgresql_schemas",
         "database_fallback",
+        "reminders",
+        "reminder_encryption",
+        "admin_secret",
         "launch_decision",
     }
 
 
-def test_smoke_fails_on_json_fallback_optional_signature_and_split_brain_policy() -> None:
+def test_smoke_fails_on_storage_signature_and_encryption_misconfiguration() -> None:
     def response(base: str, path: str, **kwargs):
         if path == "/health":
-            return 200, {"status": "ok", "version": "3.1.0"}
+            return 200, {"status": "ok", "version": "3.2.0"}
         return 200, {
             "status": "ready",
             "components": {
@@ -57,6 +63,8 @@ def test_smoke_fails_on_json_fallback_optional_signature_and_split_brain_policy(
                 "postgresql_schemas": "unavailable",
                 "database_fallback": "allowed",
                 "webhook_signature": "optional",
+                "reminders": "misconfigured",
+                "reminder_encryption": "weak",
                 "privacy_retention": "enabled",
                 "provider_telemetry": "enabled",
                 "abuse_guard": "enforced",
@@ -71,6 +79,8 @@ def test_smoke_fails_on_json_fallback_optional_signature_and_split_brain_policy(
         "postgresql_schemas",
         "database_fallback",
         "webhook_signature",
+        "reminders",
+        "reminder_encryption",
     }
 
 
