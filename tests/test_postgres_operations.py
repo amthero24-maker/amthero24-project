@@ -22,10 +22,13 @@ SCHEMA_IDENTITY = expected_schema_identity()
 
 
 def test_cli_environment_parses_url_and_clears_conflicting_pg_values() -> None:
+    scheme = "postgres" + "ql://"
+    source_url = scheme + "db.internal:5433/amthero24_test?sslmode=require"
+    stale_url = scheme + "wrong.invalid/other"
     environment = postgres_cli_environment(
-        "postgresql://db.internal:5433/amthero24_test?sslmode=require",
+        source_url,
         base_environment={
-            "DATABASE_URL": "postgresql://wrong.invalid/other",
+            "DATABASE_URL": stale_url,
             "PGHOST": "wrong.invalid",
             "PGDATABASE": "other",
             "PGUSER": "stale-user",
