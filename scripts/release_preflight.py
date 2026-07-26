@@ -1,7 +1,8 @@
 """Strict, read-only production release gate for AmtHero24.
 
-The gate combines live production smoke checks with optional verification of a recent
-backup manifest. It never writes application data or prints credentials.
+The gate combines live production smoke checks with optional verification of a recent,
+encrypted, schema-compatible backup manifest. It never writes application data or prints
+credentials.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import production_smoke
+from schema_recovery import expected_schema_identity
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,7 @@ def _parse_time(value: Any) -> datetime | None:
 
 
 def verify_backup_manifest(path: str, *, now: datetime | None = None, max_age_hours: int = 26) -> list[GateCheck]:
-    """Validate non-secret backup metadata without reading the encrypted dump."""
+    """Validate non-secret backup and schema metadata without reading the encrypted dump."""
     if not str(path or "").strip():
         return [GateCheck("backup_manifest", False, "manifest path is required")]
     target = Path(path)
@@ -63,10 +65,31 @@ def verify_backup_manifest(path: str, *, now: datetime | None = None, max_age_ho
     hash_ok = len(artifact_hash) == 64 and all(char in "0123456789abcdefABCDEF" for char in artifact_hash)
     dump_name = str(payload.get("artifact") or payload.get("filename") or "").strip()
     artifact_ok = bool(dump_name) and dump_name.endswith(".dump.fernet")
+
+    expected = expected_schema_identity()
+    try:
+        schema_version = int(payload.get("schema_version"))
+    except (TypeError, ValueError):
+        schema_version = 0
+    try:
+        ledger_entries = int(payload.get("schema_ledger_entries"))
+    except (TypeError, ValueError):
+        ledger_entries = 0
+    schema_checksum = str(payload.get("schema_checksum") or "").strip().lower()
+    schema_contract = str(payload.get("schema_contract") or "").strip().casefold()
+    schema_version_ok = schema_version == expected.version
+    schema_checksum_ok = schema_checksum == expected.checksum
+    schema_ledger_ok = ledger_entries == expected.ledger_entries == schema_version
+    schema_contract_ok = schema_contract == "valid"
+
     return [
         GateCheck("backup_age", age_ok, "recent" if age_ok else "missing, future-dated, or too old"),
         GateCheck("backup_integrity_metadata", hash_ok, "present" if hash_ok else "missing or invalid"),
         GateCheck("backup_artifact_metadata", artifact_ok, "encrypted artifact recorded" if artifact_ok else "missing encrypted artifact name"),
+        GateCheck("backup_schema_version", schema_version_ok, "current" if schema_version_ok else "missing or incompatible"),
+        GateCheck("backup_schema_checksum", schema_checksum_ok, "compatible" if schema_checksum_ok else "missing or incompatible"),
+        GateCheck("backup_schema_ledger", schema_ledger_ok, "complete" if schema_ledger_ok else "missing or inconsistent"),
+        GateCheck("backup_schema_contract", schema_contract_ok, "valid" if schema_contract_ok else "missing or invalid"),
     ]
 
 
