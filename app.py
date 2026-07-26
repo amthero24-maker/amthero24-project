@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import anyio
@@ -15,6 +15,19 @@ from config import APP_VERSION, DATA_STORE_PATH, GROQ_MODEL, required_env
 from conversation_intelligence import build_effective_user_text, detect_language, extract_city, infer_topic
 from data_store import JsonDataStore
 from groq_client import generate_reply
+from onboarding import (
+    MEMORY_CONSENT_VERSION,
+    ask_name_message,
+    consent_decision,
+    consent_declined_message,
+    consent_granted_message,
+    consent_prompt,
+    is_enable_memory_request,
+    is_memory_summary_request,
+    is_simple_greeting,
+    memory_summary_message,
+    welcome_message,
+)
 from product_knowledge import product_answer
 from prompts import build_system_prompt
 from whatsapp import download_media_bytes, get_media_url, send_whatsapp_message
@@ -25,6 +38,11 @@ logger = logging.getLogger("amthero24")
 app = FastAPI(title="AmtHero24", version=APP_VERSION)
 store = JsonDataStore(DATA_STORE_PATH)
 
+_LONG_TERM_MEMORY_FIELDS = {
+    "first_name", "city", "preferred_language", "current_topic", "last_assistant_reply",
+    "conversation_summary", "communication_style",
+}
+
 
 @dataclass(frozen=True)
 class IncomingMessage:
@@ -34,6 +52,19 @@ class IncomingMessage:
     message_type: str
     media_id: str | None = None
     mime_type: str = "application/octet-stream"
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _session_expiry() -> str:
+    return (_now() + timedelta(hours=24)).isoformat()
+
+
+def _is_name_only(text: str, name: str) -> bool:
+    cleaned = (text or "").strip()
+    return bool(name and len(cleaned) <= 50 and len(cleaned.split()) <= 4 and not re.search(r"[?!؟]", cleaned))
 
 
 def extract_name(text: str) -> str:
@@ -55,6 +86,7 @@ def extract_name(text: str) -> str:
                 "مرحبا", "أهلا", "اهلا", "سلام", "هلا", "تمام", "نعم", "لا", "شكرا", "مساعدة",
                 "بالعربي", "بالعربية", "بالألماني", "بالانجليزي", "جديد", "جديدة", "هون", "هنا",
                 "تاني", "ثاني", "كمان", "شو كمان", "شو بتقدم", "شو بتعمل", "شو اللغات",
+                "عندي مشكلة", "بدي مساعدة", "مو هلق", "مش هلق", "بدون ذاكرة",
                 "hallo", "hi", "hilfe", "danke", "ja", "nein", "okay", "ok", "deutsch", "english",
                 "hello", "help", "thanks", "yes", "no", "привіт", "так", "ні", "дякую", "βοήθεια", "γεια", "ναι", "όχι",
             }
@@ -132,46 +164,185 @@ def _deletion_confirmation(language: str) -> str:
     }.get(language, "Your saved data has been deleted.")
 
 
+async def _finish(message_id: str, reply: str, sender: str) -> None:
+    await send_whatsapp_message(sender, reply)
+    store.update_message_status(message_id, "sent")
+
+
 async def process_incoming(message: IncomingMessage) -> None:
     language = "de"
     has_media = message.media_id is not None
     try:
+        store.cleanup_expired()
         profile = store.get_user(message.sender)
-        previous_language = str(profile.get("preferred_language") or "de")
-        previous_topic = str(profile.get("current_topic") or "")
+        memory_enabled = profile.get("memory_consent") == "granted"
+        previous_language = str(
+            profile.get("preferred_language") if memory_enabled else profile.get("session_language")
+            or profile.get("preferred_language")
+            or "de"
+        )
+        previous_topic = str(
+            profile.get("current_topic") if memory_enabled else profile.get("session_topic")
+            or profile.get("current_topic")
+            or ""
+        )
         language = detect_language(message.text, previous_language) if message.text.strip() else previous_language
         lowered = message.text.casefold()
+
         if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "احذف بياناتي", "видали мої дані")):
             store.delete_user(message.sender)
-            await send_whatsapp_message(message.sender, _deletion_confirmation(language))
+            await _finish(message.message_id, _deletion_confirmation(language), message.sender)
             return
 
+        if is_memory_summary_request(message.text):
+            await _finish(message.message_id, memory_summary_message(language, profile), message.sender)
+            return
+
+        if is_enable_memory_request(message.text) and not memory_enabled:
+            pending_name = str(profile.get("pending_name") or profile.get("first_name") or "").strip()
+            stage = "awaiting_consent" if pending_name else "awaiting_name"
+            updates: dict[str, Any] = {
+                "onboarding_stage": stage,
+                "session_language": language,
+                "session_expires_at": _session_expiry(),
+            }
+            if pending_name:
+                updates["pending_name"] = pending_name
+                updates["pending_name_expires_at"] = _session_expiry()
+            profile = store.update_user(message.sender, updates)
+            reply = consent_prompt(language, pending_name) if pending_name else ask_name_message(language)
+            await _finish(message.message_id, reply, message.sender)
+            return
+
+        extracted_name = extract_name(message.text)
+        is_new_user = not profile
+        stage = str(profile.get("onboarding_stage") or "")
+
+        if is_new_user:
+            onboarding_updates: dict[str, Any] = {
+                "intro_sent_at": _now().isoformat(),
+                "onboarding_stage": "awaiting_consent" if extracted_name else "awaiting_name",
+                "session_language": language,
+                "session_expires_at": _session_expiry(),
+            }
+            if extracted_name:
+                onboarding_updates["pending_name"] = extracted_name
+                onboarding_updates["pending_name_expires_at"] = _session_expiry()
+            profile = store.update_user(message.sender, onboarding_updates)
+            await send_whatsapp_message(message.sender, welcome_message(language, extracted_name))
+            if extracted_name:
+                await send_whatsapp_message(message.sender, consent_prompt(language, extracted_name))
+            if is_simple_greeting(message.text) or _is_name_only(message.text, extracted_name):
+                store.update_message_status(message.message_id, "sent")
+                return
+            stage = str(profile.get("onboarding_stage") or "")
+
+        elif not profile.get("memory_consent") and not profile.get("intro_sent_at"):
+            # One-time consent repair for profiles created by older builds.
+            pending_name = str(profile.get("first_name") or "").strip()
+            repair_updates: dict[str, Any] = {
+                "intro_sent_at": _now().isoformat(),
+                "onboarding_stage": "awaiting_consent" if pending_name else "awaiting_name",
+                "session_language": language,
+                "session_expires_at": _session_expiry(),
+            }
+            if pending_name:
+                repair_updates["pending_name"] = pending_name
+                repair_updates["pending_name_expires_at"] = _session_expiry()
+            profile = store.update_user(message.sender, repair_updates)
+            await send_whatsapp_message(
+                message.sender,
+                consent_prompt(language, pending_name) if pending_name else ask_name_message(language),
+            )
+            stage = str(profile.get("onboarding_stage") or "")
+            if is_simple_greeting(message.text):
+                store.update_message_status(message.message_id, "sent")
+                return
+
+        if stage == "awaiting_name" and extracted_name:
+            profile = store.update_user(message.sender, {
+                "pending_name": extracted_name,
+                "pending_name_expires_at": _session_expiry(),
+                "onboarding_stage": "awaiting_consent",
+                "session_language": language,
+                "session_expires_at": _session_expiry(),
+            })
+            await send_whatsapp_message(message.sender, consent_prompt(language, extracted_name))
+            if _is_name_only(message.text, extracted_name):
+                store.update_message_status(message.message_id, "sent")
+                return
+            stage = "awaiting_consent"
+
+        if stage == "awaiting_consent":
+            decision = consent_decision(message.text)
+            if decision is not None:
+                pending_name = str(profile.get("pending_name") or "").strip()
+                consent_updates: dict[str, Any] = {
+                    "memory_consent": "granted" if decision else "declined",
+                    "memory_consent_at": _now().isoformat(),
+                    "memory_consent_version": MEMORY_CONSENT_VERSION,
+                    "onboarding_stage": "complete",
+                    "session_language": language,
+                    "session_expires_at": _session_expiry(),
+                }
+                if decision:
+                    consent_updates["preferred_language"] = language
+                    if pending_name:
+                        consent_updates["first_name"] = pending_name
+                    profile = store.update_user(message.sender, consent_updates)
+                    profile = store.remove_user_fields(message.sender, {"pending_name", "pending_name_expires_at"})
+                    await _finish(message.message_id, consent_granted_message(language, pending_name), message.sender)
+                else:
+                    store.update_user(message.sender, consent_updates)
+                    profile = store.remove_user_fields(
+                        message.sender,
+                        _LONG_TERM_MEMORY_FIELDS | {"pending_name", "pending_name_expires_at"},
+                    )
+                    await _finish(message.message_id, consent_declined_message(language), message.sender)
+                return
+
+        profile = store.get_user(message.sender)
+        memory_enabled = profile.get("memory_consent") == "granted"
+        previous_topic = str(profile.get("current_topic") if memory_enabled else profile.get("session_topic") or previous_topic)
         authoritative = product_answer(message.text, language, previous_topic)
         effective_text = build_effective_user_text(message.text, profile)
         city = extract_city(message.text)
         inferred_topic = infer_topic(message.text, previous_topic)
         topic = authoritative[1] if authoritative else (inferred_topic or ("document" if has_media else previous_topic))
-        updates: dict[str, Any] = {
-            "preferred_language": language,
-            "last_seen": datetime.now(UTC).isoformat(),
-            "last_message": message.text[:200],
-            "last_message_type": message.message_type,
-            "current_topic": topic,
+
+        operational_updates: dict[str, Any] = {
+            "session_language": language,
+            "session_topic": topic,
+            "session_expires_at": _session_expiry(),
+            "last_seen": _now().isoformat(),
         }
-        name = extract_name(message.text)
-        if name:
-            updates["first_name"] = name
-        if city:
-            updates["city"] = city
-        profile = store.update_user(message.sender, updates)
+        if memory_enabled:
+            operational_updates.update({
+                "preferred_language": language,
+                "last_message": message.text[:200],
+                "last_message_type": message.message_type,
+                "current_topic": topic,
+            })
+            if extracted_name:
+                operational_updates["first_name"] = extracted_name
+            if city:
+                operational_updates["city"] = city
+        profile = store.update_user(message.sender, operational_updates)
 
         if authoritative:
             reply = authoritative[0]
             await send_whatsapp_message(message.sender, reply)
-            store.update_user(message.sender, {
-                "last_assistant_reply": reply,
-                "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; authoritative product answer",
-            })
+            response_updates: dict[str, Any] = {
+                "session_last_reply": reply,
+                "session_topic": topic,
+                "session_expires_at": _session_expiry(),
+            }
+            if memory_enabled:
+                response_updates.update({
+                    "last_assistant_reply": reply,
+                    "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; authoritative product answer",
+                })
+            store.update_user(message.sender, response_updates)
             store.update_message_status(message.message_id, "sent")
             return
 
@@ -183,11 +354,15 @@ async def process_incoming(message: IncomingMessage) -> None:
             if not effective_text.strip():
                 effective_text = "Explain this document clearly in the user's preferred language. State what it means, what matters, and the next practical step."
 
+        prompt_profile = dict(profile)
+        prompt_profile.setdefault("preferred_language", language)
+        prompt_profile.setdefault("current_topic", topic)
+        prompt_profile.setdefault("last_assistant_reply", str(profile.get("session_last_reply") or ""))
         prompt = build_system_prompt(
             sender=message.sender,
             text=effective_text,
             detected_language=language,
-            profile=profile,
+            profile=prompt_profile,
             history=history,
             has_image=has_media,
         )
@@ -198,10 +373,17 @@ async def process_incoming(message: IncomingMessage) -> None:
             mime_type=message.mime_type,
         ))
         await send_whatsapp_message(message.sender, reply)
-        store.update_user(message.sender, {
-            "last_assistant_reply": reply,
-            "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; latest request={message.text[:180]}",
-        })
+        response_updates = {
+            "session_last_reply": reply,
+            "session_topic": topic,
+            "session_expires_at": _session_expiry(),
+        }
+        if memory_enabled:
+            response_updates.update({
+                "last_assistant_reply": reply,
+                "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; latest request={message.text[:180]}",
+            })
+        store.update_user(message.sender, response_updates)
         store.update_message_status(message.message_id, "sent")
     except Exception:
         logger.exception("Message processing failed", extra={"message_id": message.message_id})
