@@ -8,12 +8,14 @@ import production_smoke
 
 def _healthy(path: str) -> tuple[int, dict]:
     if path == "/health":
-        return 200, {"status": "ok", "version": "3.0.0", "storage": "postgresql"}
+        return 200, {"status": "ok", "version": "3.1.0", "storage": "postgresql"}
     if path == "/ready":
         return 200, {
             "status": "ready",
             "components": {
                 "storage_backend": "postgresql",
+                "postgresql_schemas": "initialized",
+                "database_fallback": "fail-closed",
                 "webhook_signature": "enforced",
                 "privacy_retention": "enabled",
                 "provider_telemetry": "enabled",
@@ -28,23 +30,32 @@ def test_smoke_passes_for_healthy_production() -> None:
         checks = production_smoke.run_smoke(
             "https://example.test",
             admin_token="secret",
-            expected_version="3.0.0",
+            expected_version="3.1.0",
             require_signature=True,
             require_launch_ready=True,
         )
     assert checks
     assert all(item.passed for item in checks)
-    assert {item.name for item in checks} >= {"health", "readiness", "storage_backend", "launch_decision"}
+    assert {item.name for item in checks} >= {
+        "health",
+        "readiness",
+        "storage_backend",
+        "postgresql_schemas",
+        "database_fallback",
+        "launch_decision",
+    }
 
 
-def test_smoke_fails_on_json_fallback_and_optional_signature() -> None:
+def test_smoke_fails_on_json_fallback_optional_signature_and_split_brain_policy() -> None:
     def response(base: str, path: str, **kwargs):
         if path == "/health":
-            return 200, {"status": "ok", "version": "3.0.0"}
+            return 200, {"status": "ok", "version": "3.1.0"}
         return 200, {
             "status": "ready",
             "components": {
                 "storage_backend": "json-fallback",
+                "postgresql_schemas": "unavailable",
+                "database_fallback": "allowed",
                 "webhook_signature": "optional",
                 "privacy_retention": "enabled",
                 "provider_telemetry": "enabled",
@@ -55,7 +66,12 @@ def test_smoke_fails_on_json_fallback_and_optional_signature() -> None:
     with patch("production_smoke.fetch_json", side_effect=response):
         checks = production_smoke.run_smoke("https://example.test", require_signature=True)
     failed = {item.name for item in checks if not item.passed}
-    assert failed == {"storage_backend", "webhook_signature"}
+    assert failed == {
+        "storage_backend",
+        "postgresql_schemas",
+        "database_fallback",
+        "webhook_signature",
+    }
 
 
 def test_smoke_stops_cleanly_when_health_is_unavailable() -> None:
