@@ -12,6 +12,7 @@ from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from config import APP_VERSION, DATA_STORE_PATH, GROQ_MODEL, required_env
+from conversation_intelligence import build_effective_user_text, detect_language, extract_city, infer_topic
 from data_store import JsonDataStore
 from groq_client import generate_reply
 from prompts import build_system_prompt
@@ -34,41 +35,26 @@ class IncomingMessage:
     mime_type: str = "application/octet-stream"
 
 
-def detect_language(text: str) -> str:
-    if re.search(r"[\u0600-\u06FF]", text or ""):
-        return "ar"
-    if re.search(r"[\u0400-\u04FF]", text or ""):
-        return "uk"
-    if re.search(r"[\u0370-\u03FF]", text or ""):
-        return "el"
-    lowered = (text or "").lower()
-    if any(word in lowered for word in ("hello", "please", "thanks", "help")):
-        return "en"
-    return "de"
-
-
 def extract_name(text: str) -> str:
     cleaned = (text or "").strip()
     patterns = (
-        r"(?:اسمي|أنا|انا)\s+([\u0600-\u06FFA-Za-zÄÖÜäöüß-]{2,30})",
-        r"(?:ich heiße|ich bin|mein name ist)\s+([A-Za-zÄÖÜäöüß-]{2,30})",
-        r"(?:my name is|i am)\s+([A-Za-z-]{2,30})",
-        r"(?:мене звати|я)\s+([\u0400-\u04FF-]{2,30})",
-        r"(?:με λένε|είμαι)\s+([\u0370-\u03FF-]{2,30})",
+        r"(?:اسمي|أنا اسمي|انا اسمي)\s+([\u0600-\u06FFA-Za-zÄÖÜäöüß-]{2,30})",
+        r"(?:ich heiße|mein name ist)\s+([A-Za-zÄÖÜäöüß-]{2,30})",
+        r"(?:my name is)\s+([A-Za-z-]{2,30})",
+        r"(?:мене звати)\s+([\u0400-\u04FF-]{2,30})",
+        r"(?:με λένε)\s+([\u0370-\u03FF-]{2,30})",
     )
     for pattern in patterns:
         match = re.search(pattern, cleaned, re.IGNORECASE)
         if match:
             return match.group(1)
-
-    # Preserve the proven WhatsApp flow where a user replies with only their name.
     if 1 <= len(cleaned.split()) <= 2 and len(cleaned) <= 40 and not re.search(r"[?!؟]", cleaned):
         if re.fullmatch(r"[\u0600-\u06FFA-Za-zÄÖÜäöüß\u0400-\u04FF\u0370-\u03FF' -]+", cleaned):
             ignored = {
                 "مرحبا", "أهلا", "اهلا", "سلام", "هلا", "تمام", "نعم", "لا", "شكرا", "مساعدة",
-                "hallo", "hi", "hilfe", "danke", "ja", "nein", "okay", "ok",
-                "hello", "help", "thanks", "yes", "no",
-                "привіт", "так", "ні", "дякую", "βοήθεια", "γεια", "ναι", "όχι",
+                "بالعربي", "بالعربية", "بالألماني", "بالانجليزي", "جديد", "جديدة", "هون", "هنا",
+                "hallo", "hi", "hilfe", "danke", "ja", "nein", "okay", "ok", "deutsch", "english",
+                "hello", "help", "thanks", "yes", "no", "привіт", "так", "ні", "дякую", "βοήθεια", "γεια", "ναι", "όχι",
             }
             if cleaned.casefold() not in {item.casefold() for item in ignored}:
                 return cleaned.split()[0]
@@ -81,11 +67,9 @@ def _message_from_payload(message: dict[str, Any]) -> IncomingMessage | None:
     message_type = str(message.get("type", "")).strip()
     if not message_id or not sender:
         return None
-
     text = ""
     media_id: str | None = None
     mime_type = "application/octet-stream"
-
     if message_type == "text":
         text = str(message.get("text", {}).get("body", ""))
     elif message_type == "button":
@@ -103,7 +87,6 @@ def _message_from_payload(message: dict[str, Any]) -> IncomingMessage | None:
             return None
     else:
         return None
-
     return IncomingMessage(message_id, sender, text, message_type, media_id, mime_type)
 
 
@@ -111,58 +94,38 @@ def extract_incoming_messages(payload: Any) -> list[IncomingMessage]:
     if not isinstance(payload, dict):
         return []
     extracted: list[IncomingMessage] = []
-    entries = payload.get("entry", [])
-    if not isinstance(entries, list):
-        return []
-    for entry in entries:
+    for entry in payload.get("entry", []) if isinstance(payload.get("entry", []), list) else []:
         if not isinstance(entry, dict):
             continue
-        changes = entry.get("changes", [])
-        if not isinstance(changes, list):
-            continue
-        for change in changes:
-            if not isinstance(change, dict):
-                continue
-            value = change.get("value", {})
-            if not isinstance(value, dict):
-                continue
-            messages = value.get("messages", [])
-            if not isinstance(messages, list):
-                continue
-            for message in messages:
-                if isinstance(message, dict):
-                    parsed = _message_from_payload(message)
-                    if parsed:
-                        extracted.append(parsed)
+        for change in entry.get("changes", []) if isinstance(entry.get("changes", []), list) else []:
+            value = change.get("value", {}) if isinstance(change, dict) else {}
+            messages = value.get("messages", []) if isinstance(value, dict) else []
+            for raw in messages if isinstance(messages, list) else []:
+                parsed = _message_from_payload(raw) if isinstance(raw, dict) else None
+                if parsed:
+                    extracted.append(parsed)
     return extracted
 
 
 def extract_text_messages(payload: Any) -> list[tuple[str, str, str]]:
-    return [
-        (item.message_id, item.sender, item.text)
-        for item in extract_incoming_messages(payload)
-        if item.message_type in {"text", "button", "interactive"}
-    ]
+    return [(item.message_id, item.sender, item.text) for item in extract_incoming_messages(payload) if item.message_type in {"text", "button", "interactive"}]
 
 
 def _safe_failure(language: str, has_media: bool) -> str:
-    if language == "ar":
-        return "ما قدرت اقرأ الملف بوضوح. أرسل صورة أوضح أو انسخ النص المهم." if has_media else "صار خلل تقني صغير. جرّب إرسال رسالتك مرة ثانية."
-    if language == "uk":
-        return "Сталася технічна помилка. Будь ласка, надішліть повідомлення ще раз."
-    if language == "el":
-        return "Παρουσιάστηκε τεχνικό πρόβλημα. Στείλε ξανά το μήνυμά σου."
-    if language == "de":
-        return "Es gab ein kleines technisches Problem. Bitte sende deine Nachricht erneut."
-    return "A small technical issue occurred. Please send your message again."
+    messages = {
+        "ar": "ما قدرت اقرأ الملف بوضوح. ابعت صورة أوضح أو قصّ الجزء المهم." if has_media else "صار خلل تقني صغير. ابعت رسالتك مرة ثانية.",
+        "uk": "Сталася технічна помилка. Будь ласка, надішліть повідомлення ще раз.",
+        "el": "Παρουσιάστηκε τεχνικό πρόβλημα. Στείλε ξανά το μήνυμά σου.",
+        "de": "Es gab ein kleines technisches Problem. Bitte sende deine Nachricht erneut.",
+        "en": "A small technical issue occurred. Please send your message again.",
+    }
+    return messages.get(language, messages["de"])
 
 
 def _deletion_confirmation(language: str) -> str:
     return {
-        "ar": "تم حذف بياناتك المحفوظة.",
-        "uk": "Збережені дані видалено.",
-        "el": "Τα αποθηκευμένα δεδομένα σου διαγράφηκαν.",
-        "de": "Deine gespeicherten Daten wurden gelöscht.",
+        "ar": "تم حذف بياناتك المحفوظة.", "uk": "Збережені дані видалено.",
+        "el": "Τα αποθηκευμένα δεδομένα σου διαγράφηκαν.", "de": "Deine gespeicherten Daten wurden gelöscht.",
         "en": "Your saved data has been deleted.",
     }.get(language, "Your saved data has been deleted.")
 
@@ -172,32 +135,42 @@ async def process_incoming(message: IncomingMessage) -> None:
     has_media = message.media_id is not None
     try:
         profile = store.get_user(message.sender)
-        language = detect_language(message.text) if message.text.strip() else str(profile.get("preferred_language") or "de")
+        previous_language = str(profile.get("preferred_language") or "de")
+        language = detect_language(message.text, previous_language) if message.text.strip() else previous_language
         lowered = message.text.casefold()
-        if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "видали мої дані")):
+        if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "احذف بياناتي", "видали мої дані")):
             store.delete_user(message.sender)
             await send_whatsapp_message(message.sender, _deletion_confirmation(language))
             return
 
-        name = extract_name(message.text)
+        effective_text = build_effective_user_text(message.text, profile)
+        city = extract_city(message.text)
+        topic = infer_topic(message.text, str(profile.get("current_topic") or "document" if has_media else ""))
         updates: dict[str, Any] = {
             "preferred_language": language,
             "last_seen": datetime.now(UTC).isoformat(),
             "last_message": message.text[:200],
+            "last_message_type": message.message_type,
+            "current_topic": topic,
         }
+        name = extract_name(message.text)
         if name:
             updates["first_name"] = name
+        if city:
+            updates["city"] = city
         profile = store.update_user(message.sender, updates)
-        history = store.recent_user_messages(message.sender)
+        history = store.recent_user_messages(message.sender, limit=6)
 
         image_bytes: bytes | None = None
         if message.media_id:
             media_url = await get_media_url(message.media_id)
             image_bytes = await download_media_bytes(media_url)
+            if not effective_text.strip():
+                effective_text = "Explain this document clearly in the user's preferred language. State what it means, what matters, and the next practical step."
 
         prompt = build_system_prompt(
             sender=message.sender,
-            text=message.text,
+            text=effective_text,
             detected_language=language,
             profile=profile,
             history=history,
@@ -205,11 +178,15 @@ async def process_incoming(message: IncomingMessage) -> None:
         )
         reply = await anyio.to_thread.run_sync(lambda: generate_reply(
             system_prompt=prompt,
-            user_text=message.text,
+            user_text=effective_text,
             image_bytes=image_bytes,
             mime_type=message.mime_type,
         ))
         await send_whatsapp_message(message.sender, reply)
+        store.update_user(message.sender, {
+            "last_assistant_reply": reply,
+            "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; latest request={message.text[:180]}",
+        })
         store.update_message_status(message.message_id, "sent")
     except Exception:
         logger.exception("Message processing failed", extra={"message_id": message.message_id})
@@ -256,16 +233,9 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
     except (ValueError, UnicodeDecodeError):
         logger.warning("Ignoring malformed webhook payload")
         return JSONResponse({"status": "accepted"})
-
     for message in extract_incoming_messages(payload):
         try:
-            claimed = store.claim_message(
-                message.message_id,
-                message.sender,
-                message.text,
-                message_type=message.message_type,
-                media_id=message.media_id,
-            )
+            claimed = store.claim_message(message.message_id, message.sender, message.text, message_type=message.message_type, media_id=message.media_id)
         except Exception:
             logger.exception("Unable to claim webhook message", extra={"message_id": message.message_id})
             continue
