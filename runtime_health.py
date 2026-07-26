@@ -70,13 +70,14 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "reminders": "enabled" if os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
             "reminder_template": "configured" if os.getenv("WHATSAPP_REMINDER_TEMPLATE", "").strip() else "service-window-only",
             "privacy_retention": "enabled" if os.getenv("PRIVACY_RETENTION_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"} else "disabled",
+            "admin_overview": "configured" if os.getenv("ADMIN_API_TOKEN", "").strip() else "disabled",
         },
     }
     return payload, 200 if ready else 503
 
 
 # Import all production composition layers after defining pure health helpers.
-from document_action_extensions import app, store  # noqa: E402
+from admin_extensions import app, store  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 
 
