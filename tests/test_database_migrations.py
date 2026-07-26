@@ -42,6 +42,40 @@ def test_contract_checksum_is_deterministic_and_non_secret() -> None:
     assert first.isalnum()
 
 
+def test_version_one_checksum_is_frozen_to_the_deployed_contract() -> None:
+    expected = "b79ba86b0703b775ba29b6321c73ae9227f327f52cd53ff518a921e5f9b67c5a"
+    assert migrations._SCHEMA_V1_CHECKSUM == expected
+    assert migrations._contract_checksum(
+        1,
+        migrations._SCHEMA_V1_NAME,
+        migrations._SCHEMA_V1_CONTRACT,
+    ) == expected
+    assert "backup_operational_state" not in migrations._SCHEMA_V1_CONTRACT
+
+
+def test_version_two_has_an_independent_frozen_contract() -> None:
+    assert migrations.LATEST_SCHEMA_VERSION == 2
+    assert migrations._SCHEMA_V2_CONTRACT == {
+        "backup_operational_state": (
+            "scope",
+            "last_attempt_at",
+            "last_success_at",
+            "last_failure_at",
+            "last_status",
+            "last_failure_code",
+            "artifact_sha256",
+            "artifact_size_bytes",
+            "schema_version",
+            "schema_checksum",
+            "encrypted",
+            "updated_at",
+        )
+    }
+    assert migrations._MIGRATIONS[0].checksum == migrations._SCHEMA_V1_CHECKSUM
+    assert migrations._MIGRATIONS[1].checksum == migrations._SCHEMA_V2_CHECKSUM
+    assert migrations._SCHEMA_V2_CHECKSUM != migrations._SCHEMA_V1_CHECKSUM
+
+
 def test_schema_contract_reports_only_missing_schema_identifiers() -> None:
     rows = []
     for table, columns in migrations._EXPECTED_SCHEMA.items():
@@ -72,14 +106,14 @@ def test_migration_readiness_is_safe_and_backend_aware() -> None:
 
     report = migrations.MigrationReport(
         status="current",
-        current_version=1,
-        required_version=1,
-        applied_versions=(1,),
-        components=("hero_memory",),
-        schema_checksum="a" * 64,
+        current_version=2,
+        required_version=2,
+        applied_versions=(2,),
+        components=("hero_memory", "backup_freshness"),
+        schema_checksum=migrations._SCHEMA_V2_CHECKSUM,
     )
     postgres = SimpleNamespace(backend_name="postgresql", schema_migration_report=report)
-    assert migrations.migration_readiness(postgres) == ("current", 1)
+    assert migrations.migration_readiness(postgres) == ("current", 2)
 
 
 def test_migration_report_contains_no_user_or_request_fields() -> None:
