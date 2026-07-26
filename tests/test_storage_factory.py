@@ -17,8 +17,8 @@ def test_local_runtime_without_database_uses_json(tmp_path, monkeypatch) -> None
     assert store.backend_name == "json"
 
 
-def test_configured_database_uses_postgres_and_runs_migration(tmp_path, monkeypatch) -> None:
-    calls: dict[str, object] = {}
+def test_configured_database_runs_schema_before_json_import(tmp_path, monkeypatch) -> None:
+    calls: dict[str, object] = {"order": []}
 
     class FakePostgresStore:
         backend_name = "postgresql"
@@ -27,17 +27,29 @@ def test_configured_database_uses_postgres_and_runs_migration(tmp_path, monkeypa
             calls["database_url"] = database_url
 
         def migrate_json(self, path) -> int:
+            calls["order"].append("json")
             calls["migration_path"] = path
             return 0
 
+        def close(self) -> None:
+            calls["closed"] = True
+
+    def migrate_schema(store, *, app_version: str):
+        calls["order"].append("schema")
+        calls["app_version"] = app_version
+        return object()
+
     monkeypatch.setenv("DATABASE_URL", "postgresql://db.internal/amthero24")
     monkeypatch.setattr(storage_factory, "PostgresDataStore", FakePostgresStore)
+    monkeypatch.setattr(storage_factory, "run_database_migrations", migrate_schema)
 
     store = storage_factory.create_runtime_store(tmp_path / "store.json")
 
     assert store.backend_name == "postgresql"
     assert calls == {
+        "order": ["schema", "json"],
         "database_url": "postgresql://db.internal/amthero24",
+        "app_version": storage_factory.APP_VERSION,
         "migration_path": tmp_path / "store.json",
     }
 
@@ -68,6 +80,31 @@ def test_emergency_fallback_requires_explicit_operator_flag(tmp_path, monkeypatc
 
     assert isinstance(store, JsonDataStore)
     assert store.backend_name == "json"
+
+
+def test_schema_incompatibility_never_falls_back_to_json(tmp_path, monkeypatch) -> None:
+    calls = {"closed": False}
+
+    class FakePostgresStore:
+        backend_name = "postgresql"
+
+        def __init__(self, database_url: str) -> None:
+            return None
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    def reject_schema(store, *, app_version: str):
+        raise storage_factory.SchemaMigrationError("database_schema_ahead")
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://db.internal/amthero24")
+    monkeypatch.setenv("DATABASE_FALLBACK_ALLOWED", "true")
+    monkeypatch.setattr(storage_factory, "PostgresDataStore", FakePostgresStore)
+    monkeypatch.setattr(storage_factory, "run_database_migrations", reject_schema)
+
+    with pytest.raises(storage_factory.StorageInitializationError, match="schema is incompatible"):
+        storage_factory.create_runtime_store(tmp_path / "must-not-fallback.json")
+    assert calls["closed"] is True
 
 
 def test_production_entrypoint_installer_routes_json_constructor_through_policy(tmp_path, monkeypatch) -> None:
