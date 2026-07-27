@@ -28,7 +28,11 @@ class _FakeGroq:
 
 
 def _prompt(language_name: str) -> str:
-    return f"The user's preferred language is de; current reply language is {language_name}."
+    return (
+        "The user's preferred language is de; "
+        f"current reply language is {language_name}. "
+        "Brief Scanner canary eligible: true."
+    )
 
 
 def test_handled_scanner_reply_bypasses_generic_groq(monkeypatch) -> None:
