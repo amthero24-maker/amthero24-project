@@ -45,6 +45,11 @@ def test_healthy_system_is_ready_for_controlled_beta() -> None:
     assert report["status"] == "ready"
     assert report["summary"]["blocked"] == 0
     assert report["launch_scope"] == "controlled_beta"
+    checks = {item["code"]: item for item in report["checks"]}
+    assert checks["brief_scanner_runtime"]["status"] == "ready"
+    assert checks["brief_scanner_runtime"]["detail"] == (
+        "Brief Scanner runtime is safely disabled."
+    )
 
 
 def test_missing_security_and_database_block_launch() -> None:
@@ -89,6 +94,64 @@ def test_legacy_reminder_compatibility_is_visible_warning() -> None:
     checks = {item["code"]: item for item in report["checks"]}
     assert checks["reminder_legacy_decryption"]["status"] == "warning"
     assert report["status"] == "warning"
+
+
+def test_unsafe_brief_scanner_runtime_configuration_blocks_launch_without_leak() -> None:
+    environment = _healthy_env()
+    sensitive_value = "synthetic-sensitive-invalid-runtime-value"
+    environment["BRIEF_SCANNER_RUNTIME_ENABLED"] = sensitive_value
+
+    report = build_launch_report(_healthy_overview(), env=environment)
+    checks = {item["code"]: item for item in report["checks"]}
+
+    assert checks["brief_scanner_runtime"]["status"] == "blocked"
+    assert "brief_scanner_runtime_flag_invalid" in checks["brief_scanner_runtime"]["detail"]
+    assert report["status"] == "blocked"
+    assert sensitive_value not in str(report)
+
+
+def test_supported_brief_scanner_runtime_configuration_is_launch_ready() -> None:
+    environment = _healthy_env()
+    environment.update(
+        {
+            "BRIEF_SCANNER_RUNTIME_ENABLED": "true",
+            "BRIEF_SCANNER_RUNTIME_MISSION_ENABLED": "true",
+            "BRIEF_SCANNER_RUNTIME_REMINDER_ENABLED": "true",
+        }
+    )
+
+    report = build_launch_report(_healthy_overview(), env=environment)
+    checks = {item["code"]: item for item in report["checks"]}
+
+    assert checks["brief_scanner_runtime"] == {
+        "code": "brief_scanner_runtime",
+        "status": "ready",
+        "detail": (
+            "Brief Scanner runtime configuration is ready for "
+            "create_mission, create_reminder."
+        ),
+    }
+    assert report["status"] == "ready"
+
+
+def test_unsupported_draft_runtime_configuration_blocks_launch() -> None:
+    environment = _healthy_env()
+    environment.update(
+        {
+            "BRIEF_SCANNER_RUNTIME_ENABLED": "true",
+            "BRIEF_SCANNER_RUNTIME_MISSION_ENABLED": "true",
+            "BRIEF_SCANNER_RUNTIME_DRAFT_ENABLED": "true",
+        }
+    )
+
+    report = build_launch_report(_healthy_overview(), env=environment)
+    checks = {item["code"]: item for item in report["checks"]}
+
+    assert checks["brief_scanner_runtime"]["status"] == "blocked"
+    assert "brief_scanner_runtime_draft_unsupported" in (
+        checks["brief_scanner_runtime"]["detail"]
+    )
+    assert report["status"] == "blocked"
 
 
 def test_report_contains_no_user_content() -> None:

@@ -77,3 +77,25 @@ def test_launch_endpoint_returns_actionable_report_without_personal_data(tmp_pat
     assert payload["launch_scope"] == "controlled_beta"
     assert "49123" not in response.text
     assert "first_name" not in response.text
+
+
+def test_launch_endpoint_blocks_invalid_runtime_flag_without_echoing_it(
+    tmp_path,
+) -> None:
+    _install_store(tmp_path)
+    client = TestClient(launch_extensions.core.app)
+    environment = _env()
+    sensitive_value = "synthetic-sensitive-invalid-runtime-value"
+    environment["BRIEF_SCANNER_RUNTIME_ENABLED"] = sensitive_value
+
+    with patch.dict("os.environ", environment, clear=True), patch.object(
+        launch_extensions.admin_module, "build_overview", return_value=_overview()
+    ):
+        response = client.get(
+            "/admin/launch-readiness",
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "blocked"
+    assert sensitive_value not in response.text
