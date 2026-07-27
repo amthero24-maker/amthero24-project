@@ -18,6 +18,23 @@ from starlette.testclient import TestClient
 
 import webhook_security
 from abuse_guard import AbuseGuardRepository
+from brief_scanner_consent_workflow import BriefScannerConsentAction
+from brief_scanner_execution_boundary import (
+    BriefScannerExecutionCommandKind,
+    BriefScannerMissionCommand,
+    BriefScannerReminderCommand,
+)
+from brief_scanner_mission_planner import BriefScannerMissionKind
+from brief_scanner_reminder_planner import BriefScannerReminderKind
+from brief_scanner_runtime_adapter import (
+    BriefScannerRuntimeBatch,
+    BriefScannerRuntimeInvocation,
+    brief_scanner_runtime_idempotency_key,
+)
+from brief_scanner_runtime_reminder_executor import (
+    BriefScannerMissionReminderRuntimeExecutor,
+    BriefScannerMissionReminderStatus,
+)
 from data_store import PostgresDataStore
 from document_action_repository import PendingDocumentRepository
 from encryption_policy import decrypt_reminder_recipient
@@ -192,6 +209,90 @@ def test_cross_replica_mission_creation_is_idempotent() -> None:
                 phone,
                 **{**arguments, "title": "Changed after authorization"},
             )
+    finally:
+        first_store.close()
+        second_store.close()
+
+
+def test_cross_replica_mission_and_reminder_batch_is_atomic() -> None:
+    database_url = os.environ["DATABASE_URL"]
+    first_store = PostgresDataStore(database_url)
+    second_store = PostgresDataStore(database_url)
+    phone = "+49159" + uuid4().hex[:8]
+    fingerprint = hashlib.sha256(uuid4().bytes).hexdigest()
+    mission_action = BriefScannerConsentAction.CREATE_MISSION
+    reminder_action = BriefScannerConsentAction.CREATE_REMINDER
+    batch = BriefScannerRuntimeBatch(
+        planning_fingerprint=fingerprint,
+        invocations=(
+            BriefScannerRuntimeInvocation(
+                action=mission_action,
+                idempotency_key=brief_scanner_runtime_idempotency_key(
+                    fingerprint,
+                    mission_action,
+                ),
+                command=BriefScannerMissionCommand(
+                    kind=BriefScannerExecutionCommandKind.CREATE_MISSION,
+                    mission_kind=BriefScannerMissionKind.TRACK_DEADLINE,
+                    title="Track document deadline",
+                    topic="document",
+                    next_step="Complete the required action before the deadline",
+                    due_date=datetime(2026, 9, 1).date(),
+                ),
+            ),
+            BriefScannerRuntimeInvocation(
+                action=reminder_action,
+                idempotency_key=brief_scanner_runtime_idempotency_key(
+                    fingerprint,
+                    reminder_action,
+                ),
+                command=BriefScannerReminderCommand(
+                    kind=BriefScannerExecutionCommandKind.CREATE_REMINDER,
+                    reminder_kind=BriefScannerReminderKind.DEADLINE,
+                    title="Synthetic Authority",
+                    target_date=datetime(2026, 9, 1).date(),
+                    lead_days=3,
+                    scheduled_at_utc=datetime(2026, 8, 29, 7, tzinfo=UTC),
+                    timezone_name="Europe/Berlin",
+                    local_delivery_time=datetime(2026, 8, 29, 9).time(),
+                    source_language="de",
+                    reference_number="SYNTHETIC-REF-POSTGRES",
+                ),
+            ),
+        ),
+    )
+
+    try:
+        executors = (
+            BriefScannerMissionReminderRuntimeExecutor(
+                first_store,
+                phone=phone,
+            ),
+            BriefScannerMissionReminderRuntimeExecutor(
+                second_store,
+                phone=phone,
+            ),
+        )
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda executor: executor(batch), executors))
+
+        assert sorted(result.status for result in results) == [
+            BriefScannerMissionReminderStatus.CREATED,
+            BriefScannerMissionReminderStatus.REPLAYED,
+        ]
+        assert len({result.mission_id for result in results}) == 1
+        assert len({result.reminder_id for result in results}) == 1
+        with first_store.pool.connection() as connection:
+            mission_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM hero_missions WHERE phone_hash = %s",
+                (_phone_hash(phone),),
+            ).fetchone()
+            reminder_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM hero_reminders WHERE phone_hash = %s",
+                (_phone_hash(phone),),
+            ).fetchone()
+        assert int(mission_count["count"]) == 1
+        assert int(reminder_count["count"]) == 1
     finally:
         first_store.close()
         second_store.close()
