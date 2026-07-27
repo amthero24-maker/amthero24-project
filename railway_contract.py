@@ -27,10 +27,9 @@ class RailwayContractFinding:
 
 
 def _integer(value: Any) -> int | None:
-    try:
-        return int(str(value).strip())
-    except (TypeError, ValueError):
+    if isinstance(value, bool) or not isinstance(value, int):
         return None
+    return value
 
 
 def _load_json(path: Path) -> tuple[dict[str, Any] | None, RailwayContractFinding | None]:

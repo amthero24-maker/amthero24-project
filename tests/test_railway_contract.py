@@ -20,8 +20,8 @@ def _valid_config():
             "healthcheckTimeout": 300,
             "restartPolicyType": "ON_FAILURE",
             "restartPolicyMaxRetries": 10,
-            "overlapSeconds": "30",
-            "drainingSeconds": "15",
+            "overlapSeconds": 30,
+            "drainingSeconds": 15,
         },
     }
 
@@ -40,8 +40,8 @@ def test_contract_rejects_liveness_path_and_unsafe_handoff(tmp_path) -> None:
         "healthcheckTimeout": 10,
         "restartPolicyType": "NEVER",
         "restartPolicyMaxRetries": 0,
-        "overlapSeconds": "5",
-        "drainingSeconds": "30",
+        "overlapSeconds": 5,
+        "drainingSeconds": 30,
     })
     _write(tmp_path, config)
 
@@ -65,6 +65,25 @@ def test_contract_rejects_wrong_entrypoint_and_missing_schema(tmp_path) -> None:
     failed = {item.code for item in validate_railway_contract(tmp_path) if not item.passed}
 
     assert failed == {"schema", "production_entrypoint"}
+
+
+def test_contract_rejects_numeric_strings_that_railway_schema_rejects(tmp_path) -> None:
+    config = _valid_config()
+    config["deploy"].update({
+        "healthcheckTimeout": "300",
+        "restartPolicyMaxRetries": "10",
+        "overlapSeconds": "30",
+        "drainingSeconds": "15",
+    })
+    _write(tmp_path, config)
+
+    failed = {item.code for item in validate_railway_contract(tmp_path) if not item.passed}
+
+    assert failed == {
+        "healthcheck_timeout",
+        "restart_retries",
+        "graceful_handoff",
+    }
 
 
 def test_explicit_start_command_satisfies_entrypoint_without_procfile(tmp_path) -> None:
