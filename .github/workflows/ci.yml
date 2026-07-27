@@ -47,6 +47,12 @@ jobs:
         run: python -m pytest -q tests/test_hero_memory.py
       - name: Mission Engine tests
         run: python -m pytest -q tests/test_mission_engine.py tests/test_mission_intelligence.py
+      - name: Brief Scanner planning tests
+        run: >-
+          python -m pytest -q
+          tests/test_brief_scanner_action_proposal.py
+          tests/test_brief_scanner_mission_planner.py
+          tests/test_brief_scanner_draft_planner.py
       - name: Relationship Engine tests
         run: python -m pytest -q tests/test_relationship_engine.py tests/test_application_composition.py
       - name: Voice Input tests
