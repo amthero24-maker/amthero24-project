@@ -1,4 +1,6 @@
 """Hero Memory repository tests using the atomic JSON backend."""
+import pytest
+
 from data_store import JsonDataStore
 from hero_memory import HeroMemory
 
@@ -92,3 +94,49 @@ def test_consent_audit_does_not_store_raw_phone(tmp_path, monkeypatch) -> None:
     event = store.snapshot()["audit_log"][0]
     assert event["phone_hash"] != "+4912345"
     assert event["decision"] == "granted"
+
+
+def test_idempotent_mission_replay_and_payload_conflict(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store = JsonDataStore(tmp_path / "store.json")
+    memory = HeroMemory(store)
+    key = "a" * 64
+
+    first = memory.create_mission(
+        "49123",
+        title="Track deadline",
+        due_at="2026-08-10",
+        idempotency_key=key,
+    )
+    replay = memory.create_mission(
+        "49123",
+        title="Track deadline",
+        due_at="2026-08-10",
+        idempotency_key=key,
+    )
+
+    assert first["_operation"] == "created"
+    assert replay["_operation"] == "replayed"
+    assert replay["mission_id"] == first["mission_id"]
+    assert len(store.snapshot()["cases"]) == 1
+
+    with pytest.raises(ValueError, match="mission_idempotency_conflict"):
+        memory.create_mission(
+            "49123",
+            title="Changed title",
+            due_at="2026-08-10",
+            idempotency_key=key,
+        )
+
+
+@pytest.mark.parametrize("key", ["", "A" * 64, "z" * 64, "a" * 63])
+def test_invalid_mission_idempotency_key_is_rejected(
+    key,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    memory = HeroMemory(JsonDataStore(tmp_path / "store.json"))
+
+    with pytest.raises(ValueError, match="mission_idempotency_key_invalid"):
+        memory.create_mission("49123", title="Task", idempotency_key=key)
