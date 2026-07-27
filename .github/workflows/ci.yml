@@ -54,6 +54,7 @@ jobs:
           tests/test_brief_scanner_mission_planner.py
           tests/test_brief_scanner_draft_planner.py
           tests/test_brief_scanner_reminder_planner.py
+          tests/test_brief_scanner_consent_workflow.py
       - name: Relationship Engine tests
         run: python -m pytest -q tests/test_relationship_engine.py tests/test_application_composition.py
       - name: Voice Input tests
