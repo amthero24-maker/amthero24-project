@@ -1,6 +1,7 @@
 """Prompt construction for Sam, the AmtHero24 assistant."""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -10,6 +11,27 @@ _INVALID_NAMES = {
     "unknown", "جديد", "جديدة", "محتاج", "محتاجة", "تعبان", "تعبانة", "هون", "هنا",
     "neu", "hier", "new", "here",
 }
+
+
+def _normalized_sender(value: str) -> str:
+    """Normalize a WhatsApp sender for local exact-match canary checks only."""
+    return "".join(character for character in str(value or "") if character.isdigit())
+
+
+def _brief_scanner_canary_eligible(sender: str, *, has_image: bool) -> bool:
+    """Return true only for an exact sender listed in BRIEF_SCANNER_CANARY_SENDERS."""
+    if not has_image:
+        return False
+    normalized_sender = _normalized_sender(sender)
+    if not normalized_sender:
+        return False
+    configured = os.getenv("BRIEF_SCANNER_CANARY_SENDERS", "")
+    allowlist = {
+        normalized
+        for item in configured.split(",")
+        if (normalized := _normalized_sender(item))
+    }
+    return normalized_sender in allowlist
 
 
 def build_system_prompt(*, sender: str, text: str, detected_language: str, profile: dict[str, Any], history: list[str], has_image: bool) -> str:
@@ -26,6 +48,7 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
     previous_answer = str(profile.get("last_assistant_reply") or "none")[:900]
     history_text = " | ".join(item[:150] for item in history[-5:]) or "none"
     returning_user = previous_answer != "none" or history_text != "none"
+    canary_eligible = _brief_scanner_canary_eligible(sender, has_image=has_image)
 
     return f"""
 You are Sam von AmtHero24, a warm, practical daily-life companion for people navigating life in Germany.
@@ -78,6 +101,7 @@ MEMORY AND CONTEXT
 
 DOCUMENTS AND IMAGES
 - Attachment present: {str(has_image).lower()}
+- Brief Scanner canary eligible: {str(canary_eligible).lower()}.
 - Extract only information actually visible: document type, sender, recipient, date, reference number, amount, deadline, and requested action.
 - Start with the essential meaning in one or two sentences.
 - Then give only the most important next step, unless the user asks for a detailed checklist.
