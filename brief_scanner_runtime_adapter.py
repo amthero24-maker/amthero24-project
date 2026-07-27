@@ -215,10 +215,14 @@ def _action_enabled(
     }[action]
 
 
-def _idempotency_key(
+def brief_scanner_runtime_idempotency_key(
     planning_fingerprint: str,
     action: BriefScannerConsentAction,
 ) -> str:
+    """Return the stable action key shared by the adapter and concrete executors."""
+    _require_fingerprint(planning_fingerprint)
+    if type(action) is not BriefScannerConsentAction:
+        raise ValueError("brief_scanner_runtime_action_invalid")
     material = f"brief-scanner-runtime-v1:{planning_fingerprint}:{action.value}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -273,7 +277,10 @@ def dispatch_brief_scanner_runtime(
         invocations=tuple(
             BriefScannerRuntimeInvocation(
                 action=action,
-                idempotency_key=_idempotency_key(fingerprint, action),
+                idempotency_key=brief_scanner_runtime_idempotency_key(
+                    fingerprint,
+                    action,
+                ),
                 command=command,
             )
             for action, command in action_commands

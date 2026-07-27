@@ -152,6 +152,51 @@ def test_cross_replica_message_dedupe_and_profile_persistence() -> None:
         second.close()
 
 
+def test_cross_replica_mission_creation_is_idempotent() -> None:
+    database_url = os.environ["DATABASE_URL"]
+    first_store = PostgresDataStore(database_url)
+    second_store = PostgresDataStore(database_url)
+    phone = "+49158" + uuid4().hex[:8]
+    idempotency_key = hashlib.sha256(uuid4().bytes).hexdigest()
+    arguments = {
+        "title": "Track document deadline",
+        "topic": "document",
+        "next_step": "Complete the required action before the deadline",
+        "due_at": "2026-09-01",
+        "metadata": {
+            "source": "brief_scanner",
+            "category": "track_deadline",
+        },
+        "idempotency_key": idempotency_key,
+    }
+
+    try:
+        memories = (HeroMemory(first_store), HeroMemory(second_store))
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda memory: memory.create_mission(phone, **arguments),
+                    memories,
+                )
+            )
+
+        assert sorted(result["_operation"] for result in results) == [
+            "created",
+            "replayed",
+        ]
+        assert len({str(result["mission_id"]) for result in results}) == 1
+        assert len(memories[0].list_missions(phone, status="all")) == 1
+
+        with pytest.raises(ValueError, match="mission_idempotency_conflict"):
+            memories[1].create_mission(
+                phone,
+                **{**arguments, "title": "Changed after authorization"},
+            )
+    finally:
+        first_store.close()
+        second_store.close()
+
+
 def test_complete_user_deletion_removes_every_linked_postgres_layer() -> None:
     store = _store()
     phone = "+49160" + uuid4().hex[:8]

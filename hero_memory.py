@@ -29,6 +29,37 @@ def _clean_text(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def _require_idempotency_key(value: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or value != value.casefold()
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError("mission_idempotency_key_invalid")
+    return value
+
+
+def _idempotent_mission_id(phone_hash: str, idempotency_key: str) -> str:
+    material = f"hero-mission-v1:{phone_hash}:{idempotency_key}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def _same_mission(existing: dict[str, Any], expected: dict[str, Any]) -> bool:
+    fields = (
+        "mission_id",
+        "phone_hash",
+        "title",
+        "topic",
+        "status",
+        "last_action",
+        "next_step",
+        "due_at",
+        "metadata",
+    )
+    return all(existing.get(field) == expected.get(field) for field in fields)
+
+
 def _directive(title: str) -> tuple[str, str] | None:
     value = str(title or "")
     if value.startswith(_NEXT_STEP_PREFIX):
@@ -131,9 +162,12 @@ class HeroMemory:
         next_step: str = "",
         due_at: str | None = None,
         metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         directive = _directive(title)
         if directive:
+            if idempotency_key is not None:
+                raise ValueError("mission_idempotency_directive_invalid")
             action, value = directive
             if action == "next_step":
                 return self.update_latest_mission(phone, next_step=value, operation="next_step")
@@ -144,9 +178,19 @@ class HeroMemory:
             if action == "due":
                 return self.update_latest_mission(phone, due_at=value, operation="due")
 
+        phone_hash = _phone_hash(phone)
+        stable_key = (
+            _require_idempotency_key(idempotency_key)
+            if idempotency_key is not None
+            else None
+        )
         mission = {
-            "mission_id": uuid4().hex,
-            "phone_hash": _phone_hash(phone),
+            "mission_id": (
+                _idempotent_mission_id(phone_hash, stable_key)
+                if stable_key is not None
+                else uuid4().hex
+            ),
+            "phone_hash": phone_hash,
             "title": _clean_text(title, 180) or "Open task",
             "topic": _clean_text(topic, 80),
             "status": "open",
@@ -168,24 +212,61 @@ class HeroMemory:
 
         if self.backend_name == "postgresql":
             with self.store.pool.connection() as conn:
-                row = conn.execute(
-                    """
+                statement = """
                     INSERT INTO hero_missions
                         (mission_id, phone_hash, title, topic, status, last_action, next_step, due_at, metadata)
                     VALUES (%s, %s, %s, %s, 'open', %s, %s, %s, %s)
-                    RETURNING mission_id, title, topic, status, last_action, next_step, due_at, metadata,
-                              created_at, updated_at, completed_at
+                """
+                if stable_key is not None:
+                    statement += " ON CONFLICT (mission_id) DO NOTHING"
+                row = conn.execute(
+                    statement
+                    + """
+                    RETURNING mission_id, phone_hash, title, topic, status, last_action,
+                              next_step, due_at, metadata, created_at, updated_at, completed_at
                     """,
                     (
                         mission["mission_id"], mission["phone_hash"], mission["title"], mission["topic"],
                         mission["last_action"], mission["next_step"], mission["due_at"], Jsonb(mission["metadata"]),
                     ),
                 ).fetchone()
-            result = self._mission_from_row(row)
-            result["_operation"] = "created"
+                operation = "created"
+                if row is None:
+                    row = conn.execute(
+                        """
+                        SELECT mission_id, phone_hash, title, topic, status, last_action,
+                               next_step, due_at, metadata, created_at, updated_at, completed_at
+                        FROM hero_missions
+                        WHERE mission_id = %s
+                        FOR UPDATE
+                        """,
+                        (mission["mission_id"],),
+                    ).fetchone()
+                    operation = "replayed"
+                stored = dict(row or {})
+                due = stored.get("due_at")
+                if isinstance(due, (date, datetime)):
+                    stored["due_at"] = (
+                        due.date().isoformat()
+                        if isinstance(due, datetime)
+                        else due.isoformat()
+                    )
+                stored["metadata"] = dict(stored.get("metadata") or {})
+                if not _same_mission(stored, mission):
+                    raise ValueError("mission_idempotency_conflict")
+            stored.pop("phone_hash", None)
+            result = self._mission_from_row(stored)
+            result["_operation"] = operation
             return result
 
         def add(data: dict[str, Any]) -> dict[str, Any]:
+            existing = data.setdefault("cases", {}).get(mission["mission_id"])
+            if existing is not None:
+                if stable_key is None or not _same_mission(existing, mission):
+                    raise ValueError("mission_idempotency_conflict")
+                replayed = deepcopy(existing)
+                replayed["_operation"] = "replayed"
+                return replayed
             stored = {key: value for key, value in mission.items() if key != "_operation"}
             data.setdefault("cases", {})[mission["mission_id"]] = deepcopy(stored)
             return deepcopy(mission)
