@@ -122,7 +122,13 @@ async def _extract_pdf_message(message: core.IncomingMessage, language: str) -> 
     _repository().put(message.sender, analysis.pending_action())
     request = build_pdf_request(extraction, language=language, note=message.text)
     request += "\n\n" + prompt_facts(analysis, language=language)
-    return core.IncomingMessage(message.message_id, message.sender, request, "text")
+    return core.IncomingMessage(
+        message.message_id,
+        message.sender,
+        request,
+        "text",
+        internal_context="document_analysis",
+    )
 
 
 async def _normalize_office_document(
@@ -140,11 +146,17 @@ async def _normalize_office_document(
     _repository().put(message.sender, analysis.pending_action())
     request = build_document_request(extraction, language=language, note=message.text)
     request += "\n\n" + prompt_facts(analysis, language=language)
-    return core.IncomingMessage(message.message_id, message.sender, request, "text")
+    return core.IncomingMessage(
+        message.message_id,
+        message.sender,
+        request,
+        "text",
+        internal_context="document_analysis",
+    )
 
 
 async def process_incoming(message: core.IncomingMessage) -> None:
-    if message.message_type == "text":
+    if message.message_type == "text" and message.internal_context != "document_analysis":
         profile = core.store.get_user(message.sender)
         pending = _repository().get(message.sender)
         stage = str(profile.get("onboarding_stage") or "")

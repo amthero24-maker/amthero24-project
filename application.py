@@ -132,7 +132,13 @@ async def _extract_pdf_message(message: core.IncomingMessage, language: str) -> 
     pdf_bytes = await core.download_media_bytes(media_url)
     extraction = await core.anyio.to_thread.run_sync(lambda: extract_pdf_text(pdf_bytes))
     request = build_pdf_request(extraction, language=language, note=message.text)
-    return core.IncomingMessage(message.message_id, message.sender, request, "text")
+    return core.IncomingMessage(
+        message.message_id,
+        message.sender,
+        request,
+        "text",
+        internal_context="document_analysis",
+    )
 
 
 async def process_incoming(message: core.IncomingMessage) -> None:
@@ -175,9 +181,13 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     memory_enabled = profile.get("memory_consent") == "granted"
     previous_language = _preferred_language(profile)
     language = core.detect_language(message.text, previous_language) if message.text.strip() else previous_language
-    preference = analyze_preferences(message.text, profile.get("communication_style"))
+    preference = (
+        analyze_preferences(message.text, profile.get("communication_style"))
+        if message.internal_context != "document_analysis"
+        else None
+    )
 
-    if preference.changed:
+    if preference is not None and preference.changed:
         updates: dict[str, Any] = {
             "session_language": language,
             "session_expires_at": core._session_expiry(),
