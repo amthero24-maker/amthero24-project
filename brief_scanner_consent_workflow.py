@@ -6,6 +6,7 @@ decisions for a later execution boundary.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import time
 from enum import StrEnum
@@ -48,6 +49,7 @@ class BriefScannerConsentPlan:
     requested_actions: tuple[BriefScannerConsentAction, ...]
     missing_inputs: tuple[BriefScannerConsentInput, ...]
     memory_consent_active: bool
+    planning_fingerprint: str
     reminder_delivery_time: time | None = None
     reminder_timezone_name: str = ""
     requires_explicit_decision: bool = True
@@ -65,6 +67,7 @@ class BriefScannerConsentReceipt:
     approved_actions: tuple[BriefScannerConsentAction, ...]
     declined_actions: tuple[BriefScannerConsentAction, ...]
     memory_consent_active: bool
+    planning_fingerprint: str
     complete: bool = True
     allows_execution: bool = False
     allows_side_effects: bool = False
@@ -82,6 +85,15 @@ _DRAFT_INPUT_MAP = {
         BriefScannerConsentInput.DRAFT_RESPONSE_INSTRUCTION
     ),
 }
+
+
+def brief_scanner_planning_fingerprint(
+    bundle: BriefScannerMissionPlanningBundle,
+) -> str:
+    """Return a version-local digest binding consent to the exact immutable plan."""
+    if type(bundle) is not BriefScannerMissionPlanningBundle:
+        raise ValueError("brief_scanner_consent_bundle_type_invalid")
+    return hashlib.sha256(repr(bundle).encode("utf-8")).hexdigest()
 
 
 def _require_read_only_bundle(bundle: BriefScannerMissionPlanningBundle) -> None:
@@ -186,6 +198,7 @@ def plan_brief_scanner_consent(
         requested_actions=tuple(actions),
         missing_inputs=tuple(missing_inputs),
         memory_consent_active=memory_consent_active,
+        planning_fingerprint=brief_scanner_planning_fingerprint(bundle),
         reminder_delivery_time=delivery_time,
         reminder_timezone_name=timezone_name,
     )
@@ -198,6 +211,7 @@ def _require_safe_consent_plan(plan: BriefScannerConsentPlan) -> None:
         or plan.allows_execution
         or plan.allows_side_effects
         or not requested
+        or len(plan.planning_fingerprint) != 64
         or requested[0] != BriefScannerConsentAction.CREATE_MISSION
         or len(requested) != len(frozenset(requested))
         or (
@@ -273,4 +287,5 @@ def record_brief_scanner_consent(
         approved_actions=approved,
         declined_actions=declined,
         memory_consent_active=plan.memory_consent_active,
+        planning_fingerprint=plan.planning_fingerprint,
     )
