@@ -36,15 +36,18 @@ jobs:
           python -m compileall -q
           brief_scanner_runtime_adapter.py
           brief_scanner_runtime_executor.py
+          brief_scanner_runtime_router.py
           hero_memory.py
           tests/test_brief_scanner_runtime_adapter.py
           tests/test_brief_scanner_runtime_executor.py
+          tests/test_brief_scanner_runtime_router.py
           tests/test_hero_memory.py
       - name: Run Runtime Executor contracts
         run: >-
           python -m pytest -q
           tests/test_brief_scanner_runtime_adapter.py
           tests/test_brief_scanner_runtime_executor.py
+          tests/test_brief_scanner_runtime_router.py
           tests/test_hero_memory.py
       - name: Re-run authorization and security contracts
         run: >-
