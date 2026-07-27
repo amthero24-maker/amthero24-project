@@ -43,7 +43,19 @@ def _env_flag(name: str, *, default: bool = False) -> bool:
 
 BRIEF_SCANNER_PROVIDER_ENABLED = _env_flag("BRIEF_SCANNER_PROVIDER_ENABLED", default=False)
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v22.0").strip()
-DATA_STORE_PATH = Path(os.getenv("DATA_STORE_PATH", "data/store.json"))
+
+# === PERSISTENT MEMORY FIX - REQUIRED EDIT ONLY HERE ===
+# Railway Volume at /data -> use /data/store.json (persists across deploys)
+# Local fallback -> data/store.json
+def _get_persistent_data_path() -> Path:
+    # If Railway Volume mounted at /data, use it
+    if Path("/data").exists() and Path("/data").is_dir():
+        return Path("/data/store.json")
+    # Otherwise use env var or default
+    return Path(os.getenv("DATA_STORE_PATH", "data/store.json"))
+
+DATA_STORE_PATH = _get_persistent_data_path()
+
 APP_VERSION = "4.7.0"
 MAX_WHATSAPP_TEXT_LENGTH = 4096
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
