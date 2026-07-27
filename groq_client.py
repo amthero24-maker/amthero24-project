@@ -8,6 +8,7 @@ import unicodedata
 
 from groq import Groq
 
+from brief_scanner_app_hook import decide_brief_scanner_media_flow
 from config import GROQ_MODEL, GROQ_VISION_MODEL, required_env
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,29 @@ logger = logging.getLogger(__name__)
 
 class GroqServiceError(RuntimeError):
     pass
+
+
+_REPLY_LANGUAGE_CODES = {
+    "german": "de",
+    "arabic": "ar",
+    "english": "en",
+    "ukrainian": "uk",
+    "greek": "el",
+}
+
+
+def _response_language_from_prompt(system_prompt: str) -> str | None:
+    """Read the deterministic reply-language marker emitted by build_system_prompt."""
+    if type(system_prompt) is not str:
+        return None
+    match = re.search(
+        r"current reply language is\s+([A-Za-z]+)\s*[.;]",
+        system_prompt,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _REPLY_LANGUAGE_CODES.get(match.group(1).casefold())
 
 
 def sanitize_model_reply(value: str) -> str:
@@ -52,6 +76,17 @@ def sanitize_model_reply(value: str) -> str:
 
 def generate_reply(*, system_prompt: str, user_text: str, image_bytes: bytes | None = None, mime_type: str = "image/jpeg") -> str:
     try:
+        if image_bytes:
+            response_language = _response_language_from_prompt(system_prompt)
+            if response_language is not None:
+                scanner_decision = decide_brief_scanner_media_flow(
+                    image_bytes=image_bytes,
+                    mime_type=mime_type,
+                    response_language=response_language,
+                )
+                if not scanner_decision.use_existing_flow:
+                    return sanitize_model_reply(scanner_decision.reply)
+
         client = Groq(api_key=required_env("GROQ_API_KEY"))
         if image_bytes:
             encoded = base64.b64encode(image_bytes).decode("ascii")
@@ -94,5 +129,5 @@ def generate_reply(*, system_prompt: str, user_text: str, image_bytes: bytes | N
     except GroqServiceError:
         raise
     except Exception as exc:
-        logger.exception("Groq request failed")
+        logger.error("Groq request failed")
         raise GroqServiceError("Groq request failed") from exc
