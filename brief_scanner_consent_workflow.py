@@ -67,7 +67,7 @@ class BriefScannerConsentReceipt:
     approved_actions: tuple[BriefScannerConsentAction, ...]
     declined_actions: tuple[BriefScannerConsentAction, ...]
     memory_consent_active: bool
-    planning_fingerprint: str
+    planning_fingerprint: str = ""
     complete: bool = True
     allows_execution: bool = False
     allows_side_effects: bool = False
