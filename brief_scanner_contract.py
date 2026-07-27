@@ -5,12 +5,16 @@ module defines bounded states, aggregate events, and validation rules for the ru
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from typing import Final
 
-SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset({"de", "ar", "en", "uk", "el"})
+# These languages have completed the current action-quality test suite. Other valid language codes
+# remain readable and explainable, but cannot trigger missions, reminders, or drafts until verified.
+VERIFIED_ACTION_LANGUAGES: Final[frozenset[str]] = frozenset({"de", "ar", "en", "uk", "el"})
+_LANGUAGE_CODE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z]{2,3}(?:-[A-Z]{2})?$")
 
 
 class BriefScannerState(StrEnum):
@@ -80,14 +84,18 @@ class BriefScannerFacts:
     uncertainty: str = ""
 
     def validate(self) -> None:
-        if self.language not in SUPPORTED_LANGUAGES:
-            raise ValueError("unsupported_brief_scanner_language")
+        if not _LANGUAGE_CODE_PATTERN.fullmatch(self.language):
+            raise ValueError("brief_scanner_language_code_invalid")
         if self.amount_minor is not None and self.amount_minor < 0:
             raise ValueError("brief_scanner_amount_invalid")
         if self.amount_minor is not None and len(self.currency.strip()) != 3:
             raise ValueError("brief_scanner_currency_invalid")
         if not self.readable and not (self.uncertainty.strip() or self.missing_pages):
             raise ValueError("unreadable_document_requires_reason")
+
+    @property
+    def language_quality_verified(self) -> bool:
+        return self.language.split("-", 1)[0] in VERIFIED_ACTION_LANGUAGES
 
     @property
     def requires_escalation(self) -> bool:
@@ -119,9 +127,12 @@ def initial_state(facts: BriefScannerFacts) -> BriefScannerState:
 def aggregate_events_for_analysis(facts: BriefScannerFacts) -> tuple[BriefScannerEvent, ...]:
     """Return content-free events suitable for aggregate product telemetry."""
     state = initial_state(facts)
-    events: list[BriefScannerEvent] = [BriefScannerEvent.SCANNER_STARTED]
-    document_is_readable = facts.readable and not facts.missing_pages
-    events.append(BriefScannerEvent.DOCUMENT_READABLE if document_is_readable else BriefScannerEvent.DOCUMENT_UNREADABLE)
+    readability_event = (
+        BriefScannerEvent.DOCUMENT_READABLE
+        if facts.readable and not facts.missing_pages
+        else BriefScannerEvent.DOCUMENT_UNREADABLE
+    )
+    events: list[BriefScannerEvent] = [BriefScannerEvent.SCANNER_STARTED, readability_event]
     if state == BriefScannerState.BLOCKED_OR_ESCALATED:
         events.append(BriefScannerEvent.MISSION_BLOCKED_OR_ESCALATED)
     elif state == BriefScannerState.ANALYZED:

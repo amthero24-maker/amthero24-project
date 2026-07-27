@@ -33,7 +33,6 @@ def _payload(**overrides):
 
 def test_valid_json_maps_to_contract_without_coercion() -> None:
     facts = parse_brief_scanner_model_output(json.dumps(_payload()))
-
     assert facts.language == "de"
     assert facts.readable is True
     assert facts.deadline == date(2026, 8, 15)
@@ -58,7 +57,6 @@ def test_valid_json_maps_to_contract_without_coercion() -> None:
 def test_invalid_model_outputs_fail_closed_with_sanitized_codes(raw: str, code: str) -> None:
     with pytest.raises(BriefScannerAdapterError) as raised:
         parse_brief_scanner_model_output(raw)
-
     assert str(raised.value) == code
     assert "Synthetic Authority" not in str(raised.value)
     assert "SYNTHETIC-REF-001" not in str(raised.value)
@@ -66,27 +64,32 @@ def test_invalid_model_outputs_fail_closed_with_sanitized_codes(raw: str, code: 
 
 def test_duplicate_keys_are_rejected_instead_of_last_value_winning() -> None:
     raw = '{"schema_version":1,"language":"de","readable":true,"readable":false}'
-
     with pytest.raises(BriefScannerAdapterError) as raised:
         parse_brief_scanner_model_output(raw)
-
     assert str(raised.value) == "brief_scanner_field_duplicate:readable"
 
 
 def test_unreadable_output_requires_safe_uncertainty_reason() -> None:
     with pytest.raises(BriefScannerAdapterError, match="unreadable_document_requires_reason"):
         parse_brief_scanner_model_output(json.dumps(_payload(readable=False, uncertainty="")))
-
-    facts = parse_brief_scanner_model_output(
-        json.dumps(_payload(readable=False, uncertainty="image_quality_low"))
-    )
+    facts = parse_brief_scanner_model_output(json.dumps(_payload(readable=False, uncertainty="image_quality_low")))
     assert facts.readable is False
     assert facts.uncertainty == "image_quality_low"
 
 
-def test_unsupported_language_and_invalid_currency_fail_closed() -> None:
-    with pytest.raises(BriefScannerAdapterError, match="unsupported_brief_scanner_language"):
-        parse_brief_scanner_model_output(json.dumps(_payload(language="fr")))
+def test_valid_additional_language_is_parsed_without_becoming_action_verified() -> None:
+    facts = parse_brief_scanner_model_output(json.dumps(_payload(language="fr")))
+    assert facts.language == "fr"
+    assert facts.language_quality_verified is False
+
+
+@pytest.mark.parametrize("language", ["", "DE", "de_de", "french", "de-ignore"])
+def test_malformed_language_codes_fail_closed(language: str) -> None:
+    with pytest.raises(BriefScannerAdapterError, match="brief_scanner_language_code_invalid"):
+        parse_brief_scanner_model_output(json.dumps(_payload(language=language)))
+
+
+def test_invalid_currency_fails_closed() -> None:
     with pytest.raises(BriefScannerAdapterError, match="brief_scanner_currency_invalid"):
         parse_brief_scanner_model_output(json.dumps(_payload(currency="EURO")))
 
