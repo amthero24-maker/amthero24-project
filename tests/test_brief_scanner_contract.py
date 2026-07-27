@@ -8,15 +8,15 @@ from brief_scanner_contract import (
     BriefScannerEvent,
     BriefScannerFacts,
     BriefScannerState,
-    SUPPORTED_LANGUAGES,
+    VERIFIED_ACTION_LANGUAGES,
     aggregate_events_for_analysis,
     initial_state,
     require_transition,
 )
 
 
-@pytest.mark.parametrize("language", sorted(SUPPORTED_LANGUAGES))
-def test_readable_document_is_analyzed_in_every_beta_language(language: str) -> None:
+@pytest.mark.parametrize("language", sorted(VERIFIED_ACTION_LANGUAGES))
+def test_readable_document_is_analyzed_in_every_verified_action_language(language: str) -> None:
     facts = BriefScannerFacts(
         language=language,
         readable=True,
@@ -31,7 +31,21 @@ def test_readable_document_is_analyzed_in_every_beta_language(language: str) -> 
         BriefScannerEvent.DOCUMENT_READABLE,
         BriefScannerEvent.SUMMARY_DELIVERED,
     )
+    assert facts.language_quality_verified is True
     assert facts.has_actionable_date is True
+
+
+def test_valid_unverified_language_can_be_analyzed_but_is_not_action_verified() -> None:
+    facts = BriefScannerFacts(language="fr", readable=True)
+
+    assert initial_state(facts) == BriefScannerState.ANALYZED
+    assert facts.language_quality_verified is False
+
+
+@pytest.mark.parametrize("language", ["", "f", "french", "de_de", "de-ignore", "DE"])
+def test_invalid_language_codes_fail_closed(language: str) -> None:
+    with pytest.raises(ValueError, match="brief_scanner_language_code_invalid"):
+        BriefScannerFacts(language=language, readable=True).validate()
 
 
 def test_missing_page_requires_better_document() -> None:
@@ -117,7 +131,6 @@ def test_aggregate_events_expose_no_document_or_identity_fields() -> None:
         reference_number="SYNTHETIC-REF-001",
         stated_consequence="synthetic consequence",
     )
-
     encoded = " ".join(event.value for event in aggregate_events_for_analysis(facts))
     assert "Synthetic Insurer" not in encoded
     assert "SYNTHETIC-REF-001" not in encoded
