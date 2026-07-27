@@ -12,6 +12,8 @@ def _outcome(
     *,
     language: str = "de",
     error_code: str = "",
+    amount_minor: int = 12550,
+    currency: str = "EUR",
 ) -> BriefScannerBoundaryOutcome:
     facts = None
     if status in {
@@ -27,8 +29,8 @@ def _outcome(
             sender_organization="Synthetic Authority",
             deadline=date(2026, 8, 15),
             requested_action="send documents",
-            amount_minor=12550,
-            currency="EUR",
+            amount_minor=amount_minor,
+            currency=currency,
             reference_number="SYNTHETIC-REF-001",
         )
     return BriefScannerBoundaryOutcome(status=status, facts=facts, error_code=error_code)
@@ -78,6 +80,27 @@ def test_non_image_document_is_not_intercepted_or_sent_to_provider() -> None:
     assert called is False
 
 
+def test_unknown_reply_language_falls_back_without_provider_or_language_mixing() -> None:
+    called = False
+
+    def provider(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("provider must not be called")
+
+    result = handle_brief_scanner_document(
+        image_bytes=b"image",
+        mime_type="image/jpeg",
+        response_language="fr",
+        provider=provider,
+        enabled=True,
+    )
+
+    assert result.handled is False
+    assert result.reply == ""
+    assert called is False
+
+
 def test_validated_result_returns_bounded_read_only_summary() -> None:
     result = handle_brief_scanner_document(
         image_bytes=b"image",
@@ -93,6 +116,34 @@ def test_validated_result_returns_bounded_read_only_summary() -> None:
     assert "125.50 EUR" in result.reply
     assert "SYNTHETIC-REF-001" in result.reply
     assert result.allows_side_effects is False
+
+
+def test_currency_minor_units_respect_zero_and_three_decimal_exponents() -> None:
+    jpy = handle_brief_scanner_document(
+        image_bytes=b"image",
+        mime_type="image/jpeg",
+        response_language="en",
+        provider=lambda **_kwargs: _outcome(
+            BriefScannerBoundaryStatus.VALIDATED,
+            amount_minor=12550,
+            currency="JPY",
+        ),
+        enabled=True,
+    )
+    kwd = handle_brief_scanner_document(
+        image_bytes=b"image",
+        mime_type="image/jpeg",
+        response_language="en",
+        provider=lambda **_kwargs: _outcome(
+            BriefScannerBoundaryStatus.VALIDATED,
+            amount_minor=12550,
+            currency="KWD",
+        ),
+        enabled=True,
+    )
+
+    assert "12550 JPY" in jpy.reply
+    assert "12.550 KWD" in kwd.reply
 
 
 def test_unverified_language_remains_read_only_and_is_explicit() -> None:
@@ -111,6 +162,28 @@ def test_unverified_language_remains_read_only_and_is_explicit() -> None:
     assert "read-only" in result.reply
     assert "no task or reminder" in result.reply
     assert result.allows_side_effects is False
+
+
+def test_ukrainian_and_greek_replies_do_not_fall_back_to_german() -> None:
+    ukrainian = handle_brief_scanner_document(
+        image_bytes=b"image",
+        mime_type="image/jpeg",
+        response_language="uk",
+        provider=lambda **_kwargs: _outcome(BriefScannerBoundaryStatus.RETRYABLE_MODEL_OUTPUT),
+        enabled=True,
+    )
+    greek = handle_brief_scanner_document(
+        image_bytes=b"image",
+        mime_type="image/jpeg",
+        response_language="el",
+        provider=lambda **_kwargs: _outcome(BriefScannerBoundaryStatus.RETRYABLE_MODEL_OUTPUT),
+        enabled=True,
+    )
+
+    assert "Зараз документ" in ukrainian.reply
+    assert "Το έγγραφο" in greek.reply
+    assert "Das Dokument" not in ukrainian.reply
+    assert "Das Dokument" not in greek.reply
 
 
 def test_quality_and_high_risk_outcomes_never_expose_document_fields() -> None:
