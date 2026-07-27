@@ -14,6 +14,7 @@ after traffic has already switched.
 
 `railway.json` is the repository source of truth for:
 
+- the explicit production start command
 - healthcheck path `/ready`
 - 300-second startup healthcheck timeout
 - restart on failure with at most 10 retries
@@ -24,7 +25,8 @@ after traffic has already switched.
 deployment gate because it can return HTTP 200 before PostgreSQL, schemas, webhook
 idempotency, the durable queue, and encryption-dependent components are ready.
 
-The production entrypoint remains in `Procfile`:
+The production entrypoint is declared explicitly in `railway.json` and mirrored in
+`Procfile`:
 
 ```text
 web: uvicorn webhook_security:app --host 0.0.0.0 --port $PORT
@@ -33,6 +35,8 @@ web: uvicorn webhook_security:app --host 0.0.0.0 --port $PORT
 This is the only accepted entrypoint because `webhook_security` installs log redaction,
 storage fail-closed policy, encryption policy, Meta signature verification, all product
 composition layers, schema bootstrap, and readiness routes before serving traffic.
+The repository contract requires the explicit `startCommand`; a `Procfile` fallback
+alone is not accepted.
 
 ## Repository contract
 
@@ -42,7 +46,7 @@ composition layers, schema bootstrap, and readiness routes before serving traffi
 - a timeout too short for bounded schema and connection startup
 - disabled or unbounded restart behavior
 - an overlap/drain combination that can terminate in-flight requests immediately
-- a production entrypoint that bypasses the security composition
+- a missing or unsafe explicit production entrypoint
 - removal of Railway's official JSON schema reference
 
 The validator never contacts Railway and never reads runtime environment values.

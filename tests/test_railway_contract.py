@@ -15,6 +15,7 @@ def _valid_config():
     return {
         "$schema": "https://railway.com/railway.schema.json",
         "deploy": {
+            "startCommand": "uvicorn webhook_security:app --host 0.0.0.0 --port $PORT",
             "healthcheckPath": "/ready",
             "healthcheckTimeout": 300,
             "restartPolicyType": "ON_FAILURE",
@@ -58,21 +59,33 @@ def test_contract_rejects_liveness_path_and_unsafe_handoff(tmp_path) -> None:
 def test_contract_rejects_wrong_entrypoint_and_missing_schema(tmp_path) -> None:
     config = _valid_config()
     config.pop("$schema")
-    _write(tmp_path, config, procfile="web: uvicorn app:app --port 9000\n")
+    config["deploy"]["startCommand"] = "uvicorn app:app --port 9000"
+    _write(tmp_path, config)
 
     failed = {item.code for item in validate_railway_contract(tmp_path) if not item.passed}
 
     assert failed == {"schema", "production_entrypoint"}
 
 
-def test_start_command_can_satisfy_entrypoint_without_procfile(tmp_path) -> None:
+def test_explicit_start_command_satisfies_entrypoint_without_procfile(tmp_path) -> None:
     config = _valid_config()
-    config["deploy"]["startCommand"] = "uvicorn webhook_security:app --host 0.0.0.0 --port $PORT"
     (tmp_path / "railway.json").write_text(json.dumps(config), encoding="utf-8")
 
     findings = validate_railway_contract(tmp_path)
 
     assert all(item.passed for item in findings)
+
+
+def test_procfile_cannot_replace_explicit_start_command(tmp_path) -> None:
+    config = _valid_config()
+    config["deploy"].pop("startCommand")
+    _write(tmp_path, config)
+
+    failed = {
+        item.code for item in validate_railway_contract(tmp_path) if not item.passed
+    }
+
+    assert failed == {"production_entrypoint"}
 
 
 def test_invalid_or_missing_file_returns_safe_single_finding(tmp_path) -> None:

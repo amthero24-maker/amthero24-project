@@ -2,7 +2,8 @@
 
 The validator reads repository files only. It never contacts Railway, loads secrets, or
 prints environment values. It protects the readiness path, restart policy, graceful
-handoff window, and the production ASGI entrypoint from accidental configuration drift.
+handoff window, and the explicit production ASGI entrypoint from accidental
+configuration drift.
 """
 from __future__ import annotations
 
@@ -44,19 +45,8 @@ def _load_json(path: Path) -> tuple[dict[str, Any] | None, RailwayContractFindin
     return payload, None
 
 
-def _entrypoint(root: Path, deploy: dict[str, Any]) -> str:
-    configured = str(deploy.get("startCommand") or "").strip()
-    if configured:
-        return configured
-    try:
-        procfile = (root / "Procfile").read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return ""
-    for line in procfile.splitlines():
-        stripped = line.strip()
-        if stripped.casefold().startswith("web:"):
-            return stripped.split(":", 1)[1].strip()
-    return ""
+def _entrypoint(deploy: dict[str, Any]) -> str:
+    return str(deploy.get("startCommand") or "").strip()
 
 
 def validate_railway_contract(root: str | Path = ".") -> list[RailwayContractFinding]:
@@ -74,7 +64,7 @@ def validate_railway_contract(root: str | Path = ".") -> list[RailwayContractFin
     restart_retries = _integer(deploy.get("restartPolicyMaxRetries"))
     overlap = _integer(deploy.get("overlapSeconds"))
     draining = _integer(deploy.get("drainingSeconds"))
-    entrypoint = _entrypoint(base, deploy)
+    entrypoint = _entrypoint(deploy)
 
     overlap_ok = overlap is not None and 15 <= overlap <= 120
     draining_ok = draining is not None and 5 <= draining <= 60
