@@ -33,6 +33,15 @@ GROQ_VISION_MODEL = (
     else _requested_vision_model
 )
 
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+BRIEF_SCANNER_PROVIDER_ENABLED = _env_flag("BRIEF_SCANNER_PROVIDER_ENABLED", default=False)
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v22.0").strip()
 DATA_STORE_PATH = Path(os.getenv("DATA_STORE_PATH", "data/store.json"))
 APP_VERSION = "4.7.0"
