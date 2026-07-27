@@ -316,3 +316,29 @@ def test_forged_dependency_is_rejected_even_when_shape_is_complete() -> None:
 
     with pytest.raises(ValueError, match="brief_scanner_engine_consent_dependency_invalid"):
         prepare_brief_scanner_mission_execution(bundle, plan, receipt)
+
+
+def test_legacy_forged_receipt_without_fingerprint_is_rejected_fail_closed() -> None:
+    bundle = _bundle(draft=True, reminder=False)
+    plan, _ = _consent(
+        bundle,
+        (
+            (
+                BriefScannerConsentAction.CREATE_MISSION,
+                BriefScannerConsentDecision.APPROVE,
+            ),
+            (
+                BriefScannerConsentAction.GENERATE_DRAFT,
+                BriefScannerConsentDecision.APPROVE,
+            ),
+        ),
+    )
+    forged = BriefScannerConsentReceipt(
+        requested_actions=plan.requested_actions,
+        approved_actions=(BriefScannerConsentAction.CREATE_MISSION,),
+        declined_actions=(),
+        memory_consent_active=True,
+    )
+
+    with pytest.raises(ValueError, match="brief_scanner_engine_consent_invalid"):
+        prepare_brief_scanner_mission_execution(bundle, plan, forged)
