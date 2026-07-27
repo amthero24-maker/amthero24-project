@@ -46,6 +46,8 @@ def extract_brief_with_groq(
     enabled: bool | None = None,
 ) -> BriefScannerBoundaryOutcome:
     """Call Groq vision once and validate its JSON through the strict model boundary."""
+    if enabled is not None and type(enabled) is not bool:
+        return _retryable("brief_scanner_provider_flag_invalid")
     active = BRIEF_SCANNER_PROVIDER_ENABLED if enabled is None else enabled
     if not active:
         return _retryable("brief_scanner_provider_disabled")
@@ -94,5 +96,6 @@ def extract_brief_with_groq(
             return _retryable("brief_scanner_provider_output_invalid")
         return evaluate_brief_scanner_model_output(raw_output)
     except Exception:
-        logger.exception("Brief Scanner provider request failed")
+        # Do not log provider exception text or stack traces: SDK errors may echo request metadata.
+        logger.error("Brief Scanner provider request failed")
         return _retryable("brief_scanner_provider_request_failed")
