@@ -81,6 +81,7 @@ def test_approved_bundle_becomes_typed_non_executed_commands() -> None:
     assert envelope.requires_executor is True
     assert envelope.executed is False
     assert envelope.allows_implicit_actions is False
+    assert envelope.planning_fingerprint == plan.planning_fingerprint
     assert envelope.mission is not None
     assert envelope.mission.kind == BriefScannerExecutionCommandKind.CREATE_MISSION
     assert envelope.mission.topic == "document"
@@ -233,6 +234,43 @@ def test_tampered_receipt_or_source_bundle_is_rejected() -> None:
     unsafe_bundle = replace(bundle, allows_persistence=True)
     with pytest.raises(ValueError, match="bundle_invalid"):
         build_brief_scanner_execution_envelope(unsafe_bundle, plan, receipt)
+
+
+def test_consent_cannot_be_replayed_for_same_shape_with_different_content() -> None:
+    bundle = compose_brief_scanner_mission_plan(
+        _facts(requested_action="send documents"),
+        response_instruction="Ask for confirmation.",
+    )
+    assert bundle is not None
+    plan = plan_brief_scanner_consent(bundle, memory_consent_active=True)
+    assert plan is not None
+    receipt = _approved_receipt(plan)
+    assert bundle.draft is not None
+
+    changed_bundle = replace(
+        bundle,
+        draft=replace(
+            bundle.draft,
+            response_instruction="Request a payment plan instead.",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="brief_scanner_engine_consent_invalid"):
+        build_brief_scanner_execution_envelope(changed_bundle, plan, receipt)
+
+
+def test_legacy_receipt_without_fingerprint_is_rejected() -> None:
+    bundle = compose_brief_scanner_mission_plan(
+        _facts(requested_action="send documents"),
+        response_instruction="Ask for confirmation.",
+    )
+    assert bundle is not None
+    plan = plan_brief_scanner_consent(bundle, memory_consent_active=True)
+    assert plan is not None
+    receipt = replace(_approved_receipt(plan), planning_fingerprint="")
+
+    with pytest.raises(ValueError, match="brief_scanner_engine_consent_invalid"):
+        build_brief_scanner_execution_envelope(bundle, plan, receipt)
 
 
 def test_commands_and_envelope_are_immutable() -> None:

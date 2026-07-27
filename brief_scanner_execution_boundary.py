@@ -17,6 +17,7 @@ from brief_scanner_consent_workflow import (
     BriefScannerConsentReceipt,
 )
 from brief_scanner_draft_planner import BriefScannerDraftKind
+from brief_scanner_mission_engine import prepare_brief_scanner_mission_execution
 from brief_scanner_mission_planner import (
     BriefScannerMissionKind,
     BriefScannerMissionPlanningBundle,
@@ -82,6 +83,7 @@ class BriefScannerExecutionEnvelope:
     reminder: BriefScannerReminderCommand | None
     approved_actions: tuple[BriefScannerConsentAction, ...]
     declined_actions: tuple[BriefScannerConsentAction, ...]
+    planning_fingerprint: str
     requires_executor: bool
     executed: bool = False
     allows_implicit_actions: bool = False
@@ -107,80 +109,6 @@ def _mission_copy(kind: BriefScannerMissionKind, due_date: date | None) -> tuple
     if kind == BriefScannerMissionKind.TRACK_APPOINTMENT:
         return "Track document appointment", "Prepare for the documented appointment"
     raise ValueError("brief_scanner_execution_review_only_not_executable")
-
-
-def _validate_source_bundle(bundle: BriefScannerMissionPlanningBundle) -> None:
-    unsafe = (
-        type(bundle) is not BriefScannerMissionPlanningBundle
-        or not bundle.requires_confirmation
-        or bundle.allows_generation
-        or bundle.allows_persistence
-        or bundle.allows_scheduling
-        or bundle.allows_side_effects
-        or not bundle.mission.requires_confirmation
-        or bundle.mission.allows_side_effects
-        or bundle.mission.kind == BriefScannerMissionKind.REVIEW_ONLY
-    )
-    if bundle.draft is not None:
-        unsafe = unsafe or (
-            not bundle.draft.requires_confirmation
-            or bundle.draft.allows_generation
-            or bundle.draft.allows_side_effects
-            or not bundle.draft.ready_for_confirmation
-        )
-    if bundle.reminder is not None:
-        unsafe = unsafe or (
-            not bundle.reminder.requires_confirmation
-            or not bundle.reminder.requires_memory_consent
-            or bundle.reminder.allows_persistence
-            or bundle.reminder.allows_scheduling
-            or bundle.reminder.allows_side_effects
-        )
-    if unsafe:
-        raise ValueError("brief_scanner_execution_bundle_invalid")
-
-
-def _validate_consent(
-    bundle: BriefScannerMissionPlanningBundle,
-    plan: BriefScannerConsentPlan,
-    receipt: BriefScannerConsentReceipt,
-) -> None:
-    expected = [BriefScannerConsentAction.CREATE_MISSION]
-    if bundle.draft is not None:
-        expected.append(BriefScannerConsentAction.GENERATE_DRAFT)
-    if bundle.reminder is not None:
-        expected.append(BriefScannerConsentAction.CREATE_REMINDER)
-    expected_actions = tuple(expected)
-
-    unsafe = (
-        type(plan) is not BriefScannerConsentPlan
-        or type(receipt) is not BriefScannerConsentReceipt
-        or not plan.ready_for_decision
-        or not plan.requires_explicit_decision
-        or plan.allows_execution
-        or plan.allows_side_effects
-        or not plan.memory_consent_active
-        or plan.requested_actions != expected_actions
-        or receipt.requested_actions != expected_actions
-        or not receipt.complete
-        or receipt.allows_execution
-        or receipt.allows_side_effects
-        or not receipt.memory_consent_active
-        or len(receipt.approved_actions) != len(frozenset(receipt.approved_actions))
-        or len(receipt.declined_actions) != len(frozenset(receipt.declined_actions))
-        or frozenset(receipt.approved_actions).intersection(receipt.declined_actions)
-        or frozenset(receipt.approved_actions + receipt.declined_actions) != frozenset(expected_actions)
-    )
-    if BriefScannerConsentAction.CREATE_MISSION not in receipt.approved_actions and any(
-        action in receipt.approved_actions
-        for action in (
-            BriefScannerConsentAction.GENERATE_DRAFT,
-            BriefScannerConsentAction.CREATE_REMINDER,
-        )
-    ):
-        unsafe = True
-    if unsafe:
-        raise ValueError("brief_scanner_execution_consent_invalid")
 
 
 def _schedule_reminder(
@@ -220,8 +148,19 @@ def build_brief_scanner_execution_envelope(
     now: datetime | None = None,
 ) -> BriefScannerExecutionEnvelope:
     """Build typed commands for approved actions without executing any command."""
-    _validate_source_bundle(bundle)
-    _validate_consent(bundle, consent_plan, consent_receipt)
+    authorization = prepare_brief_scanner_mission_execution(
+        bundle,
+        consent_plan,
+        consent_receipt,
+    )
+    if (
+        not authorization.consent_verified
+        or authorization.allows_persistence
+        or authorization.allows_generation
+        or authorization.allows_scheduling
+        or authorization.allows_side_effects
+    ):
+        raise ValueError("brief_scanner_execution_authorization_invalid")
     approved = frozenset(consent_receipt.approved_actions)
 
     mission_command = None
@@ -295,5 +234,6 @@ def build_brief_scanner_execution_envelope(
         reminder=reminder_command,
         approved_actions=consent_receipt.approved_actions,
         declined_actions=consent_receipt.declined_actions,
+        planning_fingerprint=consent_receipt.planning_fingerprint,
         requires_executor=mission_command is not None,
     )

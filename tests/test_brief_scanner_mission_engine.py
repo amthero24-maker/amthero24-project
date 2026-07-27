@@ -9,7 +9,9 @@ from brief_scanner_consent_workflow import (
     BriefScannerConsentAction,
     BriefScannerConsentChoice,
     BriefScannerConsentDecision,
+    BriefScannerConsentPlan,
     BriefScannerConsentReceipt,
+    brief_scanner_planning_fingerprint,
     plan_brief_scanner_consent,
     record_brief_scanner_consent,
 )
@@ -268,6 +270,35 @@ def test_unsafe_or_incomplete_bundle_is_rejected() -> None:
                                                 )))
     with pytest.raises(ValueError, match="brief_scanner_engine_bundle_invalid"):
         prepare_brief_scanner_mission_execution(incomplete, plan, receipt)
+
+
+def test_review_only_bundle_cannot_be_forced_into_execution() -> None:
+    bundle = compose_brief_scanner_mission_plan(
+        BriefScannerFacts(
+            language="de",
+            readable=True,
+            sender_organization="Synthetic Authority",
+        )
+    )
+    assert bundle is not None
+    fingerprint = brief_scanner_planning_fingerprint(bundle)
+    requested = (BriefScannerConsentAction.CREATE_MISSION,)
+    plan = BriefScannerConsentPlan(
+        requested_actions=requested,
+        missing_inputs=(),
+        memory_consent_active=True,
+        planning_fingerprint=fingerprint,
+    )
+    receipt = BriefScannerConsentReceipt(
+        requested_actions=requested,
+        approved_actions=requested,
+        declined_actions=(),
+        memory_consent_active=True,
+        planning_fingerprint=fingerprint,
+    )
+
+    with pytest.raises(ValueError, match="brief_scanner_engine_bundle_invalid"):
+        prepare_brief_scanner_mission_execution(bundle, plan, receipt)
 
 
 def test_execution_plan_is_immutable() -> None:

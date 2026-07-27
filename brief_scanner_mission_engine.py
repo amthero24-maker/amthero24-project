@@ -17,6 +17,7 @@ from brief_scanner_consent_workflow import (
 )
 from brief_scanner_draft_planner import BriefScannerDraftPlan
 from brief_scanner_mission_planner import (
+    BriefScannerMissionKind,
     BriefScannerMissionPlan,
     BriefScannerMissionPlanningBundle,
 )
@@ -84,6 +85,7 @@ def _require_safe_bundle(bundle: BriefScannerMissionPlanningBundle) -> None:
         or bundle.allows_side_effects
         or not bundle.mission.requires_confirmation
         or bundle.mission.allows_side_effects
+        or bundle.mission.kind == BriefScannerMissionKind.REVIEW_ONLY
     )
     if bundle.draft is not None:
         unsafe = unsafe or (
