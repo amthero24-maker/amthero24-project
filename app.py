@@ -73,6 +73,7 @@ class IncomingMessage:
     message_type: str
     media_id: str | None = None
     mime_type: str = "application/octet-stream"
+    internal_context: str = ""
 
 
 def _now() -> datetime:
@@ -244,6 +245,8 @@ async def _finish(message_id: str, reply: str, sender: str) -> None:
 async def process_incoming(message: IncomingMessage) -> None:
     language = "de"
     has_media = message.media_id is not None
+    transient_document = message.internal_context == "document_analysis"
+    commands_allowed = not transient_document
     try:
         store.cleanup_expired()
         profile = store.get_user(message.sender)
@@ -263,16 +266,16 @@ async def process_incoming(message: IncomingMessage) -> None:
         stage = str(profile.get("onboarding_stage") or "")
         memory_repository = _hero_memory()
 
-        if any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "احذف بياناتي", "видали мої дані")):
+        if commands_allowed and any(phrase in lowered for phrase in ("lösch meine daten", "daten löschen", "delete my data", "امسح بياناتي", "احذف بياناتي", "видали мої дані")):
             memory_repository.delete_all_user_data(message.sender)
             await _finish(message.message_id, _deletion_confirmation(language), message.sender)
             return
 
-        if _is_export_request(message.text):
+        if commands_allowed and _is_export_request(message.text):
             await _finish(message.message_id, _export_reply(language, memory_repository.export_user_data(message.sender)), message.sender)
             return
 
-        if is_name_question(message.text):
+        if commands_allowed and is_name_question(message.text):
             saved_name = str(profile.get("first_name") or "").strip()
             pending_name = str(profile.get("pending_name") or "").strip()
             if memory_enabled and saved_name:
@@ -289,7 +292,7 @@ async def process_incoming(message: IncomingMessage) -> None:
             await _finish(message.message_id, ask_name_message(language), message.sender)
             return
 
-        if is_memory_summary_request(message.text):
+        if commands_allowed and is_memory_summary_request(message.text):
             if not memory_enabled:
                 pending_name = str(profile.get("pending_name") or "").strip()
                 next_stage = "awaiting_consent" if pending_name else "awaiting_name"
@@ -304,7 +307,7 @@ async def process_incoming(message: IncomingMessage) -> None:
             await _finish(message.message_id, memory_summary_message(language, profile), message.sender)
             return
 
-        if is_enable_memory_request(message.text) and not memory_enabled:
+        if commands_allowed and is_enable_memory_request(message.text) and not memory_enabled:
             pending_name = str(profile.get("pending_name") or profile.get("first_name") or "").strip()
             stage = "awaiting_consent" if pending_name else "awaiting_name"
             updates: dict[str, Any] = {
@@ -320,7 +323,7 @@ async def process_incoming(message: IncomingMessage) -> None:
             await _finish(message.message_id, reply, message.sender)
             return
 
-        extracted_name = extract_name(message.text)
+        extracted_name = extract_name(message.text) if commands_allowed else ""
         is_new_user = not profile
         stage = str(profile.get("onboarding_stage") or "")
 
@@ -392,7 +395,7 @@ async def process_incoming(message: IncomingMessage) -> None:
                 return
             stage = "awaiting_consent"
 
-        if stage == "awaiting_consent":
+        if commands_allowed and stage == "awaiting_consent":
             decision = consent_decision(message.text)
             if decision is not None:
                 pending_name = str(profile.get("pending_name") or "").strip()
@@ -426,7 +429,7 @@ async def process_incoming(message: IncomingMessage) -> None:
         memory_enabled = profile.get("memory_consent") == "granted"
         previous_topic = str(profile.get("current_topic") if memory_enabled else profile.get("session_topic") or previous_topic)
 
-        mission_intent = detect_mission_intent(message.text)
+        mission_intent = detect_mission_intent(message.text) if commands_allowed else None
         if mission_intent:
             if not memory_enabled:
                 await _finish(message.message_id, memory_required_message(language), message.sender)
@@ -453,11 +456,27 @@ async def process_incoming(message: IncomingMessage) -> None:
             await _finish(message.message_id, mission_created_message(language, mission), message.sender)
             return
 
-        authoritative = product_answer(message.text, language, previous_topic)
+        authoritative = (
+            product_answer(message.text, language, previous_topic)
+            if commands_allowed
+            else None
+        )
         effective_text = build_effective_user_text(message.text, profile)
-        city = extract_city(message.text)
-        inferred_topic = infer_topic(message.text, previous_topic)
-        topic = authoritative[1] if authoritative else (inferred_topic or ("document" if has_media else previous_topic))
+        city = extract_city(message.text) if commands_allowed else ""
+        inferred_topic = (
+            infer_topic(message.text, previous_topic)
+            if commands_allowed
+            else ""
+        )
+        topic = (
+            "document"
+            if transient_document
+            else (
+                authoritative[1]
+                if authoritative
+                else (inferred_topic or ("document" if has_media else previous_topic))
+            )
+        )
 
         operational_updates: dict[str, Any] = {
             "session_language": language,
@@ -468,8 +487,16 @@ async def process_incoming(message: IncomingMessage) -> None:
         if memory_enabled:
             operational_updates.update({
                 "preferred_language": language,
-                "last_message": message.text[:200],
-                "last_message_type": message.message_type,
+                "last_message": (
+                    "Document content processed transiently"
+                    if transient_document
+                    else message.text[:200]
+                ),
+                "last_message_type": (
+                    "document"
+                    if transient_document
+                    else message.message_type
+                ),
                 "current_topic": topic,
             })
             if extracted_name:
@@ -530,7 +557,15 @@ async def process_incoming(message: IncomingMessage) -> None:
         if memory_enabled:
             response_updates.update({
                 "last_assistant_reply": reply,
-                "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; latest request={message.text[:180]}",
+                "conversation_summary": (
+                    f"Language={language}; topic=document; "
+                    "document content processed transiently and not retained"
+                    if transient_document
+                    else (
+                        f"Language={language}; city={profile.get('city', '')}; "
+                        f"topic={topic}; latest request={message.text[:180]}"
+                    )
+                ),
             })
         store.update_user(message.sender, response_updates)
         store.update_message_status(message.message_id, "sent")

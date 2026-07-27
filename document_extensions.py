@@ -65,7 +65,13 @@ async def _normalize_document(message: core.IncomingMessage, kind: str, language
     else:
         extraction = await core.anyio.to_thread.run_sync(lambda: extract_plain_text(content))
     request = build_document_request(extraction, language=language, note=message.text)
-    return core.IncomingMessage(message.message_id, message.sender, request, "text")
+    return core.IncomingMessage(
+        message.message_id,
+        message.sender,
+        request,
+        "text",
+        internal_context="document_analysis",
+    )
 
 
 async def process_incoming(message: core.IncomingMessage) -> None:

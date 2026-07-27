@@ -48,6 +48,12 @@ async def test_text_pdf_is_extracted_and_routed_in_saved_language(tmp_path, monk
     assert profile["preferred_language"] == "ar"
     assert "PDF content processed transiently" in profile["conversation_summary"]
     assert application.core.store.snapshot()["messages"]["pdf-ok"]["status"] == "sent"
+    assert application.core._hero_memory().list_missions(
+        "49123", status="all", limit=5
+    ) == []
+    assert "Mahnung. Frist 10.08.2026." not in (
+        tmp_path / "store.json"
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.anyio

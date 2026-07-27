@@ -13,8 +13,9 @@ def test_arabic_normal_chat_forbids_mixed_translation_mode() -> None:
         has_image=False,
     )
     assert "Reply ONLY in Arabic" in prompt
-    assert "Do not mix German with Arabic" in prompt
-    assert "For greetings, introductions, small talk, and normal questions, never use this mode" in prompt
+    assert "Do not mix languages in ordinary conversation" in prompt
+    assert "except when drafting an official German letter or email" in prompt
+    assert "When merely explaining an incoming German document or image" in prompt
 
 
 def test_arabic_status_phrase_does_not_become_known_name() -> None:
