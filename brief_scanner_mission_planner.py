@@ -16,6 +16,14 @@ from brief_scanner_action_proposal import (
     propose_brief_scanner_action,
 )
 from brief_scanner_contract import BriefScannerFacts
+from brief_scanner_draft_planner import (
+    BriefScannerDraftPlan,
+    plan_brief_scanner_draft,
+)
+from brief_scanner_reminder_planner import (
+    BriefScannerReminderPlan,
+    plan_brief_scanner_reminder,
+)
 
 
 class BriefScannerMissionKind(StrEnum):
@@ -30,6 +38,18 @@ class BriefScannerMissionPlan:
     kind: BriefScannerMissionKind
     due_date: date | None = None
     requires_confirmation: bool = True
+    allows_side_effects: bool = False
+
+
+@dataclass(frozen=True)
+class BriefScannerMissionPlanningBundle:
+    mission: BriefScannerMissionPlan
+    draft: BriefScannerDraftPlan | None = None
+    reminder: BriefScannerReminderPlan | None = None
+    requires_confirmation: bool = True
+    allows_generation: bool = False
+    allows_persistence: bool = False
+    allows_scheduling: bool = False
     allows_side_effects: bool = False
 
 
@@ -66,3 +86,39 @@ def plan_brief_scanner_mission(facts: BriefScannerFacts) -> BriefScannerMissionP
     if proposal is None:
         return None
     return _plan_from_proposal(facts, proposal)
+
+
+def compose_brief_scanner_mission_plan(
+    facts: BriefScannerFacts,
+    *,
+    response_instruction: str = "",
+) -> BriefScannerMissionPlanningBundle | None:
+    """Compose one read-only Mission plan with its optional Draft and Reminder plans.
+
+    Composition does not execute any child plan. A response and a reminder may coexist inside the
+    same Mission when the document contains both a requested action and a date. Cross-plan
+    invariants fail closed so a tracking Mission cannot exist without its matching reminder plan.
+    """
+    mission = plan_brief_scanner_mission(facts)
+    if mission is None:
+        return None
+
+    draft = plan_brief_scanner_draft(
+        facts,
+        response_instruction=response_instruction,
+    )
+    reminder = plan_brief_scanner_reminder(facts)
+
+    if mission.kind == BriefScannerMissionKind.PREPARE_RESPONSE and draft is None:
+        return None
+    if mission.kind in {
+        BriefScannerMissionKind.TRACK_DEADLINE,
+        BriefScannerMissionKind.TRACK_APPOINTMENT,
+    } and reminder is None:
+        return None
+
+    return BriefScannerMissionPlanningBundle(
+        mission=mission,
+        draft=draft,
+        reminder=reminder,
+    )
