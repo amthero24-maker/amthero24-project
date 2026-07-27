@@ -41,6 +41,18 @@ def _response_language_from_prompt(system_prompt: str) -> str | None:
     return _REPLY_LANGUAGE_CODES.get(match.group(1).casefold())
 
 
+def _brief_scanner_canary_from_prompt(system_prompt: str) -> bool:
+    """Accept only the exact local eligibility marker produced by build_system_prompt."""
+    if type(system_prompt) is not str:
+        return False
+    match = re.search(
+        r"Brief Scanner canary eligible:\s*(true|false)\s*\.",
+        system_prompt,
+        flags=re.IGNORECASE,
+    )
+    return bool(match and match.group(1).casefold() == "true")
+
+
 def sanitize_model_reply(value: str) -> str:
     """Remove reasoning traces and malformed Unicode before WhatsApp delivery."""
     reply = (value or "").strip()
@@ -76,7 +88,7 @@ def sanitize_model_reply(value: str) -> str:
 
 def generate_reply(*, system_prompt: str, user_text: str, image_bytes: bytes | None = None, mime_type: str = "image/jpeg") -> str:
     try:
-        if image_bytes:
+        if image_bytes and _brief_scanner_canary_from_prompt(system_prompt):
             response_language = _response_language_from_prompt(system_prompt)
             if response_language is not None:
                 scanner_decision = decide_brief_scanner_media_flow(
