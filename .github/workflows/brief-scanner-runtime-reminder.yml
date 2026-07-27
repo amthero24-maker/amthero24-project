@@ -1,0 +1,53 @@
+name: Brief Scanner Runtime Reminder
+
+on:
+  pull_request:
+    paths:
+      - "brief_scanner_runtime_*.py"
+      - "tests/test_brief_scanner_runtime_*.py"
+      - ".github/workflows/brief-scanner-runtime-reminder.yml"
+  push:
+    branches: [main]
+    paths:
+      - "brief_scanner_runtime_*.py"
+      - "tests/test_brief_scanner_runtime_*.py"
+      - ".github/workflows/brief-scanner-runtime-reminder.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --quiet -r requirements-dev.txt
+      - name: Compile Runtime Reminder boundary
+        run: >-
+          python -m compileall -q
+          brief_scanner_runtime_reminder_executor.py
+          tests/test_brief_scanner_runtime_reminder_executor.py
+      - name: Run Runtime Reminder contracts
+        env:
+          REMINDER_ENCRYPTION_KEY: ci-brief-scanner-reminder-key
+        run: >-
+          python -m pytest -q
+          tests/test_brief_scanner_runtime_reminder_executor.py
+          tests/test_brief_scanner_runtime_adapter.py
+          tests/test_brief_scanner_runtime_executor.py
+          tests/test_reminder_engine.py
+      - name: Re-run security contracts
+        run: >-
+          python -m pytest -q
+          tests/test_tenant_isolation.py
+          tests/test_dependency_policy.py
+          tests/test_secret_leak_guard.py
+          tests/test_environment_contract.py
+          tests/test_runtime_health.py
+          tests/test_webhook_security.py
+          tests/test_log_safety.py
