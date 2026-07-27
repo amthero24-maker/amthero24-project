@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
+from brief_scanner_runtime_readiness import (
+    BriefScannerRuntimeReadinessStatus,
+    assess_brief_scanner_runtime_readiness,
+)
 from encryption_policy import (
     admin_api_token_status,
     legacy_reminder_decryption_enabled,
@@ -82,6 +86,29 @@ def _provider_check(name: str, payload: dict[str, Any]) -> LaunchCheck:
     return LaunchCheck(f"provider_{name}", "ready", detail)
 
 
+def _brief_scanner_runtime_check(environment: Mapping[str, str]) -> LaunchCheck:
+    readiness = assess_brief_scanner_runtime_readiness(environment)
+    if readiness.status is BriefScannerRuntimeReadinessStatus.BLOCKED:
+        return LaunchCheck(
+            "brief_scanner_runtime",
+            "blocked",
+            f"Brief Scanner runtime activation is blocked by {readiness.code}.",
+            "Keep the runtime disabled and correct the named configuration gate before activation.",
+        )
+    if readiness.status is BriefScannerRuntimeReadinessStatus.DISABLED:
+        return LaunchCheck(
+            "brief_scanner_runtime",
+            "ready",
+            "Brief Scanner runtime is safely disabled.",
+        )
+    actions = ", ".join(action.value for action in readiness.enabled_actions)
+    return LaunchCheck(
+        "brief_scanner_runtime",
+        "ready",
+        f"Brief Scanner runtime configuration is ready for {actions}.",
+    )
+
+
 def build_launch_report(
     overview: dict[str, Any],
     *,
@@ -89,7 +116,7 @@ def build_launch_report(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return actionable Beta gates using aggregate metrics only."""
-    environment = env or os.environ
+    environment = os.environ if env is None else env
     current = now or datetime.now(UTC)
     if current.tzinfo is None:
         current = current.replace(tzinfo=UTC)
@@ -191,6 +218,8 @@ def build_launch_report(
             ))
     else:
         checks.append(LaunchCheck("human_support_security", "ready", "Human support is disabled until an operator team is configured."))
+
+    checks.append(_brief_scanner_runtime_check(environment))
 
     messages = overview.get("messages_24h", {}) if isinstance(overview.get("messages_24h"), dict) else {}
     message_total = int(messages.get("total", 0) or 0)
