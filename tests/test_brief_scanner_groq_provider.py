@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 from brief_scanner_groq_provider import extract_brief_with_groq
@@ -16,7 +17,7 @@ class _FakeCompletions:
     def create(self, **request):
         self.request = request
         if self.fail:
-            raise RuntimeError("synthetic provider failure")
+            raise RuntimeError("synthetic provider failure with sensitive-request-marker")
         message = SimpleNamespace(content=self.content)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
@@ -75,6 +76,27 @@ def test_disabled_provider_never_calls_client(monkeypatch) -> None:
 
     assert outcome.status == BriefScannerBoundaryStatus.RETRYABLE_MODEL_OUTPUT
     assert outcome.error_code == "brief_scanner_provider_disabled"
+    assert outcome.allows_side_effects is False
+    assert called is False
+
+
+def test_non_boolean_feature_flag_fails_closed_before_provider() -> None:
+    called = False
+
+    def client_factory(**_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("must not be called")
+
+    outcome = extract_brief_with_groq(
+        image_bytes=b"image",
+        mime_type="image/jpeg",
+        response_language="de",
+        client_factory=client_factory,
+        enabled=1,
+    )
+
+    assert outcome.error_code == "brief_scanner_provider_flag_invalid"
     assert outcome.allows_side_effects is False
     assert called is False
 
@@ -140,8 +162,10 @@ def test_invalid_media_and_response_language_fail_before_provider(monkeypatch) -
     assert completions.request is None
 
 
-def test_provider_and_malformed_output_fail_closed(monkeypatch) -> None:
+def test_provider_failure_logs_no_exception_or_request_details(monkeypatch, caplog) -> None:
     monkeypatch.setenv("GROQ_API_KEY", "synthetic-key")
+    caplog.set_level(logging.ERROR)
+
     provider_failure = extract_brief_with_groq(
         image_bytes=b"synthetic-image",
         mime_type="image/jpeg",
@@ -149,6 +173,17 @@ def test_provider_and_malformed_output_fail_closed(monkeypatch) -> None:
         client_factory=_factory(_FakeCompletions("", fail=True)),
         enabled=True,
     )
+
+    logged = " ".join(record.getMessage() for record in caplog.records)
+    assert provider_failure.error_code == "brief_scanner_provider_request_failed"
+    assert provider_failure.allows_side_effects is False
+    assert logged == "Brief Scanner provider request failed"
+    assert "sensitive-request-marker" not in logged
+    assert "synthetic-image" not in logged
+
+
+def test_malformed_output_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-key")
     malformed = extract_brief_with_groq(
         image_bytes=b"synthetic-image",
         mime_type="image/jpeg",
@@ -157,8 +192,6 @@ def test_provider_and_malformed_output_fail_closed(monkeypatch) -> None:
         enabled=True,
     )
 
-    assert provider_failure.error_code == "brief_scanner_provider_request_failed"
     assert malformed.status == BriefScannerBoundaryStatus.RETRYABLE_MODEL_OUTPUT
     assert malformed.error_code == "brief_scanner_json_invalid"
-    assert provider_failure.allows_side_effects is False
     assert malformed.allows_side_effects is False
