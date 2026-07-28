@@ -21,7 +21,6 @@ concurrency:
 
 jobs:
   smoke:
-    if: ${{ vars.PRODUCTION_BASE_URL != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

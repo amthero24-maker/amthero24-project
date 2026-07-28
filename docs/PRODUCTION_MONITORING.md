@@ -33,6 +33,10 @@ The `Production Smoke` workflow runs every six hours and can also be started man
 
 It does not send WhatsApp messages, create users, update missions, create reminders, or write application data.
 
+The workflow always runs. If `PRODUCTION_BASE_URL` is missing, it emits a
+sanitized `monitor_execution` failure, synchronizes the production incident,
+and exits non-zero instead of silently skipping monitoring.
+
 Before declaring an incident, the monitor retries up to three times with a bounded delay. This reduces false incidents from a short network interruption or a container that is still becoming ready. Retry count and delay are capped in code.
 
 The uploaded `production-monitor-report` artifact contains only:

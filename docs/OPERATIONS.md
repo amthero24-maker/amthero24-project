@@ -30,7 +30,9 @@ The smoke suite requires PostgreSQL, initialized application schemas, fail-close
 
 Set the repository variable `PRODUCTION_BASE_URL`. Add the repository secret `ADMIN_API_TOKEN` to include the protected launch report. The `Production Smoke` workflow then runs every six hours and can also be started manually.
 
-A missing `PRODUCTION_BASE_URL` causes the scheduled job to skip instead of producing false incidents.
+A missing `PRODUCTION_BASE_URL` fails the scheduled job with a sanitized
+`monitor_execution` result and opens or updates the production incident. This
+keeps missing monitoring configuration visible without exposing the URL.
 
 ### Durable storage failure policy
 
