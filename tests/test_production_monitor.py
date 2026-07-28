@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from production_smoke import SmokeCheck
 from scripts.production_monitor import MonitorReport, run_monitor, write_report
+
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _failed() -> list[SmokeCheck]:
@@ -110,3 +114,13 @@ def test_written_report_contains_only_incident_safe_fields(tmp_path) -> None:
         "recovered_after_retry",
         "checks",
     }
+
+
+def test_workflow_does_not_skip_when_production_url_is_missing() -> None:
+    workflow = (_ROOT / ".github" / "workflows" / "production-smoke.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "if: ${{ vars.PRODUCTION_BASE_URL != '' }}" not in workflow
+    assert "python scripts/production_monitor.py --output production-monitor.json" in workflow
+    assert "if: steps.monitor.outcome == 'failure'" in workflow
