@@ -22,21 +22,28 @@ on:
         required: true
         default: true
         type: boolean
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: deployment-certification
+  cancel-in-progress: true
+
 jobs:
   certify-production:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
       ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
-      EXPECTED_APP_VERSION: ${{ inputs.expected_version }}
-      DEPLOYMENT_STABILITY_SAMPLES: ${{ inputs.samples }}
-      DEPLOYMENT_STABILITY_DELAY_SECONDS: ${{ inputs.delay_seconds }}
-      DEPLOYMENT_STABILITY_REQUIRE_LAUNCH_READY: ${{ inputs.require_launch_ready }}
+      EXPECTED_APP_VERSION: ${{ inputs.expected_version || vars.EXPECTED_APP_VERSION }}
+      DEPLOYMENT_STABILITY_SAMPLES: ${{ inputs.samples || '3' }}
+      DEPLOYMENT_STABILITY_DELAY_SECONDS: ${{ inputs.delay_seconds || '30' }}
+      DEPLOYMENT_STABILITY_REQUIRE_LAUNCH_READY: ${{ inputs.require_launch_ready || 'true' }}
       SMOKE_TIMEOUT_SECONDS: "20"
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +52,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+      - name: Wait for Railway deployment on main updates
+        if: github.event_name == 'push'
+        run: sleep 120
+
       - name: Run consecutive read-only deployment certification
         id: certification
         continue-on-error: true
