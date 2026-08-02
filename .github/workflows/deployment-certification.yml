@@ -46,7 +46,7 @@ jobs:
       DEPLOYMENT_STABILITY_REQUIRE_LAUNCH_READY: ${{ inputs.require_launch_ready || 'true' }}
       SMOKE_TIMEOUT_SECONDS: "20"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@v5
