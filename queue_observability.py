@@ -61,42 +61,49 @@ def build_queue_overview(store: Any, *, now: datetime | None = None) -> dict[str
         ).fetchall()
         aggregate = connection.execute(
             """
+            WITH queue_metrics AS (
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE status = 'queued' AND available_at <= %s AND expires_at > %s
+                    ) AS ready,
+                    COUNT(*) FILTER (
+                        WHERE status = 'queued' AND available_at > %s AND expires_at > %s
+                    ) AS delayed,
+                    COUNT(*) FILTER (
+                        WHERE status = 'processing'
+                          AND (lease_until IS NULL OR lease_until <= %s)
+                          AND expires_at > %s
+                    ) AS stale_processing,
+                    COUNT(*) FILTER (
+                        WHERE status IN ('queued', 'processing') AND attempt_count > 1
+                    ) AS retrying,
+                    COUNT(*) FILTER (
+                        WHERE status = 'dead' AND updated_at >= %s
+                    ) AS dead_24h,
+                    COALESCE(MAX(attempt_count), 0) AS max_attempt_count,
+                    MIN(
+                        CASE
+                            WHEN status = 'queued' AND available_at <= %s AND expires_at > %s
+                                THEN available_at
+                            WHEN status = 'processing'
+                                 AND (lease_until IS NULL OR lease_until <= %s)
+                                 AND expires_at > %s
+                                THEN COALESCE(lease_until, updated_at)
+                            ELSE NULL
+                        END
+                    ) AS oldest_ready_at
+                FROM inbound_work_queue
+            )
             SELECT
-                COUNT(*) FILTER (
-                    WHERE status = 'queued' AND available_at <= %s AND expires_at > %s
-                ) AS ready,
-                COUNT(*) FILTER (
-                    WHERE status = 'queued' AND available_at > %s AND expires_at > %s
-                ) AS delayed,
-                COUNT(*) FILTER (
-                    WHERE status = 'processing'
-                      AND (lease_until IS NULL OR lease_until <= %s)
-                      AND expires_at > %s
-                ) AS stale_processing,
-                COUNT(*) FILTER (
-                    WHERE status IN ('queued', 'processing') AND attempt_count > 1
-                ) AS retrying,
-                COUNT(*) FILTER (
-                    WHERE status = 'dead' AND updated_at >= %s
-                ) AS dead_24h,
-                COALESCE(MAX(attempt_count), 0) AS max_attempt_count,
-                COALESCE(
-                    EXTRACT(EPOCH FROM (
-                        %s - MIN(
-                            CASE
-                                WHEN status = 'queued' AND available_at <= %s AND expires_at > %s
-                                    THEN available_at
-                                WHEN status = 'processing'
-                                     AND (lease_until IS NULL OR lease_until <= %s)
-                                     AND expires_at > %s
-                                    THEN COALESCE(lease_until, updated_at)
-                                ELSE NULL
-                            END
-                        )
-                    )),
-                    0
-                ) AS oldest_ready_age_seconds
-            FROM inbound_work_queue
+                ready,
+                delayed,
+                stale_processing,
+                retrying,
+                dead_24h,
+                max_attempt_count,
+                COALESCE(EXTRACT(EPOCH FROM (%s - oldest_ready_at)), 0)
+                    AS oldest_ready_age_seconds
+            FROM queue_metrics
             """,
             (
                 current,
