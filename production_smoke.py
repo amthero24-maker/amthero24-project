@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -38,19 +39,30 @@ def _base_url(value: str) -> str:
     return cleaned.rstrip("/") + "/"
 
 
+def _safe_content_type(value: str | None) -> str:
+    """Return only a bounded media type suitable for sanitized incident reports."""
+    media_type = str(value or "missing").split(";", 1)[0].strip().casefold()
+    if not re.fullmatch(r"[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+", media_type):
+        return "unknown"
+    return media_type[:80]
+
+
 def fetch_json(base_url: str, path: str, *, token: str = "", timeout: float = 15.0) -> tuple[int, dict[str, Any]]:
-    """Fetch one JSON endpoint without logging credentials or response headers."""
+    """Fetch one JSON endpoint without logging credentials, response bodies, or sensitive headers."""
     url = urljoin(_base_url(base_url), path.lstrip("/"))
     headers = {"Accept": "application/json", "User-Agent": "AmtHero24-Smoke/1.0"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(url, headers=headers, method="GET")
+    content_type = "missing"
     try:
         with urlopen(request, timeout=max(1.0, min(float(timeout), 60.0))) as response:
             status = int(response.status)
+            content_type = _safe_content_type(response.headers.get("Content-Type"))
             raw = response.read(1_000_000)
     except HTTPError as exc:
         status = int(exc.code)
+        content_type = _safe_content_type(exc.headers.get("Content-Type"))
         raw = exc.read(1_000_000)
     except (URLError, TimeoutError, OSError) as exc:
         raise SmokeError(f"endpoint unavailable: {type(exc).__name__}") from exc
@@ -58,9 +70,13 @@ def fetch_json(base_url: str, path: str, *, token: str = "", timeout: float = 15
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise SmokeError("endpoint did not return valid JSON") from exc
+        raise SmokeError(
+            f"endpoint returned invalid JSON (HTTP {status}; content-type={content_type})"
+        ) from exc
     if not isinstance(payload, dict):
-        raise SmokeError("endpoint returned a non-object JSON payload")
+        raise SmokeError(
+            f"endpoint returned non-object JSON (HTTP {status}; content-type={content_type})"
+        )
     return status, payload
 
 
