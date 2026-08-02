@@ -15,7 +15,7 @@ def _code(value: object) -> str:
 
 
 def main() -> int:
-    output = Path(os.getenv("LAUNCH_CODES_OUTPUT", "launch-readiness-codes.json"))
+    output = Path("launch-readiness-codes.json")
     payload: dict[str, object] = {"status": "unavailable", "codes": []}
     try:
         status, report = fetch_json(
