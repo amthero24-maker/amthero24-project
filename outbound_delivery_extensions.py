@@ -24,6 +24,7 @@ from outbound_delivery import (
     extract_response_message_ids,
     record_receipts,
 )
+from outbound_delivery_observability import build_outbound_delivery_overview
 from outbound_delivery_policy import augment_launch_report
 
 logger = logging.getLogger("amthero24.outbound_delivery")
@@ -55,8 +56,6 @@ def _install_send_tracking() -> None:
             for message_id in extract_response_message_ids(response):
                 repository.record_accepted(message_id, message_kind=kind)
         except Exception:
-            # The external send already succeeded. Telemetry must never trigger a duplicate
-            # user response, and global log safety removes request-specific extras.
             logger.exception("Unable to record outbound delivery acceptance")
         return response
 
@@ -86,7 +85,10 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
 
 def _build_overview(store: Any, **kwargs: Any) -> dict[str, Any]:
     payload = _ORIGINAL_ADMIN_BUILD_OVERVIEW(store, **kwargs)
-    payload["outbound_delivery"] = _repository(store).aggregate(now=kwargs.get("now"))
+    payload["outbound_delivery"] = build_outbound_delivery_overview(
+        store,
+        now=kwargs.get("now"),
+    )
     return payload
 
 
