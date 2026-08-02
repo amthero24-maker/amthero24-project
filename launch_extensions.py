@@ -1,6 +1,8 @@
 """Protected Beta launch report composed above production reliability layers."""
 from __future__ import annotations
 
+import re
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -22,15 +24,9 @@ def _unavailable(code: str) -> JSONResponse:
 
 
 def _overview_failure_code(exc: Exception) -> str:
-    """Classify failures without reflecting exception messages or database identifiers."""
-    name = type(exc).__name__.casefold()
-    if name in {"undefinedtable", "undefinedcolumn"}:
-        return "overview_database_schema_error"
-    if name in {"databaseerror", "operationalerror", "interfaceerror", "integrityerror", "programmingerror"}:
-        return "overview_database_query_error"
-    if isinstance(exc, (TypeError, ValueError, KeyError, IndexError)):
-        return "overview_data_shape_error"
-    return "overview_unexpected_error"
+    """Return only a bounded exception class identifier; never reflect its message."""
+    name = re.sub(r"[^a-z0-9]", "", type(exc).__name__.casefold())[:40]
+    return f"overview_exception_{name or 'unknown'}"
 
 
 @core.app.get("/admin/launch-readiness", include_in_schema=False)
