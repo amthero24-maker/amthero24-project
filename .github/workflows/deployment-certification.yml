@@ -54,6 +54,31 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Resolve exact expected application version
+        shell: bash
+        run: |
+          if [ -n "${EXPECTED_APP_VERSION}" ]; then
+            printf 'Using configured expected application version.\n'
+            exit 0
+          fi
+          resolved_version="$(python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          tree = ast.parse(Path('config.py').read_text(encoding='utf-8'))
+          for node in tree.body:
+              if not isinstance(node, ast.Assign):
+                  continue
+              if any(isinstance(target, ast.Name) and target.id == 'APP_VERSION' for target in node.targets):
+                  value = ast.literal_eval(node.value)
+                  if isinstance(value, str) and value.strip():
+                      print(value.strip())
+                      raise SystemExit(0)
+          raise SystemExit('APP_VERSION was not found in config.py')
+          PY
+          )"
+          printf 'EXPECTED_APP_VERSION=%s\n' "${resolved_version}" >> "${GITHUB_ENV}"
+
       - name: Wait for Railway deployment on main updates
         if: github.event_name == 'push'
         run: sleep 120
