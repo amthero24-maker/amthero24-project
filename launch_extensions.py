@@ -12,19 +12,30 @@ from launch_readiness import build_launch_report
 core = composed.core
 
 
+def _unavailable(code: str) -> JSONResponse:
+    """Return a bounded stage code without exposing exception or production data."""
+    return JSONResponse(
+        {"status": code},
+        status_code=500,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @core.app.get("/admin/launch-readiness", include_in_schema=False)
 async def launch_readiness(request: Request) -> JSONResponse:
     denied = admin_module._authorize(request)
     if denied is not None:
         return denied
-    overview = admin_module.build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
-    report = build_launch_report(overview)
+    try:
+        overview = admin_module.build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
+    except Exception:
+        return _unavailable("overview_build_failed")
+    try:
+        report = build_launch_report(overview)
+    except Exception:
+        return _unavailable("launch_report_build_failed")
     if admin_module.contains_personal_fields(report):
-        return JSONResponse(
-            {"status": "unavailable"},
-            status_code=500,
-            headers={"Cache-Control": "no-store"},
-        )
+        return _unavailable("personal_field_guard_failed")
     return JSONResponse(report, headers={"Cache-Control": "no-store"})
 
 
