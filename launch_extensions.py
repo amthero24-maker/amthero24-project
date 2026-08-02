@@ -21,6 +21,18 @@ def _unavailable(code: str) -> JSONResponse:
     )
 
 
+def _overview_failure_code(exc: Exception) -> str:
+    """Classify failures without reflecting exception messages or database identifiers."""
+    name = type(exc).__name__.casefold()
+    if name in {"undefinedtable", "undefinedcolumn"}:
+        return "overview_database_schema_error"
+    if name in {"databaseerror", "operationalerror", "interfaceerror", "integrityerror", "programmingerror"}:
+        return "overview_database_query_error"
+    if isinstance(exc, (TypeError, ValueError, KeyError, IndexError)):
+        return "overview_data_shape_error"
+    return "overview_unexpected_error"
+
+
 @core.app.get("/admin/launch-readiness", include_in_schema=False)
 async def launch_readiness(request: Request) -> JSONResponse:
     denied = admin_module._authorize(request)
@@ -28,8 +40,8 @@ async def launch_readiness(request: Request) -> JSONResponse:
         return denied
     try:
         overview = admin_module.build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
-    except Exception:
-        return _unavailable("overview_build_failed")
+    except Exception as exc:
+        return _unavailable(_overview_failure_code(exc))
     try:
         report = build_launch_report(overview)
     except Exception:
