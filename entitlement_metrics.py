@@ -50,13 +50,17 @@ def _postgres_metrics(store: Any, current: datetime) -> dict[str, Any]:
         if entitlement_table and entitlement_table.get("name"):
             rows = connection.execute(
                 """
-                SELECT COALESCE(entitlement.plan_code, %s) AS plan_code, COUNT(*) AS count
-                FROM hero_users AS hero
-                LEFT JOIN hero_entitlements AS entitlement
-                  ON entitlement.phone_hash = hero.phone_hash
-                GROUP BY COALESCE(entitlement.plan_code, %s)
+                WITH resolved_entitlements AS (
+                    SELECT COALESCE(entitlement.plan_code, %s) AS plan_code
+                    FROM hero_users AS hero
+                    LEFT JOIN hero_entitlements AS entitlement
+                      ON entitlement.phone_hash = hero.phone_hash
+                )
+                SELECT plan_code, COUNT(*) AS count
+                FROM resolved_entitlements
+                GROUP BY plan_code
                 """,
-                (fallback, fallback),
+                (fallback,),
             ).fetchall()
             plans = {str(row["plan_code"]): int(row["count"]) for row in rows}
         else:
