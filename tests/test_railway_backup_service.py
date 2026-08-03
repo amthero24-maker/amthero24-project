@@ -64,6 +64,16 @@ def test_backup_module_entrypoint_loads_repository_dependencies() -> None:
     assert "Create an encrypted" in completed.stdout
 
 
+def test_backup_direct_script_entrypoint_loads_repository_dependencies() -> None:
+    completed = subprocess.run(
+        [sys.executable, "scripts/postgres_backup.py", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Create an encrypted" in completed.stdout
+
+
 def test_backup_entrypoint_has_valid_shell_syntax() -> None:
     subprocess.run(
         ["sh", "-n", "scripts/backup_entrypoint.sh"],
