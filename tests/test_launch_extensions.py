@@ -102,13 +102,14 @@ def test_launch_endpoint_blocks_invalid_runtime_flag_without_echoing_it(
     assert sensitive_value not in response.text
 
 
-def test_disabled_reminders_are_ready_for_read_only_canary(tmp_path) -> None:
+def test_disabled_reminders_and_queue_are_ready_for_read_only_canary(tmp_path) -> None:
     _install_store(tmp_path)
     client = TestClient(launch_extensions.core.app)
     environment = _env()
     environment.update({
         "REMINDER_WORKER_ENABLED": "false",
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
+        "DURABLE_QUEUE_ENABLED": "false",
     })
     environment.pop("WHATSAPP_REMINDER_TEMPLATE")
 
@@ -126,6 +127,7 @@ def test_disabled_reminders_are_ready_for_read_only_canary(tmp_path) -> None:
     assert checks["reminder_encryption"]["status"] == "ready"
     assert checks["reminder_delivery"]["status"] == "ready"
     assert checks["reminder_legacy_decryption"]["status"] == "ready"
+    assert checks["durable_queue"]["status"] == "ready"
     assert payload["status"] == "ready"
 
 
@@ -146,6 +148,26 @@ def test_explicit_reminder_activation_preserves_template_gate(tmp_path) -> None:
     assert response.status_code == 200
     checks = {item["code"]: item for item in response.json()["checks"]}
     assert checks["reminder_delivery"]["status"] == "warning"
+
+
+def test_explicit_queue_activation_preserves_encryption_gate(tmp_path) -> None:
+    _install_store(tmp_path)
+    client = TestClient(launch_extensions.core.app)
+    environment = _env()
+    environment["DURABLE_QUEUE_ENABLED"] = "true"
+    environment.pop("MESSAGE_QUEUE_ENCRYPTION_KEY", None)
+
+    with patch.dict("os.environ", environment, clear=True), patch.object(
+        launch_extensions.admin_module, "build_overview", return_value=_overview()
+    ):
+        response = client.get(
+            "/admin/launch-readiness",
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+
+    assert response.status_code == 200
+    checks = {item["code"]: item for item in response.json()["checks"]}
+    assert checks["durable_queue"]["status"] == "blocked"
 
 
 def test_reminder_preflight_is_hidden_without_admin_token(tmp_path) -> None:

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 import admin_extensions as admin_module
 import provider_extensions as composed
 from config import APP_VERSION, GROQ_MODEL
+from encryption_policy import assess_secret
 from launch_readiness import build_launch_report
 from scripts.migrate_reminder_encryption import migrate_reminder_ciphertexts
 
@@ -36,32 +37,60 @@ def _flag(name: str, default: bool = False) -> bool:
     return os.getenv(name, fallback).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _queue_check(queue_enabled: bool) -> dict[str, object]:
+    if not queue_enabled:
+        return {
+            "code": "durable_queue",
+            "status": "ready",
+            "detail": "Durable recovery is outside the single-sender read-only Canary; immediate webhook idempotency remains active.",
+        }
+    key_status = assess_secret("MESSAGE_QUEUE_ENCRYPTION_KEY").status
+    if key_status == "configured":
+        return {
+            "code": "durable_queue",
+            "status": "ready",
+            "detail": "Durable inbound recovery is enabled with a dedicated strong encryption key.",
+        }
+    return {
+        "code": "durable_queue",
+        "status": "blocked",
+        "detail": f"Durable inbound recovery encryption key is {key_status}.",
+        "action": "Set MESSAGE_QUEUE_ENCRYPTION_KEY to a unique random value of at least 32 characters before enabling the queue.",
+    }
+
+
 def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, object]:
-    """Treat intentionally disabled reminder execution as safe for read-only Canary."""
-    if _flag("REMINDER_WORKER_ENABLED", False):
-        return report
+    """Apply only the explicitly limited, read-only Controlled Canary scope."""
+    reminders_enabled = _flag("REMINDER_WORKER_ENABLED", False)
+    queue_enabled = _flag("DURABLE_QUEUE_ENABLED", False)
     checks = report.get("checks")
     if not isinstance(checks, list):
         return report
     scoped_checks: list[dict[str, object]] = []
+    queue_seen = False
     for raw in checks:
         if not isinstance(raw, dict):
             continue
         item = dict(raw)
         code = str(item.get("code") or "")
-        if code == "reminder_encryption":
+        if not reminders_enabled and code == "reminder_encryption":
             item = {
                 "code": code,
                 "status": "ready",
                 "detail": "Reminder creation and delivery are disabled for the read-only Controlled Canary.",
             }
-        elif code == "reminder_delivery":
+        elif not reminders_enabled and code == "reminder_delivery":
             item = {
                 "code": code,
                 "status": "ready",
                 "detail": "Reminder delivery is outside the current Controlled Canary scope.",
             }
+        elif code == "durable_queue":
+            queue_seen = True
+            item = _queue_check(queue_enabled)
         scoped_checks.append(item)
+    if not queue_seen:
+        scoped_checks.append(_queue_check(queue_enabled))
     statuses = [str(item.get("status") or "warning") for item in scoped_checks]
     payload = dict(report)
     payload["checks"] = scoped_checks
