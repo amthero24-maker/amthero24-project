@@ -10,6 +10,11 @@ from typing import Any
 
 from log_safety import install_logging_safety
 
+# Controlled Canary is read-only by default. Reminder delivery and historical-token
+# compatibility require explicit production activation after certification.
+os.environ.setdefault("REMINDER_WORKER_ENABLED", "false")
+os.environ.setdefault("REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED", "false")
+
 install_logging_safety()
 
 from encryption_policy import install_encryption_policy  # noqa: E402

@@ -31,6 +31,50 @@ def _overview_failure_code(exc: Exception) -> str:
     return f"overview_exception_{name or 'unknown'}"
 
 
+def _flag(name: str, default: bool = False) -> bool:
+    fallback = "true" if default else "false"
+    return os.getenv(name, fallback).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, object]:
+    """Treat intentionally disabled reminder execution as safe for read-only Canary."""
+    if _flag("REMINDER_WORKER_ENABLED", False):
+        return report
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return report
+    scoped_checks: list[dict[str, object]] = []
+    for raw in checks:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        code = str(item.get("code") or "")
+        if code == "reminder_encryption":
+            item = {
+                "code": code,
+                "status": "ready",
+                "detail": "Reminder creation and delivery are disabled for the read-only Controlled Canary.",
+            }
+        elif code == "reminder_delivery":
+            item = {
+                "code": code,
+                "status": "ready",
+                "detail": "Reminder delivery is outside the current Controlled Canary scope.",
+            }
+        scoped_checks.append(item)
+    statuses = [str(item.get("status") or "warning") for item in scoped_checks]
+    payload = dict(report)
+    payload["checks"] = scoped_checks
+    payload["status"] = "blocked" if "blocked" in statuses else ("warning" if "warning" in statuses else "ready")
+    payload["summary"] = {status: statuses.count(status) for status in ("ready", "warning", "blocked")}
+    payload["next_actions"] = [
+        str(item["action"])
+        for item in scoped_checks
+        if str(item.get("action") or "").strip()
+    ]
+    return payload
+
+
 @core.app.get("/admin/launch-readiness", include_in_schema=False)
 async def launch_readiness(request: Request) -> JSONResponse:
     denied = admin_module._authorize(request)
@@ -41,7 +85,7 @@ async def launch_readiness(request: Request) -> JSONResponse:
     except Exception as exc:
         return _unavailable(_overview_failure_code(exc))
     try:
-        report = build_launch_report(overview)
+        report = _apply_controlled_canary_scope(build_launch_report(overview))
     except Exception:
         return _unavailable("launch_report_build_failed")
     if admin_module.contains_personal_fields(report):
