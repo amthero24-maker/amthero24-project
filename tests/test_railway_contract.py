@@ -170,8 +170,8 @@ def test_restore_cli_entrypoints_load_repository_dependencies() -> None:
 
 
 def test_restore_rejects_source_target_identity_before_artifact_access(tmp_path) -> None:
-    source = "postgres://operator:source-secret@db.internal/amthero24_restore"
-    target = "postgresql://operator:target-secret@db.internal:5432/amthero24_restore"
+    source = "postgres://db.internal/amthero24_restore"
+    target = "postgresql://db.internal:5432/amthero24_restore"
 
     with pytest.raises(PermissionError, match="isolated from source"):
         restore_backup(
