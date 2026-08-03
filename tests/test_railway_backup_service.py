@@ -18,6 +18,20 @@ def test_backup_service_is_daily_non_web_cron() -> None:
     assert "healthcheckPath" not in deploy
 
 
+def test_backup_certification_profile_is_explicit_one_shot() -> None:
+    config = json.loads(
+        Path("railway.backup.certification.json").read_text(encoding="utf-8")
+    )
+    build = config["build"]
+    deploy = config["deploy"]
+
+    assert build["dockerfilePath"] == "Dockerfile.backup"
+    assert deploy["startCommand"] == "python scripts/postgres_backup.py"
+    assert deploy["restartPolicyType"] == "NEVER"
+    assert "cronSchedule" not in deploy
+    assert "healthcheckPath" not in deploy
+
+
 def test_backup_image_prepares_root_owned_volume_then_drops_privileges() -> None:
     dockerfile = Path("Dockerfile.backup").read_text(encoding="utf-8")
     entrypoint = Path("scripts/backup_entrypoint.sh").read_text(encoding="utf-8")
