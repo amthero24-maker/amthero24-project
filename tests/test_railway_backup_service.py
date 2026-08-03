@@ -61,7 +61,7 @@ def test_backup_module_entrypoint_loads_repository_dependencies() -> None:
         capture_output=True,
         text=True,
     )
-    assert "Create encrypted" in completed.stdout
+    assert "Create an encrypted" in completed.stdout
 
 
 def test_backup_entrypoint_has_valid_shell_syntax() -> None:
