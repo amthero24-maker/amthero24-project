@@ -1,0 +1,10 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "dockerfilePath": "Dockerfile.backup"
+  },
+  "deploy": {
+    "startCommand": "sh scripts/restore_certification_entrypoint.sh",
+    "restartPolicyType": "NEVER"
+  }
+}

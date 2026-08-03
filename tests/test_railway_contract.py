@@ -1,9 +1,15 @@
-"""Tests for deterministic Railway configuration safety."""
+"""Tests for deterministic Railway configuration and recovery safety."""
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from railway_contract import report_payload, validate_railway_contract
+from scripts.postgres_restore import restore_backup
 
 
 def _write(root, config, procfile="web: uvicorn webhook_security:app --host 0.0.0.0 --port $PORT\n"):
@@ -114,3 +120,64 @@ def test_invalid_or_missing_file_returns_safe_single_finding(tmp_path) -> None:
     (tmp_path / "railway.json").write_text("{invalid", encoding="utf-8")
     invalid = validate_railway_contract(tmp_path)
     assert [(item.code, item.passed) for item in invalid] == [("railway_file", False)]
+
+
+def test_restore_certification_profile_is_explicit_one_shot() -> None:
+    config = json.loads(
+        Path("railway.restore.certification.json").read_text(encoding="utf-8")
+    )
+    assert config["build"]["dockerfilePath"] == "Dockerfile.backup"
+    deploy = config["deploy"]
+    assert deploy["startCommand"] == "sh scripts/restore_certification_entrypoint.sh"
+    assert deploy["restartPolicyType"] == "NEVER"
+    assert "cronSchedule" not in deploy
+    assert "healthcheckPath" not in deploy
+
+
+def test_restore_certification_entrypoint_is_fail_closed() -> None:
+    entrypoint = Path("scripts/restore_certification_entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "RESTORE_ARTIFACT",
+        "RESTORE_ALLOWED",
+        "RESTORE_TARGET_CONFIRMATION",
+        "ISOLATED_RESTORE_TARGET",
+        "RESTORE_TARGET_DATABASE_URL",
+        "RESTORE_SOURCE_DATABASE_URL",
+        "python -m scripts.postgres_restore",
+        "RESTORE_AMTHERO24",
+    ):
+        assert required in entrypoint
+    assert "BACKUP_ENCRYPTION_KEY=" not in entrypoint
+    assert "postgresql://" not in entrypoint
+    subprocess.run(
+        ["sh", "-n", "scripts/restore_certification_entrypoint.sh"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_restore_cli_entrypoints_load_repository_dependencies() -> None:
+    commands = (
+        [sys.executable, "-m", "scripts.postgres_restore", "--help"],
+        [sys.executable, "scripts/postgres_restore.py", "--help"],
+    )
+    for command in commands:
+        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        assert "Restore and verify" in completed.stdout
+
+
+def test_restore_rejects_source_target_identity_before_artifact_access(tmp_path) -> None:
+    source = "postgres://db.internal/amthero24_restore"
+    target = "postgresql://db.internal:5432/amthero24_restore"
+
+    with pytest.raises(PermissionError, match="isolated from source"):
+        restore_backup(
+            target,
+            tmp_path / "missing.dump.fernet",
+            confirmation="RESTORE_AMTHERO24",
+            restore_allowed=True,
+            source_database_url=source,
+        )
