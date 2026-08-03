@@ -105,7 +105,7 @@ jobs:
             tests/test_production_smoke.py 2>&1 | tee migration-test.log
       - name: Upload sanitized migration evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: database-migration-safety
           path: |
