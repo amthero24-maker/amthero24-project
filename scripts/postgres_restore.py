@@ -39,14 +39,13 @@ def _database_url(value: str) -> str:
     return cleaned
 
 
-def _database_identity(value: str) -> tuple[str, str, str, str]:
-    """Return a password-free libpq identity for source/target isolation checks."""
+def _database_identity(value: str) -> tuple[str, str, str]:
+    """Return a password/user-free database identity for isolation checks."""
     environment = postgres_cli_environment(_database_url(value), base_environment={})
     host = environment.get("PGHOST") or environment.get("PGHOSTADDR") or ""
     return (
         str(host).casefold(),
         str(environment.get("PGPORT") or "5432"),
-        str(environment.get("PGUSER") or ""),
         str(environment.get("PGDATABASE") or ""),
     )
 
@@ -91,7 +90,7 @@ def restore_backup(
 
     Connection values are provided only through parsed libpq child variables. They are
     never placed in the process argument list or output. When a source URL is supplied,
-    the target must have a distinct password-free libpq identity.
+    the target must have a distinct password/user-free database identity.
     """
     if not restore_allowed:
         raise PermissionError("RESTORE_ALLOWED=true is required")
