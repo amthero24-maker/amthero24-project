@@ -92,6 +92,8 @@ def run_smoke(
 ) -> list[SmokeCheck]:
     """Run read-only production checks and return an ordered report."""
     checks: list[SmokeCheck] = []
+    reminders = "missing"
+    reminder_check_index: int | None = None
 
     try:
         health_status, health = fetch_json(base_url, "/health", timeout=timeout)
@@ -148,6 +150,7 @@ def run_smoke(
         checks.append(SmokeCheck("outbound_delivery_receipts", "pass" if delivery_receipts == "enabled" else "fail", delivery_receipts))
 
         reminders = str(components.get("reminders") or "missing")
+        reminder_check_index = len(checks)
         checks.append(SmokeCheck("reminders", "pass" if reminders == "enabled" else "fail", reminders))
         reminder_encryption = str(components.get("reminder_encryption") or "missing")
         checks.append(SmokeCheck("reminder_encryption", "pass" if reminder_encryption == "configured" else "fail", reminder_encryption))
@@ -172,6 +175,14 @@ def run_smoke(
             checks.append(SmokeCheck("launch_report_endpoint", "pass" if endpoint_ok else "fail", f"HTTP {launch_status}; status={decision}"))
             launch_ok = decision == "ready" or (decision == "warning" and not require_launch_ready)
             checks.append(SmokeCheck("launch_decision", "pass" if launch_ok else "fail", decision))
+            if (
+                reminder_check_index is not None
+                and reminders == "disabled"
+                and require_launch_ready
+                and launch_status == 200
+                and decision == "ready"
+            ):
+                checks[reminder_check_index] = SmokeCheck("reminders", "pass", reminders)
         except SmokeError as exc:
             checks.append(SmokeCheck("launch_report_endpoint", "fail", str(exc)))
 
