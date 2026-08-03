@@ -5,7 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
+    && apt-get install -y --no-install-recommends postgresql-client ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -14,11 +14,14 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY scripts/backup_entrypoint.sh /usr/local/bin/backup-entrypoint
 
 RUN useradd --create-home --uid 10001 amthero \
     && mkdir -p /backups \
-    && chown -R amthero:amthero /app /backups
+    && chown -R amthero:amthero /app /backups \
+    && chmod 0755 /usr/local/bin/backup-entrypoint
 
-USER amthero
+USER root
 
+ENTRYPOINT ["/usr/local/bin/backup-entrypoint"]
 CMD ["python", "scripts/postgres_backup.py"]
