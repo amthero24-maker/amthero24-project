@@ -4,7 +4,7 @@
     "dockerfilePath": "Dockerfile.backup"
   },
   "deploy": {
-    "startCommand": "python -m scripts.postgres_backup",
+    "startCommand": "sh scripts/restore_certification_entrypoint.sh",
     "restartPolicyType": "NEVER"
   }
 }
