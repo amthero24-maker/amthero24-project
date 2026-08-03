@@ -19,6 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from cryptography.fernet import Fernet, InvalidToken
 
 from postgres_cli_env import postgres_cli_environment
