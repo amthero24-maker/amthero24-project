@@ -4,7 +4,7 @@
     "dockerfilePath": "Dockerfile.backup"
   },
   "deploy": {
-    "startCommand": "sh -c 'set -eu; found=0; for f in /backups/*.dump.fernet; do [ -f \"$f\" ] || continue; m=\"$f.manifest.json\"; [ -s \"$f\" ] && [ -s \"$m\" ] || continue; found=1; printf \"BACKUP_ARTIFACT name=%s size_bytes=%s manifest=%s manifest_size_bytes=%s\\n\" \"$(basename \"$f\")\" \"$(wc -c < \"$f\")\" \"$(basename \"$m\")\" \"$(wc -c < \"$m\")\"; done; [ \"$found\" -eq 1 ]'",
+    "startCommand": "python -m scripts.postgres_backup",
     "restartPolicyType": "NEVER"
   }
 }
