@@ -92,6 +92,61 @@ jobs:
         if: always()
         run: python scripts/launch_readiness_codes.py
 
+      - name: Run protected reminder encryption preflight
+        id: reminder_preflight
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          allowed = {
+              'mode',
+              'total',
+              'already_current',
+              'decryptable_old_key',
+              'decryptable_legacy_token',
+              'unreadable',
+              'migrated',
+              'safe_to_apply',
+          }
+          output = Path('reminder-encryption-preflight.json')
+          base_url = os.environ.get('PRODUCTION_BASE_URL', '').strip().rstrip('/')
+          token = os.environ.get('ADMIN_API_TOKEN', '').strip()
+          if not base_url or not token:
+              output.write_text(json.dumps({'status': 'unavailable'}, sort_keys=True), encoding='utf-8')
+              raise SystemExit(1)
+          request = urllib.request.Request(
+              f'{base_url}/admin/reminder-encryption-preflight',
+              headers={
+                  'X-Admin-Token': token,
+                  'Accept': 'application/json',
+                  'User-Agent': 'AmtHero24-Certification/1.0',
+              },
+              method='GET',
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  payload = json.loads(response.read().decode('utf-8'))
+          except (urllib.error.URLError, TimeoutError, ValueError, UnicodeError):
+              output.write_text(json.dumps({'status': 'unavailable'}, sort_keys=True), encoding='utf-8')
+              raise SystemExit(1)
+          if not isinstance(payload, dict):
+              output.write_text(json.dumps({'status': 'invalid'}, sort_keys=True), encoding='utf-8')
+              raise SystemExit(1)
+          clean = {key: payload[key] for key in allowed if key in payload}
+          output.write_text(json.dumps(clean, sort_keys=True), encoding='utf-8')
+          if clean.get('mode') != 'dry-run' or clean.get('migrated') not in {0, None}:
+              raise SystemExit(1)
+          if clean.get('safe_to_apply') is not True or int(clean.get('unreadable', 1) or 0) != 0:
+              raise SystemExit(1)
+          PY
+
       - name: Upload sanitized certification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -100,6 +155,7 @@ jobs:
           path: |
             deployment-stability.json
             launch-readiness-codes.json
+            reminder-encryption-preflight.json
           if-no-files-found: error
           retention-days: 14
 
@@ -109,6 +165,7 @@ jobs:
         env:
           REPORT_PATH: deployment-stability.json
           LAUNCH_CODES_PATH: launch-readiness-codes.json
+          REMINDER_PREFLIGHT_PATH: reminder-encryption-preflight.json
           CERTIFICATION_ISSUE: "67"
         with:
           script: |
@@ -123,12 +180,19 @@ jobs:
             if (fs.existsSync(process.env.LAUNCH_CODES_PATH)) {
               launch = JSON.parse(fs.readFileSync(process.env.LAUNCH_CODES_PATH, 'utf8'));
             }
+            let reminder = { status: 'unavailable' };
+            if (fs.existsSync(process.env.REMINDER_PREFLIGHT_PATH)) {
+              reminder = JSON.parse(fs.readFileSync(process.env.REMINDER_PREFLIGHT_PATH, 'utf8'));
+            }
             const clean = (value) => String(value ?? '')
               .replace(/[\r\n]+/g, ' ')
               .replace(/[`|]/g, '')
               .slice(0, 240);
             const status = report.status === 'stable' ? 'stable' : 'unstable';
             const codes = Array.isArray(launch.codes) ? launch.codes.map(clean).filter(Boolean).slice(0, 30) : [];
+            const reminderStatus = reminder.safe_to_apply === true && Number(reminder.unreadable || 0) === 0
+              ? 'safe-to-apply'
+              : clean(reminder.status || 'not-ready');
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               '### Automated strict deployment certification',
@@ -139,10 +203,12 @@ jobs:
               `- Samples: **${Number(report.consecutive_passes || 0)} / ${Number(report.samples_configured || 0)}** consecutive passes`,
               `- Launch status: \`${clean(launch.status)}\``,
               `- Non-ready launch codes: ${codes.length ? codes.map(code => `\`${code}\``).join(', ') : 'none'}`,
+              `- Reminder encryption preflight: \`${reminderStatus}\``,
+              `- Reminder rows: total=${Number(reminder.total || 0)}, current=${Number(reminder.already_current || 0)}, legacy=${Number(reminder.decryptable_legacy_token || 0)}, unreadable=${Number(reminder.unreadable || 0)}`,
               `- Generated: \`${clean(report.generated_at)}\``,
               `- Workflow: ${runUrl}`,
               '',
-              '> Sanitized certification summary only. No production URL, credentials, headers, response bodies, user data, or document content are included.',
+              '> Sanitized certification summary only. No production URL, credentials, headers, response bodies, user data, reminder IDs, phone numbers, ciphertext, or document content are included.',
             ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -152,5 +218,5 @@ jobs:
             });
 
       - name: Reject unstable deployment
-        if: steps.certification.outcome == 'failure'
+        if: steps.certification.outcome == 'failure' || steps.reminder_preflight.outcome == 'failure'
         run: exit 1
