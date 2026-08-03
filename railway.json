@@ -4,7 +4,7 @@
     "dockerfilePath": "Dockerfile.backup"
   },
   "deploy": {
-    "startCommand": "sh scripts/restore_certification_entrypoint.sh",
+    "startCommand": "python -c 'import json, os; from schema_recovery import inspect_database_schema; identity = inspect_database_schema(os.environ[\"DATABASE_URL\"], require_current=True); print(json.dumps({\"status\": \"smoke_verified\", \"schema_version\": identity.version, \"schema_ledger_entries\": identity.ledger_entries, \"schema_contract\": identity.contract}))'",
     "restartPolicyType": "NEVER"
   }
 }
