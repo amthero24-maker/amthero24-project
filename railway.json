@@ -1,12 +1,10 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "dockerfilePath": "Dockerfile.backup"
+  },
   "deploy": {
-    "startCommand": "uvicorn webhook_security:app --host 0.0.0.0 --port $PORT",
-    "healthcheckPath": "/ready",
-    "healthcheckTimeout": 300,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10,
-    "overlapSeconds": 30,
-    "drainingSeconds": 15
+    "startCommand": "sh -c 'set -eu; found=0; for f in /backups/*.dump.fernet; do [ -f \"$f\" ] || continue; m=\"$f.manifest.json\"; [ -s \"$f\" ] && [ -s \"$m\" ] || continue; found=1; printf \"BACKUP_ARTIFACT name=%s size_bytes=%s manifest=%s manifest_size_bytes=%s\\n\" \"$(basename \"$f\")\" \"$(wc -c < \"$f\")\" \"$(basename \"$m\")\" \"$(wc -c < \"$m\")\"; done; [ \"$found\" -eq 1 ]'",
+    "restartPolicyType": "NEVER"
   }
 }
