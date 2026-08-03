@@ -1,6 +1,7 @@
 """Protected Beta launch report composed above production reliability layers."""
 from __future__ import annotations
 
+import os
 import re
 
 from fastapi import Request
@@ -10,6 +11,7 @@ import admin_extensions as admin_module
 import provider_extensions as composed
 from config import APP_VERSION, GROQ_MODEL
 from launch_readiness import build_launch_report
+from scripts.migrate_reminder_encryption import migrate_reminder_ciphertexts
 
 core = composed.core
 
@@ -45,6 +47,39 @@ async def launch_readiness(request: Request) -> JSONResponse:
     if admin_module.contains_personal_fields(report):
         return _unavailable("personal_field_guard_failed")
     return JSONResponse(report, headers={"Cache-Control": "no-store"})
+
+
+@core.app.get("/admin/reminder-encryption-preflight", include_in_schema=False)
+async def reminder_encryption_preflight(request: Request) -> JSONResponse:
+    """Classify reminder ciphertexts without changing rows or exposing identifiers."""
+    denied = admin_module._authorize(request)
+    if denied is not None:
+        return denied
+    try:
+        report = migrate_reminder_ciphertexts(
+            os.getenv("DATABASE_URL", ""),
+            new_key=os.getenv("REMINDER_ENCRYPTION_KEY", ""),
+            legacy_token=os.getenv("WHATSAPP_TOKEN", ""),
+            apply=False,
+        ).as_dict()
+    except Exception as exc:
+        name = re.sub(r"[^a-z0-9]", "", type(exc).__name__.casefold())[:40]
+        return _unavailable(f"reminder_preflight_exception_{name or 'unknown'}")
+
+    allowed = {
+        "mode",
+        "total",
+        "already_current",
+        "decryptable_old_key",
+        "decryptable_legacy_token",
+        "unreadable",
+        "migrated",
+        "safe_to_apply",
+    }
+    payload = {key: report[key] for key in allowed if key in report}
+    if admin_module.contains_personal_fields(payload):
+        return _unavailable("personal_field_guard_failed")
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 app = composed.app
