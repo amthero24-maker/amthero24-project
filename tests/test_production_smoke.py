@@ -122,6 +122,46 @@ def test_disabled_durable_queue_is_allowed_during_safe_rollout() -> None:
     assert next(item for item in checks if item.name == "durable_inbound_queue").passed is True
 
 
+def test_disabled_reminders_pass_only_with_strict_ready_launch_report() -> None:
+    def response(base: str, path: str, **kwargs):
+        status, payload = _healthy(path)
+        if path == "/ready":
+            payload["components"]["reminders"] = "disabled"
+        return status, payload
+
+    with patch("production_smoke.fetch_json", side_effect=response):
+        checks = production_smoke.run_smoke(
+            "https://example.test",
+            admin_token="secret",
+            require_launch_ready=True,
+        )
+
+    assert next(item for item in checks if item.name == "launch_decision").passed is True
+    assert next(item for item in checks if item.name == "reminders").passed is True
+
+
+def test_disabled_reminders_still_fail_without_strict_ready_launch_report() -> None:
+    def response(base: str, path: str, **kwargs):
+        status, payload = _healthy(path)
+        if path == "/ready":
+            payload["components"]["reminders"] = "disabled"
+        if path == "/admin/launch-readiness":
+            return 200, {"status": "warning"}
+        return status, payload
+
+    with patch("production_smoke.fetch_json", side_effect=response):
+        relaxed = production_smoke.run_smoke("https://example.test", admin_token="secret")
+        strict = production_smoke.run_smoke(
+            "https://example.test",
+            admin_token="secret",
+            require_launch_ready=True,
+        )
+
+    assert next(item for item in relaxed if item.name == "reminders").passed is False
+    assert next(item for item in strict if item.name == "reminders").passed is False
+    assert next(item for item in strict if item.name == "launch_decision").passed is False
+
+
 def test_non_postgres_smoke_can_explicitly_relax_schema_gate() -> None:
     def response(base: str, path: str, **kwargs):
         status, payload = _healthy(path)
