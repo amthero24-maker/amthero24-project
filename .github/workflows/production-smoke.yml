@@ -48,7 +48,7 @@ jobs:
           ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
           EXPECTED_APP_VERSION: ${{ vars.EXPECTED_APP_VERSION }}
           SMOKE_REQUIRE_SIGNATURE: "true"
-          PRODUCTION_MONITOR_REQUIRE_LAUNCH_READY: ${{ inputs.require_launch_ready || 'false' }}
+          PRODUCTION_MONITOR_REQUIRE_LAUNCH_READY: ${{ github.event_name != 'workflow_dispatch' || inputs.require_launch_ready }}
           PRODUCTION_MONITOR_ATTEMPTS: "3"
           PRODUCTION_MONITOR_DELAY_SECONDS: "20"
         run: python scripts/production_monitor.py --output production-monitor.json
