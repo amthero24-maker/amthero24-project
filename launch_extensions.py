@@ -37,8 +37,10 @@ def _flag(name: str, default: bool = False) -> bool:
 
 
 def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, object]:
-    """Treat intentionally disabled reminder execution as safe for read-only Canary."""
-    if _flag("REMINDER_WORKER_ENABLED", False):
+    """Apply only the explicitly limited, read-only Controlled Canary scope."""
+    reminders_enabled = _flag("REMINDER_WORKER_ENABLED", False)
+    queue_enabled = _flag("DURABLE_QUEUE_ENABLED", False)
+    if reminders_enabled and queue_enabled:
         return report
     checks = report.get("checks")
     if not isinstance(checks, list):
@@ -49,17 +51,23 @@ def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, objec
             continue
         item = dict(raw)
         code = str(item.get("code") or "")
-        if code == "reminder_encryption":
+        if not reminders_enabled and code == "reminder_encryption":
             item = {
                 "code": code,
                 "status": "ready",
                 "detail": "Reminder creation and delivery are disabled for the read-only Controlled Canary.",
             }
-        elif code == "reminder_delivery":
+        elif not reminders_enabled and code == "reminder_delivery":
             item = {
                 "code": code,
                 "status": "ready",
                 "detail": "Reminder delivery is outside the current Controlled Canary scope.",
+            }
+        elif not queue_enabled and code == "durable_queue":
+            item = {
+                "code": code,
+                "status": "ready",
+                "detail": "Durable recovery is outside the single-sender read-only Canary; immediate webhook idempotency remains active.",
             }
         scoped_checks.append(item)
     statuses = [str(item.get("status") or "warning") for item in scoped_checks]
