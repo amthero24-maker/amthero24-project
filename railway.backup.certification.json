@@ -1,0 +1,10 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "dockerfilePath": "Dockerfile.backup"
+  },
+  "deploy": {
+    "startCommand": "python scripts/postgres_backup.py",
+    "restartPolicyType": "NEVER"
+  }
+}
