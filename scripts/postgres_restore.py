@@ -39,6 +39,18 @@ def _database_url(value: str) -> str:
     return cleaned
 
 
+def _database_identity(value: str) -> tuple[str, str, str, str]:
+    """Return a password-free libpq identity for source/target isolation checks."""
+    environment = postgres_cli_environment(_database_url(value), base_environment={})
+    host = environment.get("PGHOST") or environment.get("PGHOSTADDR") or ""
+    return (
+        str(host).casefold(),
+        str(environment.get("PGPORT") or "5432"),
+        str(environment.get("PGUSER") or ""),
+        str(environment.get("PGDATABASE") or ""),
+    )
+
+
 def _enabled(value: str) -> bool:
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
@@ -73,11 +85,13 @@ def restore_backup(
     manifest_path: Path | None = None,
     pg_restore_binary: str = "pg_restore",
     psql_binary: str = "psql",
+    source_database_url: str = "",
 ) -> dict[str, Any]:
-    """Verify, restore, and schema-certify one backup after two confirmations.
+    """Verify, restore, and schema-certify one backup after explicit safeguards.
 
     Connection values are provided only through parsed libpq child variables. They are
-    never placed in the process argument list or output.
+    never placed in the process argument list or output. When a source URL is supplied,
+    the target must have a distinct password-free libpq identity.
     """
     if not restore_allowed:
         raise PermissionError("RESTORE_ALLOWED=true is required")
@@ -85,6 +99,10 @@ def restore_backup(
         raise PermissionError(f"confirmation must equal {_CONFIRMATION}")
 
     url = _database_url(database_url)
+    source_url = str(source_database_url or "").strip()
+    if source_url and _database_identity(source_url) == _database_identity(url):
+        raise PermissionError("restore target must be isolated from source database")
+
     artifact = Path(artifact)
     if not artifact.is_file():
         raise ValueError("Backup artifact does not exist")
@@ -180,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=Path(args.manifest) if args.manifest else None,
             pg_restore_binary=args.pg_restore,
             psql_binary=args.psql,
+            source_database_url=os.getenv("RESTORE_SOURCE_DATABASE_URL", ""),
         )
     except (PermissionError, ValueError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
         print(f"Restore failed: {type(exc).__name__}: {exc}", file=sys.stderr)
