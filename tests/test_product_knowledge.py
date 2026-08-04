@@ -2,6 +2,25 @@
 from product_knowledge import product_answer
 
 
+def test_arabic_returning_greeting_is_useful_and_actionable() -> None:
+    result = product_answer("مرحبا", "ar")
+    assert result is not None
+    reply, topic = result
+    assert topic == "capabilities"
+    for expected in ("رسالة", "فاتورة", "عقد", "الموعد النهائي", "إلغاء", "ابعت المستند"):
+        assert expected in reply
+    assert "ما هو الإجراء" not in reply
+
+
+def test_greetings_are_localized_in_all_supported_languages() -> None:
+    greetings = {"de": "Hallo", "ar": "مرحبا", "en": "hello", "uk": "привіт", "el": "γεια"}
+    for language, greeting in greetings.items():
+        result = product_answer(greeting, language)
+        assert result is not None
+        assert result[1] == "capabilities"
+        assert result[0].strip()
+
+
 def test_arabic_language_question_lists_every_supported_language() -> None:
     result = product_answer("شو اللغات يلي بتحكيها؟", "ar")
     assert result is not None
