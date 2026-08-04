@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from conversation_intelligence import LANGUAGE_NAMES
+from sam_behavior import build_sam_behavior_contract
 from sam_personality import build_sam_personality_contract
 
 _INVALID_NAMES = {
@@ -54,9 +55,16 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
         language_code=detected_language,
         returning_user=returning_user,
     )
+    behavior_contract = build_sam_behavior_contract(
+        text=text,
+        returning_user=returning_user,
+        has_attachment=has_image,
+    )
 
     return f"""
 {personality_contract}
+
+{behavior_contract}
 
 NON-NEGOTIABLE OUTPUT RULES
 - Reply ONLY in {reply_language}, except when drafting an official German letter or email.
