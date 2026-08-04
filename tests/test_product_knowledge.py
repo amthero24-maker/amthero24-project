@@ -6,22 +6,19 @@ def test_arabic_returning_greeting_is_short_useful_and_actionable() -> None:
     result = product_answer("مرحبا", "ar")
     assert result is not None
     reply, topic = result
-    assert topic == "greeting_1"
+    assert topic == "capabilities"
     assert "سام" in reply
     assert "رسالة أو ورقة" in reply
     assert "الخطوة الجاية" in reply
     assert len(reply) < 180
 
 
-def test_repeated_greetings_cycle_without_repeating_the_same_copy() -> None:
-    first = product_answer("مرحبا", "ar")
-    assert first is not None
-    second = product_answer("مرحبا", "ar", first[1])
-    assert second is not None
-    third = product_answer("مرحبا", "ar", second[1])
-    assert third is not None
-    assert len({first[0], second[0], third[0]}) == 3
-    assert [first[1], second[1], third[1]] == ["greeting_1", "greeting_2", "greeting_3"]
+def test_greeting_never_creates_a_synthetic_mission_topic() -> None:
+    for previous_topic in ("", "greeting_1", "greeting_3", "contract"):
+        result = product_answer("مرحبا", "ar", previous_topic)
+        assert result is not None
+        assert not result[1].startswith("greeting_")
+    assert product_answer("مرحبا", "ar", "contract")[1] == "contract"
 
 
 def test_greetings_are_localized_in_all_supported_languages() -> None:
@@ -29,9 +26,27 @@ def test_greetings_are_localized_in_all_supported_languages() -> None:
     for language, greeting in greetings.items():
         result = product_answer(greeting, language)
         assert result is not None
-        assert result[1] == "greeting_1"
+        assert result[1] == "capabilities"
         assert result[0].strip()
         assert "\n" in result[0]
+
+
+def test_founder_question_is_authoritative_and_never_deferred_to_the_model() -> None:
+    result = product_answer("شو اسم مؤسس الشركة؟", "ar", "greeting_3")
+    assert result is not None
+    reply, topic = result
+    assert topic == "identity"
+    assert "Wissam Zidan" in reply
+    assert "غير متوفر" not in reply
+    assert "ما بيكتبها Wissam بنفسه" in reply
+
+
+def test_founder_answer_is_localized_in_all_supported_languages() -> None:
+    for language in ("de", "ar", "en", "uk", "el"):
+        result = product_answer("who is the founder of AmtHero24?", language)
+        assert result is not None
+        assert result[1] == "identity"
+        assert "Wissam Zidan" in result[0]
 
 
 def test_arabic_language_question_lists_every_supported_language() -> None:
