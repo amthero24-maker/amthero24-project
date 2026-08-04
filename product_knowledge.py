@@ -14,6 +14,12 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+_GREETING_PATTERNS = {
+    "مرحبا", "مرحباً", "اهلا", "أهلا", "هلا", "السلام عليكم", "سلام", "هاي",
+    "hallo", "hi", "guten tag", "guten morgen", "guten abend", "hello", "hey",
+    "привіт", "добрий день", "γεια", "καλημερα", "καλησπερα",
+}
+
 _LANGUAGE_PATTERNS = (
     "شو اللغات", "شو لغة", "اي لغات", "أي لغات", "ما هي اللغات", "بتحكي لغات", "شو بتحكي", "لغاتك",
     "welche sprachen", "welche sprache", "sprichst du", "sprachen kannst du",
@@ -36,6 +42,38 @@ _MORE_PATTERNS = {
     "what else", "anything else", "more", "ще", "ще щось", "τι αλλο", "αλλο",
 }
 
+_GREETING_ANSWERS = {
+    "ar": (
+        "أهلًا، أنا سام من AmtHero24. فيني أشرحلك أي رسالة، فاتورة، عقد أو صورة مستند ألماني، "
+        "وأطلع لك الموعد النهائي والمبلغ والرقم المرجعي والخطوة المطلوبة إذا كانوا موجودين. "
+        "وبقدر كمان أكتب إيميل، اعتراض أو إلغاء رسمي بالألماني، أو أرتّب معك موعد وإجراء خطوة بخطوة. "
+        "ابعت المستند أو اكتب شو المعاملة اللي بدك تنجزها."
+    ),
+    "de": (
+        "Hallo, ich bin Sam von AmtHero24. Ich erkläre Briefe, Rechnungen, Verträge und Dokumentfotos, "
+        "erkenne Fristen, Beträge, Aktenzeichen und den nächsten erforderlichen Schritt, sofern sie im Dokument stehen. "
+        "Außerdem formuliere ich E-Mails, Widersprüche und Kündigungen oder ordne Termine und Verfahren Schritt für Schritt. "
+        "Schick das Dokument oder beschreibe kurz, was du erledigen möchtest."
+    ),
+    "en": (
+        "Hello, I’m Sam from AmtHero24. I can explain German letters, invoices, contracts, and document images, "
+        "and identify deadlines, amounts, reference numbers, and required next steps when they are present. "
+        "I can also draft formal German emails, objections, and cancellations or organize an appointment or procedure step by step. "
+        "Send the document or tell me what you need to complete."
+    ),
+    "uk": (
+        "Привіт, я Сем з AmtHero24. Я можу пояснити німецький лист, рахунок, договір або фото документа, "
+        "а також знайти строк, суму, номер справи й потрібний наступний крок, якщо вони вказані. "
+        "Також підготую офіційний лист, заперечення чи розірвання німецькою або впорядкую запис і процедуру крок за кроком. "
+        "Надішли документ або коротко опиши справу."
+    ),
+    "el": (
+        "Γεια, είμαι ο Sam από το AmtHero24. Μπορώ να εξηγήσω γερμανικές επιστολές, λογαριασμούς, συμβάσεις και φωτογραφίες εγγράφων, "
+        "και να εντοπίσω προθεσμίες, ποσά, αριθμούς αναφοράς και το επόμενο απαιτούμενο βήμα όταν αναφέρονται. "
+        "Μπορώ επίσης να συντάξω επίσημο email, ένσταση ή ακύρωση στα γερμανικά ή να οργανώσω ένα ραντεβού και τη διαδικασία βήμα βήμα. "
+        "Στείλε το έγγραφο ή γράψε τι χρειάζεται να ολοκληρώσεις."
+    ),
+}
 
 _LANGUAGE_ANSWERS = {
     "ar": "بحكي معك بالعربية، الألمانية، الإنجليزية، الأوكرانية واليونانية. غالبًا بكتشف لغتك من أول الرسائل وبكمّل فيها، وبتقدر تغيّرها بأي وقت.",
@@ -79,6 +117,8 @@ def product_answer(text: str, language: str, previous_topic: str = "") -> tuple[
     normalized = _normalize(text)
     lang = language if language in SUPPORTED_LANGUAGES else "de"
 
+    if normalized in {_normalize(item) for item in _GREETING_PATTERNS}:
+        return _GREETING_ANSWERS[lang], "capabilities"
     if _contains_any(normalized, _LANGUAGE_PATTERNS):
         return _LANGUAGE_ANSWERS[lang], "languages"
     if _contains_any(normalized, _CAPABILITY_PATTERNS):
