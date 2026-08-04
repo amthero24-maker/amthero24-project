@@ -9,6 +9,7 @@ from conversation_intelligence import LANGUAGE_NAMES
 from sam_behavior import build_sam_behavior_contract
 from sam_emotion import build_sam_emotion_contract
 from sam_personality import build_sam_personality_contract
+from sam_voice import build_sam_voice_contract
 
 _INVALID_NAMES = {
     "unknown", "جديد", "جديدة", "محتاج", "محتاجة", "تعبان", "تعبانة", "هون", "هنا",
@@ -62,6 +63,11 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
         has_attachment=has_image,
     )
     emotion_contract = build_sam_emotion_contract(text=text)
+    voice_contract = build_sam_voice_contract(
+        language_code=detected_language,
+        returning_user=returning_user,
+        has_attachment=has_image,
+    )
 
     return f"""
 {personality_contract}
@@ -69,6 +75,8 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
 {behavior_contract}
 
 {emotion_contract}
+
+{voice_contract}
 
 NON-NEGOTIABLE OUTPUT RULES
 - Reply ONLY in {reply_language}, except when drafting an official German letter or email.
