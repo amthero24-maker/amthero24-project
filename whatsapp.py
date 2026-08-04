@@ -16,6 +16,9 @@ class WhatsAppServiceError(RuntimeError):
     pass
 
 
+_http_client: httpx.AsyncClient | None = None
+
+
 def split_message(text: str, limit: int = MAX_WHATSAPP_TEXT_LENGTH) -> Iterator[str]:
     """Split text without cutting normal words, URLs, or paragraphs when possible."""
     if limit <= 0:
@@ -54,12 +57,31 @@ def _messages_url() -> str:
     return f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{phone_id}/messages"
 
 
+def _get_http_client() -> httpx.AsyncClient:
+    """Reuse one connection pool to avoid a new TLS handshake for every reply."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=8.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30.0),
+        )
+    return _http_client
+
+
+async def close_http_client() -> None:
+    """Close the shared client during application shutdown or isolated tests."""
+    global _http_client
+    client = _http_client
+    _http_client = None
+    if client is not None and not client.is_closed:
+        await client.aclose()
+
+
 async def _post_message(payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(_messages_url(), headers=_headers(), json=payload)
-            response.raise_for_status()
-            parsed = response.json()
+        response = await _get_http_client().post(_messages_url(), headers=_headers(), json=payload)
+        response.raise_for_status()
+        parsed = response.json()
     except (httpx.HTTPError, ValueError, RuntimeError) as exc:
         logger.exception("WhatsApp send failed")
         raise WhatsAppServiceError("WhatsApp send failed") from exc
@@ -88,12 +110,7 @@ async def send_whatsapp_template(
     language_code: str,
     body_parameters: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Send an already-approved Meta utility template.
-
-    AmtHero24 expects a template with three optional body placeholders:
-    user display name, mission title, and reminder date. The template itself must
-    be created and approved in WhatsApp Manager before this path is enabled.
-    """
+    """Send an already-approved Meta utility template."""
     if not to:
         raise WhatsAppServiceError("Missing recipient")
     safe_name = str(template_name or "").strip()
@@ -123,10 +140,12 @@ async def get_media_url(media_id: str) -> str:
     if not media_id:
         raise WhatsAppServiceError("Missing media ID")
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{media_id}", headers=_headers())
-            response.raise_for_status()
-            url = str(response.json().get("url", ""))
+        response = await _get_http_client().get(
+            f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{media_id}",
+            headers=_headers(),
+        )
+        response.raise_for_status()
+        url = str(response.json().get("url", ""))
     except (httpx.HTTPError, ValueError, RuntimeError) as exc:
         logger.exception("WhatsApp media metadata request failed")
         raise WhatsAppServiceError("Media metadata request failed") from exc
@@ -139,10 +158,9 @@ async def download_media_bytes(media_url: str) -> bytes:
     if not media_url:
         raise WhatsAppServiceError("Missing media URL")
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(media_url, headers=_headers())
-            response.raise_for_status()
-            content = response.content
+        response = await _get_http_client().get(media_url, headers=_headers(), timeout=30.0)
+        response.raise_for_status()
+        content = response.content
     except (httpx.HTTPError, RuntimeError) as exc:
         logger.exception("WhatsApp media download failed")
         raise WhatsAppServiceError("Media download failed") from exc

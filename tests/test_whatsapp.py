@@ -35,9 +35,9 @@ async def test_send_uses_environment_phone_id() -> None:
     response = MagicMock()
     response.json.return_value = {"messages": [{"id": "1"}]}
     client = AsyncMock()
-    client.__aenter__.return_value = client
+    client.is_closed = False
     client.post.return_value = response
-    with patch.object(whatsapp.httpx, "AsyncClient", return_value=client), patch.dict(
+    with patch.object(whatsapp, "_http_client", client), patch.dict(
         os.environ,
         {"WHATSAPP_TOKEN": "secret", "PHONE_NUMBER_ID": "phone-123"},
         clear=True,
@@ -57,9 +57,9 @@ async def test_send_template_uses_approved_name_language_and_parameters() -> Non
     response = MagicMock()
     response.json.return_value = {"messages": [{"id": "template-1"}]}
     client = AsyncMock()
-    client.__aenter__.return_value = client
+    client.is_closed = False
     client.post.return_value = response
-    with patch.object(whatsapp.httpx, "AsyncClient", return_value=client), patch.dict(
+    with patch.object(whatsapp, "_http_client", client), patch.dict(
         os.environ,
         {"WHATSAPP_TOKEN": "secret", "PHONE_NUMBER_ID": "phone-123"},
         clear=True,
@@ -78,6 +78,23 @@ async def test_send_template_uses_approved_name_language_and_parameters() -> Non
 
 
 @pytest.mark.anyio
+async def test_shared_client_is_reused_across_messages() -> None:
+    response = MagicMock()
+    response.json.return_value = {"messages": [{"id": "1"}]}
+    client = AsyncMock()
+    client.is_closed = False
+    client.post.return_value = response
+    with patch.object(whatsapp, "_http_client", client), patch.dict(
+        os.environ,
+        {"WHATSAPP_TOKEN": "secret", "PHONE_NUMBER_ID": "phone-123"},
+        clear=True,
+    ):
+        await whatsapp.send_whatsapp_message("49123", "One")
+        await whatsapp.send_whatsapp_message("49123", "Two")
+    assert client.post.await_count == 2
+
+
+@pytest.mark.anyio
 async def test_send_empty_text_is_rejected_before_network() -> None:
     with pytest.raises(whatsapp.WhatsAppServiceError):
         await whatsapp.send_whatsapp_message("49123", "   ")
@@ -86,9 +103,9 @@ async def test_send_empty_text_is_rejected_before_network() -> None:
 @pytest.mark.anyio
 async def test_send_failure_is_wrapped() -> None:
     client = AsyncMock()
-    client.__aenter__.return_value = client
+    client.is_closed = False
     client.post.side_effect = httpx.ConnectError("down")
-    with patch.object(whatsapp.httpx, "AsyncClient", return_value=client), patch.dict(
+    with patch.object(whatsapp, "_http_client", client), patch.dict(
         os.environ,
         {"WHATSAPP_TOKEN": "secret", "PHONE_NUMBER_ID": "phone-123"},
         clear=True,
