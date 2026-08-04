@@ -7,6 +7,7 @@ from typing import Any
 
 from conversation_intelligence import LANGUAGE_NAMES
 from sam_behavior import build_sam_behavior_contract
+from sam_conversation import build_sam_conversation_contract
 from sam_emotion import build_sam_emotion_contract
 from sam_personality import build_sam_personality_contract
 from sam_voice import build_sam_voice_contract
@@ -49,6 +50,7 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
     reply_language = LANGUAGE_NAMES.get(detected_language, "German")
     city = str(profile.get("city") or "unknown")
     topic = str(profile.get("current_topic") or "unknown")
+    mission_status = str(profile.get("mission_status") or "")
     previous_answer = str(profile.get("last_assistant_reply") or "none")[:900]
     history_text = " | ".join(item[:150] for item in history[-5:]) or "none"
     returning_user = previous_answer != "none" or history_text != "none"
@@ -62,6 +64,13 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
         returning_user=returning_user,
         has_attachment=has_image,
     )
+    conversation_contract = build_sam_conversation_contract(
+        text=text,
+        returning_user=returning_user,
+        has_attachment=has_image,
+        current_topic=topic,
+        mission_status=mission_status,
+    )
     emotion_contract = build_sam_emotion_contract(text=text)
     voice_contract = build_sam_voice_contract(
         language_code=detected_language,
@@ -73,6 +82,8 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
 {personality_contract}
 
 {behavior_contract}
+
+{conversation_contract}
 
 {emotion_contract}
 
@@ -105,6 +116,7 @@ MEMORY AND CONTEXT
 - Known first name: {first_name}
 - Known city: {city}
 - Current topic: {topic}
+- Explicit mission status: {mission_status or "none"}
 - Previous assistant answer: {previous_answer}
 - Recent user messages: {history_text}
 - If a fact is unknown, do not invent it. Ask only when it is needed to help.
