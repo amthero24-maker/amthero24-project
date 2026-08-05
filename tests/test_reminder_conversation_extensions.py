@@ -1,0 +1,105 @@
+"""Acceptance tests for concise conversational reminders."""
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+import reminder_conversation_extensions as reminders
+from data_store import JsonDataStore
+
+STRONG_REMINDER_KEY = "reminder-key-2026-unique-7fA9xQ2mLp8V"
+
+
+def _seed_user(store: JsonDataStore, *, topic: str = "identity") -> None:
+    store.update_user("49123", {
+        "memory_consent": "granted",
+        "memory_consent_at": datetime.now(UTC).isoformat(),
+        "memory_consent_version": "test-v1",
+        "onboarding_stage": "complete",
+        "intro_sent_at": datetime.now(UTC).isoformat(),
+        "preferred_language": "ar",
+        "current_topic": topic,
+    })
+
+
+def test_after_one_minute_is_exact_even_during_quiet_hours() -> None:
+    now = datetime(2026, 8, 5, 1, 52, tzinfo=UTC)
+    intent = reminders.detect_conversational_reminder_intent(
+        "ذكرني بعد دقيقة اشرب مي", now=now, timezone_name="UTC"
+    )
+    assert intent is not None
+    assert intent.title == "اشرب مي"
+    assert intent.exact_time is True
+    scheduled = reminders.resolve_conversational_schedule(intent, None, now=now, timezone_name="UTC")
+    assert scheduled == now + timedelta(minutes=1)
+
+
+def test_relative_minutes_and_hours_need_no_full_date() -> None:
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    two_minutes = reminders.detect_conversational_reminder_intent("ذكرني بعد دقيقتين اتصل بالمكتب", now=now, timezone_name="UTC")
+    ninety_minutes = reminders.detect_conversational_reminder_intent("ذكرني بعد 90 دقيقة ابعت الورقة", now=now, timezone_name="UTC")
+    two_hours = reminders.detect_conversational_reminder_intent("ذكرني بعد ساعتين راجع الايميل", now=now, timezone_name="UTC")
+    assert two_minutes and two_minutes.scheduled_at == now + timedelta(minutes=2)
+    assert ninety_minutes and ninety_minutes.scheduled_at == now + timedelta(minutes=90)
+    assert two_hours and two_hours.scheduled_at == now + timedelta(hours=2)
+
+
+def test_explicit_same_day_clock_is_understood() -> None:
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    intent = reminders.detect_conversational_reminder_intent("ذكرني اليوم الساعة 7 مساء اتصل بامي", now=now, timezone_name="UTC")
+    assert intent is not None
+    assert intent.scheduled_at == datetime(2026, 8, 5, 19, 0, tzinfo=UTC)
+    assert intent.title == "اتصل بامي"
+
+
+def test_conversation_topics_are_never_reminder_titles() -> None:
+    assert reminders._real_mission_title({"title": "identity"}) == ""
+    assert reminders._real_mission_title({"title": "greeting_3"}) == ""
+    assert reminders._real_mission_title({"title": "موعد الإقامة"}) == "موعد الإقامة"
+
+
+@pytest.mark.anyio
+async def test_missing_subject_asks_once_then_creates_from_short_answer(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    first = reminders.core.IncomingMessage("r1", "49123", "ذكرني بعد دقيقة", "text")
+    store.claim_message(first.message_id, first.sender, first.text)
+    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+        await reminders.process_incoming(first)
+        assert "شو بتحب ذكّرك فيه" in send.await_args.args[1]
+
+        second = reminders.core.IncomingMessage("r2", "49123", "اشرب مي", "text")
+        store.claim_message(second.message_id, second.sender, second.text)
+        await reminders.process_incoming(second)
+        assert "رح ذكّرك" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["title"] == "اشرب مي"
+    assert "identity" not in created[0]["title"]
+
+
+@pytest.mark.anyio
+async def test_missing_time_asks_only_for_time(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    message = reminders.core.IncomingMessage("r3", "49123", "ذكرني اتصل بالمكتب", "text")
+    store.claim_message(message.message_id, message.sender, message.text)
+    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+        await reminders.process_incoming(message)
+    assert "إيمتى أذكّرك" in send.await_args.args[1]
+    assert store.get_user("49123")["pending_reminder_title"] == "اتصل بالمكتب"
