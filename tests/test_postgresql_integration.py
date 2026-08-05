@@ -107,6 +107,12 @@ def clean_linked_records() -> None:
 
 def test_full_production_startup_creates_schemas_and_admin_endpoints_work() -> None:
     store = _store()
+    store.claim_message(
+        "admin-overview-text-category",
+        "+4915700000000",
+        "private integration content",
+        message_type="text",
+    )
     with store.pool.connection() as connection:
         rows = connection.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = current_schema()"
@@ -131,6 +137,8 @@ def test_full_production_startup_creates_schemas_and_admin_endpoints_work() -> N
     assert ready.json()["components"]["webhook_signature"] == "enforced"
     assert overview.status_code == 200
     assert overview.json()["storage_backend"] == "postgresql"
+    assert overview.json()["messages_24h"]["by_type"] == {"text": 1}
+    assert "private integration content" not in overview.text
     assert launch.status_code == 200
     assert launch.json()["status"] in {"ready", "warning"}
 
