@@ -61,7 +61,7 @@ def test_missing_security_and_database_block_launch() -> None:
     assert codes["postgresql"] == "blocked"
     assert codes["meta_signature"] == "blocked"
     assert codes["admin_access"] == "blocked"
-    assert codes["reminder_encryption"] == "blocked"
+    assert codes["reminder_encryption"] == "warning"
 
 
 def test_provider_outage_blocks_launch_and_high_latency_warns() -> None:

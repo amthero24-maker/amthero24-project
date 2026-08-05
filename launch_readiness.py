@@ -171,7 +171,7 @@ def build_launch_report(
         else LaunchCheck("privacy_retention", "blocked", "Automatic privacy retention is disabled.", "Set PRIVACY_RETENTION_ENABLED=true before Beta.")
     )
 
-    reminder_enabled = _flag(environment, "REMINDER_WORKER_ENABLED", True)
+    reminder_enabled = _flag(environment, "REMINDER_WORKER_ENABLED", False)
     reminder_key_status = reminder_encryption_status(environment=environment)
     reminder_template = bool(str(environment.get("WHATSAPP_REMINDER_TEMPLATE", "")).strip())
     if reminder_enabled and reminder_key_status != "configured":

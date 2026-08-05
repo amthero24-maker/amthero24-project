@@ -15,8 +15,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import reminder_extensions as base
+import reminder_pending_storage  # noqa: F401
 import shared_drain_extensions as composed
-from encryption_policy import reminder_encryption_ready
 from reminder_engine import DEFAULT_TIMEZONE, ReminderIntent, resolve_reminder_schedule
 
 core = composed.core
@@ -127,6 +127,7 @@ def _extract_title(text: str) -> str:
     )
     time_patterns = (
         r"\bبعد\s+(?:دقيقة|دقيقتين|\d+\s*(?:دقيقة|دقائق|دقايق|ساعة|ساعات|ايام|أيام|يوم))\b",
+        r"\b(?:قبلها|قبل الموعد|قبل المهلة)\s+(?:ب?يومين|ب?يوم|\d+\s*(?:يوم|ايام|أيام))\b",
         r"\b(?:بكرا|غدا|غداً|اليوم)\b",
         r"\b(?:الساعة|ساعه)\s*\d{1,2}(?::\d{2})?\s*(?:صباحا|صباح|الصبح|مساء|المسا|ليلا|ليل)?",
         r"\b(?:in\s+\d+\s*(?:minutes?|hours?|days?)|tomorrow|today\s+at\s+\d{1,2}(?::\d{2})?)\b",
@@ -261,7 +262,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
         await core._finish(message.message_id, base.reminder_cancelled_message(language, count), message.sender)
         return
-    if not reminder_encryption_ready():
+    if not base.reminder_delivery_ready():
+        _clear_pending(message.sender)
         await core._finish(message.message_id, base.reminder_unavailable_message(language), message.sender)
         return
 

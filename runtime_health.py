@@ -71,7 +71,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     provider = provider_layer.provider_status()
     admin_status = admin_api_token_status()
     support_enabled = os.getenv("HUMAN_SUPPORT_ENABLED", "false").strip().casefold() in {"1", "true", "yes", "on"}
-    reminder_worker_enabled = os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
+    reminder_worker = reminder_layer.reminder_worker_status(store)
     reminder_key_status = reminder_encryption_status()
     support_key_status = support_encryption_status()
     support_token_status = support_api_token_status()
@@ -91,9 +91,9 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
     lifecycle_ready = store is not production_store or (process.accepting_work and process.state == "accepting")
     ready = config_ok and storage_ok and schemas_ready and migration_ready and queue_ready and lifecycle_ready
 
-    if not reminder_worker_enabled:
+    if reminder_worker == "disabled":
         reminders_status = "disabled"
-    elif reminder_key_status == "configured":
+    elif reminder_worker == "running":
         reminders_status = "enabled"
     else:
         reminders_status = "misconfigured"
@@ -125,6 +125,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
             "text_model": model,
             "document_actions": "enabled",
             "reminders": reminders_status,
+            "reminder_worker": reminder_worker,
             "reminder_encryption": reminder_key_status,
             "reminder_legacy_decryption": "enabled" if legacy_reminder_decryption_enabled() else "disabled",
             "reminder_template": "configured" if os.getenv("WHATSAPP_REMINDER_TEMPLATE", "").strip() else "service-window-only",
@@ -148,6 +149,7 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 import provider_extensions as provider_layer  # noqa: E402
 from reminder_conversation_extensions import app, store  # noqa: E402
+import reminder_extensions as reminder_layer  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,7 @@ _REMINDER_REPOSITORY: ReminderRepository | None = None
 _WORKER_TASK: asyncio.Task[None] | None = None
 _WORKER_STOP: asyncio.Event | None = None
 _WORKER_ID = uuid4().hex
+logger = logging.getLogger("amthero24.reminders")
 
 
 class ResilientReminderRepository(ReminderRepository):
@@ -146,6 +148,40 @@ def _language(profile: dict[str, Any]) -> str:
     return composed.composed._preferred_language(profile) if hasattr(composed, "composed") else "de"
 
 
+def _enabled(name: str, *, default: bool = False) -> bool:
+    fallback = "true" if default else "false"
+    return os.getenv(name, fallback).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _worker_configuration_status(store: Any | None = None) -> str:
+    """Return a bounded, privacy-safe delivery prerequisite status."""
+    active_store = core.store if store is None else store
+    if not _enabled("REMINDER_WORKER_ENABLED"):
+        return "disabled"
+    if not reminder_encryption_ready():
+        return "encryption_unavailable"
+    if str(getattr(active_store, "backend_name", "json")) != "postgresql":
+        return "storage_unavailable"
+    if not all(os.getenv(name, "").strip() for name in ("WHATSAPP_TOKEN", "PHONE_NUMBER_ID")):
+        return "outbound_unavailable"
+    return "configured"
+
+
+def reminder_worker_status(store: Any | None = None) -> str:
+    """Report whether delivery is configured and the background task is alive."""
+    configuration = _worker_configuration_status(store)
+    if configuration != "configured":
+        return configuration
+    if _WORKER_TASK is None or _WORKER_TASK.done():
+        return "stopped"
+    return "running"
+
+
+def reminder_delivery_ready() -> bool:
+    """Fail closed unless the production delivery worker is currently alive."""
+    return reminder_worker_status() == "running"
+
+
 def _command_text(text: str) -> str:
     value = str(text or "").translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
     value = re.sub(r"(قبلها|قبل الموعد|قبل المهلة)\s+بيومين\b", r"\1 2 ايام", value)
@@ -179,7 +215,7 @@ def reminder_unavailable_message(language: str) -> str:
 
 def mission_created_message(language: str, mission: dict[str, Any]) -> str:
     reply = _ORIGINAL_MISSION_CREATED_MESSAGE(language, mission)
-    if reminder_encryption_ready() and str(mission.get("_operation") or "") == "due" and mission.get("due_at"):
+    if reminder_delivery_ready() and str(mission.get("_operation") or "") == "due" and mission.get("due_at"):
         return reply + "\n\n" + _reminder_prompt(language)
     return reply
 
@@ -210,7 +246,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
         await core._finish(message.message_id, reminder_cancelled_message(language, count), message.sender)
         return
-    if not reminder_encryption_ready():
+    if not reminder_delivery_ready():
         await core._finish(message.message_id, reminder_unavailable_message(language), message.sender)
         return
     mission = core._hero_memory().get_latest_mission(message.sender)
@@ -231,8 +267,9 @@ async def process_incoming(message: core.IncomingMessage) -> None:
 
 async def _start_worker() -> None:
     global _WORKER_TASK, _WORKER_STOP
-    enabled = os.getenv("REMINDER_WORKER_ENABLED", "true").strip().casefold() not in {"0", "false", "no", "off"}
-    if not enabled or not reminder_encryption_ready() or str(getattr(core.store, "backend_name", "json")) != "postgresql":
+    configuration = _worker_configuration_status()
+    if configuration != "configured":
+        logger.info("Reminder worker not started: %s", configuration)
         return
     if _WORKER_TASK and not _WORKER_TASK.done():
         return
@@ -249,6 +286,7 @@ async def _start_worker() -> None:
         ),
         name="amthero24-reminder-worker",
     )
+    logger.info("Reminder worker started")
 
 
 async def _stop_worker() -> None:
@@ -267,6 +305,7 @@ async def _stop_worker() -> None:
     finally:
         _WORKER_TASK = None
         _WORKER_STOP = None
+        logger.info("Reminder worker stopped")
 
 
 reminder_module.render_reminder = _render_reminder

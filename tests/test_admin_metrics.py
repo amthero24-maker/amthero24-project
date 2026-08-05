@@ -27,12 +27,17 @@ def test_overview_aggregates_product_health_without_personal_data(tmp_path, monk
     store.update_message_status("msg-1", "failed")
     memory = HeroMemory(store)
     memory.create_mission(phone, title="WKK", topic="invoice")
-    ReminderRepository(store).create(
+    reminder = ReminderRepository(store).create(
         phone,
         title="WKK",
         scheduled_at=now + timedelta(days=2),
         language="ar",
     )
+
+    def add_sensitive_failure_text(data: dict) -> None:
+        data["reminders"][reminder["reminder_id"]]["last_error"] = f"delivery failed for +{phone}"
+
+    store._transaction(add_sensitive_failure_text)
     PendingDocumentRepository(store).put(phone, {"title": "Jobcenter", "topic": "jobcenter"}, now=now)
 
     overview = build_overview(store, now=now, version="2.3.0", model="test-model")
@@ -43,6 +48,17 @@ def test_overview_aggregates_product_health_without_personal_data(tmp_path, monk
     assert overview["users"]["languages"] == {"ar": 1}
     assert overview["missions"]["by_status"] == {"open": 1}
     assert overview["reminders"]["by_status"] == {"pending": 1}
+    assert overview["reminders"]["due_unsent"] == 0
+    assert overview["reminders"]["unsent_recipients"] == 1
+    assert overview["reminders"]["latest"] == {
+        "status": "pending",
+        "scheduled_at": (now + timedelta(days=2)).isoformat(),
+        "attempt_count": 0,
+        "last_error_code": "redacted",
+        "next_attempt_at": (now + timedelta(days=2)).isoformat(),
+        "lease_until": None,
+        "sent_at": None,
+    }
     assert overview["messages_24h"]["failed"] == 1
     assert overview["document_actions"]["pending"] == 1
     assert contains_personal_fields(overview) is False

@@ -46,7 +46,9 @@ async def test_reminder_command_creates_consent_backed_followup(tmp_path, monkey
     )
     store.claim_message("reminder-create", "49123", message.text)
 
-    with patch.object(reminder_extensions.core, "send_whatsapp_message", new=AsyncMock()) as send:
+    with patch.object(reminder_extensions, "reminder_delivery_ready", return_value=True), patch.object(
+        reminder_extensions.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
         await reminder_extensions.process_incoming(message)
 
     assert "رح ذكّرك" in send.await_args.args[1]
@@ -79,6 +81,48 @@ async def test_missing_or_weak_key_refuses_new_reminder_without_calling_groq(tmp
 
     assert "متوقفة مؤقتًا" in send.await_args.args[1]
     assert reminder_extensions._repository().list("49123") == []
+
+
+@pytest.mark.anyio
+async def test_disabled_worker_refuses_new_reminder_without_persisting(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_WORKER_ENABLED", "false")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminder_extensions.core.store = store
+    reminder_extensions.core._hero_memory_store = reminder_extensions.core.HeroMemory(store)
+    reminder_extensions._REMINDER_REPOSITORY = None
+    _seed_user_and_mission(store)
+    message = reminder_extensions.core.IncomingMessage(
+        "reminder-worker-disabled", "49123", "ذكرني قبلها بيوم", "text"
+    )
+    store.claim_message(message.message_id, message.sender, message.text)
+
+    with patch.object(reminder_extensions.core, "send_whatsapp_message", new=AsyncMock()) as send:
+        await reminder_extensions.process_incoming(message)
+
+    assert "متوقفة مؤقتًا" in send.await_args.args[1]
+    assert reminder_extensions._repository().list("49123") == []
+
+
+def test_worker_status_requires_live_task_and_delivery_prerequisites(monkeypatch) -> None:
+    store = type("PostgresStore", (), {"backend_name": "postgresql"})()
+    monkeypatch.setenv("REMINDER_WORKER_ENABLED", "true")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    monkeypatch.setenv("WHATSAPP_TOKEN", "test-whatsapp-token")
+    monkeypatch.setenv("PHONE_NUMBER_ID", "123456")
+    monkeypatch.setattr(reminder_extensions.core, "store", store)
+    monkeypatch.setattr(reminder_extensions, "_WORKER_TASK", None)
+
+    assert reminder_extensions.reminder_worker_status() == "stopped"
+    task = type("WorkerTask", (), {"done": lambda self: False})()
+    monkeypatch.setattr(reminder_extensions, "_WORKER_TASK", task)
+    assert reminder_extensions.reminder_worker_status() == "running"
+    assert reminder_extensions.reminder_delivery_ready() is True
+
+    monkeypatch.setenv("REMINDER_WORKER_ENABLED", "false")
+    assert reminder_extensions.reminder_worker_status() == "disabled"
+    assert reminder_extensions.reminder_delivery_ready() is False
 
 
 @pytest.mark.anyio
