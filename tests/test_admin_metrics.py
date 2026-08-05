@@ -60,7 +60,15 @@ def test_overview_aggregates_product_health_without_personal_data(tmp_path, monk
         "sent_at": None,
     }
     assert overview["messages_24h"]["failed"] == 1
+    assert overview["messages_24h"]["by_type"] == {"text": 1}
     assert overview["document_actions"]["pending"] == 1
     assert contains_personal_fields(overview) is False
     for forbidden in (phone, "وسام", "Düsseldorf", "رسالة شخصية", "نص شخصي"):
         assert forbidden not in serialized
+
+
+def test_personal_field_guard_distinguishes_aggregate_text_category_from_content() -> None:
+    assert contains_personal_fields({"messages_24h": {"by_type": {"text": 3}}}) is False
+    assert contains_personal_fields({"messages": [{"text": "private content"}]}) is True
+    assert contains_personal_fields({"by_type": {"text": {"sender": "private"}}}) is True
+    assert contains_personal_fields({"by_type": {"text": "private content"}}) is True

@@ -129,7 +129,7 @@ def _json_overview(store: Any, current: datetime) -> dict[str, Any]:
         if created and created >= current - timedelta(hours=24):
             recent_messages.append(message)
     message_status = Counter(str(item.get("status") or "unknown") for item in recent_messages)
-    message_types = Counter(str(item.get("message_type") or "unknown") for item in recent_messages)
+    message_types = Counter(str(item.get("message_type") or item.get("type") or "unknown") for item in recent_messages)
 
     deletion_events = [
         event for event in snapshot.get("privacy_events", [])
@@ -310,7 +310,23 @@ def contains_personal_fields(payload: Any) -> bool:
         "last_message", "last_assistant_reply", "conversation_summary", "raw_text", "text",
     }
     if isinstance(payload, dict):
-        return any(str(key).casefold() in forbidden or contains_personal_fields(value) for key, value in payload.items())
+        for key, value in payload.items():
+            normalized = str(key).casefold()
+            if normalized in forbidden:
+                return True
+            if normalized == "by_type" and isinstance(value, dict):
+                # Values such as {"text": 12} are aggregate categories, not
+                # message-content fields. Only non-negative integer counters may
+                # use this exception; arbitrary scalar or nested data stays blocked.
+                if any(
+                    isinstance(item, bool) or not isinstance(item, int) or item < 0
+                    for item in value.values()
+                ):
+                    return True
+                continue
+            if contains_personal_fields(value):
+                return True
+        return False
     if isinstance(payload, list):
         return any(contains_personal_fields(item) for item in payload)
     return False
