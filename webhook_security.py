@@ -23,6 +23,7 @@ from storage_factory import install_production_storage_policy  # noqa: E402
 install_production_storage_policy()
 install_encryption_policy()
 
+import reminder_pending_storage  # noqa: E402,F401
 import runtime_health  # noqa: E402
 from deployment_lifecycle import lifecycle  # noqa: E402
 
