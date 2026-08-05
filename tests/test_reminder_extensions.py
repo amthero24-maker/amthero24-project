@@ -114,15 +114,39 @@ def test_worker_status_requires_live_task_and_delivery_prerequisites(monkeypatch
     monkeypatch.setattr(reminder_extensions.core, "store", store)
     monkeypatch.setattr(reminder_extensions, "_WORKER_TASK", None)
 
+    assert reminder_extensions.reminder_worker_status() == "canary_unavailable"
+    monkeypatch.setenv("REMINDER_CANARY_SENDERS", "+49 170 1234567")
     assert reminder_extensions.reminder_worker_status() == "stopped"
     task = type("WorkerTask", (), {"done": lambda self: False})()
     monkeypatch.setattr(reminder_extensions, "_WORKER_TASK", task)
     assert reminder_extensions.reminder_worker_status() == "running"
     assert reminder_extensions.reminder_delivery_ready() is True
+    assert reminder_extensions.reminder_delivery_ready("+49 170 1234567") is True
+    assert reminder_extensions.reminder_delivery_ready("491701234567") is True
+    assert reminder_extensions.reminder_delivery_ready("+49 170 7654321") is False
 
     monkeypatch.setenv("REMINDER_WORKER_ENABLED", "false")
     assert reminder_extensions.reminder_worker_status() == "disabled"
     assert reminder_extensions.reminder_delivery_ready() is False
+
+
+def test_canary_gate_claims_only_exact_allowed_recipient(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_WORKER_ENABLED", "true")
+    monkeypatch.setenv("REMINDER_CANARY_SENDERS", "+49 170 1234567")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    now = datetime(2026, 8, 6, 8, tzinfo=UTC)
+    repository = reminder_extensions.ResilientReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    allowed = repository.create(
+        "+49 170 1234567", title="Allowed", scheduled_at=now - timedelta(minutes=2), language="de"
+    )
+    repository.create(
+        "+49 170 7654321", title="Blocked", scheduled_at=now - timedelta(minutes=2), language="de"
+    )
+
+    claimed = repository.claim_due(now=now, limit=10)
+
+    assert [item["reminder_id"] for item in claimed] == [allowed["reminder_id"]]
+    assert repository.list("+49 170 7654321")[0]["status"] == "pending"
 
 
 @pytest.mark.anyio

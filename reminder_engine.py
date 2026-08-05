@@ -193,6 +193,11 @@ def _phone_hash(phone: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def reminder_recipient_hash(phone: str) -> str:
+    """Return the same one-way recipient key used by reminder persistence."""
+    return _phone_hash(phone)
+
+
 def _fernet() -> Fernet:
     secret = os.getenv("REMINDER_ENCRYPTION_KEY", "").strip() or os.getenv("WHATSAPP_TOKEN", "").strip()
     if not secret:
@@ -403,10 +408,17 @@ class ReminderRepository:
 
         return self.store._transaction(cancel_json)
 
-    def claim_due(self, *, now: datetime | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    def claim_due(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int = 10,
+        allowed_phone_hashes: set[str] | frozenset[str] | None = None,
+    ) -> list[dict[str, Any]]:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         safe_limit = max(1, min(int(limit), 50))
         retry_statuses = ("pending", "failed", "blocked_template")
+        allowed = None if allowed_phone_hashes is None else sorted(allowed_phone_hashes)
         if self.backend_name == "postgresql":
             with self.store.pool.connection() as connection:
                 rows = connection.execute(
@@ -417,6 +429,7 @@ class ReminderRepository:
                           AND scheduled_at <= %s
                           AND next_attempt_at <= %s
                           AND (lease_until IS NULL OR lease_until < %s)
+                          AND (%s::text[] IS NULL OR phone_hash = ANY(%s))
                         ORDER BY scheduled_at ASC
                         LIMIT %s
                         FOR UPDATE SKIP LOCKED
@@ -427,7 +440,10 @@ class ReminderRepository:
                     FROM due WHERE reminder.reminder_id = due.reminder_id
                     RETURNING reminder.*
                     """,
-                    (list(retry_statuses), current, current, current, safe_limit, current + timedelta(minutes=5)),
+                    (
+                        list(retry_statuses), current, current, current,
+                        allowed, allowed, safe_limit, current + timedelta(minutes=5),
+                    ),
                 ).fetchall()
             return [self._from_row(row) for row in rows]
 
@@ -435,6 +451,8 @@ class ReminderRepository:
             eligible = []
             for item in data.setdefault("reminders", {}).values():
                 if not isinstance(item, dict) or item.get("status") not in retry_statuses:
+                    continue
+                if allowed_phone_hashes is not None and item.get("phone_hash") not in allowed_phone_hashes:
                     continue
                 try:
                     scheduled = datetime.fromisoformat(str(item.get("scheduled_at"))).astimezone(UTC)
