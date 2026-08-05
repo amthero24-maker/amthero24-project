@@ -31,6 +31,7 @@ def _healthy_env() -> dict[str, str]:
         "ADMIN_API_TOKEN": STRONG_ADMIN_TOKEN,
         "PRIVACY_RETENTION_ENABLED": "true",
         "REMINDER_WORKER_ENABLED": "true",
+        "REMINDER_CANARY_SENDERS": "+491701234567",
         "REMINDER_ENCRYPTION_KEY": STRONG_REMINDER_KEY,
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "amthero24_reminder",
@@ -84,6 +85,18 @@ def test_weak_reminder_or_enabled_support_secrets_block_launch() -> None:
     statuses = {item["code"]: item["status"] for item in report["checks"]}
     assert statuses["reminder_encryption"] == "blocked"
     assert statuses["human_support_security"] == "blocked"
+    assert report["status"] == "blocked"
+
+
+def test_enabled_reminder_worker_without_canary_allowlist_is_blocked() -> None:
+    environment = _healthy_env()
+    environment.pop("REMINDER_CANARY_SENDERS")
+
+    report = build_launch_report(_healthy_overview(), env=environment)
+    checks = {item["code"]: item for item in report["checks"]}
+
+    assert checks["reminder_canary"]["status"] == "blocked"
+    assert checks["reminder_delivery"]["status"] == "blocked"
     assert report["status"] == "blocked"
 
 

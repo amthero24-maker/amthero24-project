@@ -179,6 +179,33 @@ def test_graceful_drain_releases_only_current_process_reminder_lease() -> None:
     assert states[second["reminder_id"]]["lease_owner"] == "different-process"
 
 
+def test_reminder_canary_claims_only_allowlisted_recipient(monkeypatch) -> None:
+    store = runtime_health.store
+    now = datetime(2026, 8, 8, 11, 45, tzinfo=UTC)
+    allowed_phone = "+491706663351"
+    blocked_phone = "+491706663352"
+    monkeypatch.setenv("REMINDER_WORKER_ENABLED", "true")
+    monkeypatch.setenv("REMINDER_CANARY_SENDERS", allowed_phone)
+    repository = reminder_layer.ResilientReminderRepository(store)
+    allowed = repository.create(
+        allowed_phone,
+        title="Allowed reminder",
+        scheduled_at=now - timedelta(minutes=1),
+        language="de",
+    )
+    repository.create(
+        blocked_phone,
+        title="Blocked reminder",
+        scheduled_at=now - timedelta(minutes=1),
+        language="de",
+    )
+
+    claimed = repository.claim_due(now=now, limit=10)
+
+    assert [item["reminder_id"] for item in claimed] == [allowed["reminder_id"]]
+    assert repository.list(blocked_phone)[0]["status"] == "pending"
+
+
 @pytest.mark.anyio
 async def test_recovery_worker_processes_persisted_envelope_after_restart(monkeypatch) -> None:
     store = runtime_health.store

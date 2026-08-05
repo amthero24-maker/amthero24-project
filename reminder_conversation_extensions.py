@@ -262,7 +262,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
         await core._finish(message.message_id, base.reminder_cancelled_message(language, count), message.sender)
         return
-    if not base.reminder_delivery_ready():
+    if not base.reminder_delivery_ready(message.sender):
         _clear_pending(message.sender)
         await core._finish(message.message_id, base.reminder_unavailable_message(language), message.sender)
         return

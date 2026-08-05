@@ -174,6 +174,7 @@ def build_launch_report(
     reminder_enabled = _flag(environment, "REMINDER_WORKER_ENABLED", False)
     reminder_key_status = reminder_encryption_status(environment=environment)
     reminder_template = bool(str(environment.get("WHATSAPP_REMINDER_TEMPLATE", "")).strip())
+    reminder_canary = bool(str(environment.get("REMINDER_CANARY_SENDERS", "")).strip())
     if reminder_enabled and reminder_key_status != "configured":
         checks.append(LaunchCheck(
             "reminder_encryption",
@@ -186,10 +187,29 @@ def build_launch_report(
     else:
         checks.append(LaunchCheck("reminder_encryption", "warning", "Reminder worker is disabled.", "Enable it after reminder encryption and delivery are configured."))
 
-    if reminder_enabled and reminder_key_status == "configured" and reminder_template:
+    if reminder_enabled and reminder_canary:
+        checks.append(LaunchCheck("reminder_canary", "ready", "Reminder delivery is restricted to an explicit Canary allowlist."))
+    elif reminder_enabled:
+        checks.append(LaunchCheck(
+            "reminder_canary",
+            "blocked",
+            "Reminder worker is enabled without a Canary allowlist.",
+            "Set REMINDER_CANARY_SENDERS to the one exact controlled test number before starting delivery.",
+        ))
+    else:
+        checks.append(LaunchCheck("reminder_canary", "ready", "Reminder worker is disabled; no recipient can be claimed."))
+
+    if reminder_enabled and reminder_key_status == "configured" and reminder_canary and reminder_template:
         checks.append(LaunchCheck("reminder_delivery", "ready", "Reminder worker and approved template are configured."))
-    elif reminder_enabled and reminder_key_status == "configured":
+    elif reminder_enabled and reminder_key_status == "configured" and reminder_canary:
         checks.append(LaunchCheck("reminder_delivery", "warning", "Reminders work only inside the 24-hour service window.", "Approve and configure WHATSAPP_REMINDER_TEMPLATE before testing long-term reminders."))
+    elif reminder_enabled and reminder_key_status == "configured":
+        checks.append(LaunchCheck(
+            "reminder_delivery",
+            "blocked",
+            "Reminder delivery is blocked until the Canary allowlist is configured.",
+            "Set REMINDER_CANARY_SENDERS to the one exact controlled test number.",
+        ))
     elif not reminder_enabled:
         checks.append(LaunchCheck("reminder_delivery", "warning", "Reminder worker is disabled.", "Enable it when reminder delivery is ready for Beta testing."))
 

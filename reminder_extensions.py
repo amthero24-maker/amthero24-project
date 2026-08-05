@@ -20,6 +20,7 @@ from reminder_engine import (
     reminder_created_message,
     reminder_list_message,
     reminder_needs_date_message,
+    reminder_recipient_hash,
     reminder_worker_loop,
     resolve_reminder_schedule,
 )
@@ -52,6 +53,8 @@ class ResilientReminderRepository(ReminderRepository):
         current = (now or datetime.now(UTC)).astimezone(UTC)
         safe_limit = max(1, min(int(limit), 50))
         retry_statuses = ("pending", "failed", "blocked_template")
+        allowed_hashes = _canary_phone_hashes() if _enabled("REMINDER_WORKER_ENABLED") else None
+        allowed = None if allowed_hashes is None else sorted(allowed_hashes)
         if self.backend_name == "postgresql":
             with self.store.pool.connection() as connection:
                 connection.execute(
@@ -61,8 +64,9 @@ class ResilientReminderRepository(ReminderRepository):
                         next_attempt_at = LEAST(next_attempt_at, %s),
                         last_error = 'expired_delivery_lease', updated_at = NOW()
                     WHERE status = 'processing' AND lease_until IS NOT NULL AND lease_until < %s
+                      AND (%s::text[] IS NULL OR phone_hash = ANY(%s))
                     """,
-                    (current, current),
+                    (current, current, allowed, allowed),
                 )
                 rows = connection.execute(
                     """
@@ -72,6 +76,7 @@ class ResilientReminderRepository(ReminderRepository):
                           AND scheduled_at <= %s
                           AND next_attempt_at <= %s
                           AND (lease_until IS NULL OR lease_until < %s)
+                          AND (%s::text[] IS NULL OR phone_hash = ANY(%s))
                         ORDER BY scheduled_at ASC
                         LIMIT %s
                         FOR UPDATE SKIP LOCKED
@@ -83,7 +88,7 @@ class ResilientReminderRepository(ReminderRepository):
                     RETURNING reminder.*
                     """,
                     (
-                        list(retry_statuses), current, current, current, safe_limit,
+                        list(retry_statuses), current, current, current, allowed, allowed, safe_limit,
                         current + timedelta(minutes=5), _WORKER_ID,
                     ),
                 ).fetchall()
@@ -92,6 +97,8 @@ class ResilientReminderRepository(ReminderRepository):
         def reclaim(data: dict[str, Any]) -> None:
             for item in data.setdefault("reminders", {}).values():
                 if not isinstance(item, dict) or item.get("status") != "processing" or not item.get("lease_until"):
+                    continue
+                if allowed_hashes is not None and item.get("phone_hash") not in allowed_hashes:
                     continue
                 try:
                     lease_until = datetime.fromisoformat(str(item["lease_until"]))
@@ -107,7 +114,7 @@ class ResilientReminderRepository(ReminderRepository):
                     item["updated_at"] = current.isoformat()
 
         self.store._transaction(reclaim)
-        return super().claim_due(now=current, limit=limit)
+        return super().claim_due(now=current, limit=limit, allowed_phone_hashes=allowed_hashes)
 
     def release_owned(self, *, now: datetime | None = None) -> int:
         current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -153,6 +160,22 @@ def _enabled(name: str, *, default: bool = False) -> bool:
     return os.getenv(name, fallback).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _canary_phone_hashes() -> set[str]:
+    """Hash exact full-number Canary entries without logging the configured values."""
+    hashes: set[str] = set()
+    for raw in os.getenv("REMINDER_CANARY_SENDERS", "").split(","):
+        compact = "".join(character for character in raw.strip() if character.isdigit() or character == "+")
+        digits = "".join(character for character in compact if character.isdigit())
+        if len(digits) < 8 or compact.count("+") > 1 or "+" in compact[1:]:
+            continue
+        # Meta sender IDs normally contain digits only, while operator input may
+        # include a leading plus. Both representations identify the same exact
+        # full number and no partial matching is used.
+        hashes.add(reminder_recipient_hash(digits))
+        hashes.add(reminder_recipient_hash(f"+{digits}"))
+    return hashes
+
+
 def _worker_configuration_status(store: Any | None = None) -> str:
     """Return a bounded, privacy-safe delivery prerequisite status."""
     active_store = core.store if store is None else store
@@ -164,6 +187,8 @@ def _worker_configuration_status(store: Any | None = None) -> str:
         return "storage_unavailable"
     if not all(os.getenv(name, "").strip() for name in ("WHATSAPP_TOKEN", "PHONE_NUMBER_ID")):
         return "outbound_unavailable"
+    if not _canary_phone_hashes():
+        return "canary_unavailable"
     return "configured"
 
 
@@ -177,9 +202,11 @@ def reminder_worker_status(store: Any | None = None) -> str:
     return "running"
 
 
-def reminder_delivery_ready() -> bool:
+def reminder_delivery_ready(sender: str | None = None) -> bool:
     """Fail closed unless the production delivery worker is currently alive."""
-    return reminder_worker_status() == "running"
+    if reminder_worker_status() != "running":
+        return False
+    return sender is None or reminder_recipient_hash(sender) in _canary_phone_hashes()
 
 
 def _command_text(text: str) -> str:
@@ -193,16 +220,6 @@ def _render_reminder(language: str, title: str) -> str:
     return _ORIGINAL_RENDER_REMINDER(language, title).replace("offene متابعة", "offene Aufgabe")
 
 
-def _reminder_prompt(language: str) -> str:
-    return {
-        "ar": "إذا بتحب، اكتب «ذكرني قبلها بيوم» وبسجّل التذكير بإذنك.",
-        "de": "Wenn du möchtest, schreib „Erinnere mich einen Tag vorher“, dann speichere ich die Erinnerung.",
-        "en": "You can say “remind me one day before” and I will save the reminder with your permission.",
-        "uk": "За бажанням напиши «нагадай за один день», і я збережу нагадування.",
-        "el": "Αν θέλεις, γράψε «θύμισέ μου μία ημέρα πριν» και θα αποθηκεύσω την υπενθύμιση.",
-    }.get(language, "Say ‘remind me one day before’ to save a reminder.")
-
-
 def reminder_unavailable_message(language: str) -> str:
     return {
         "ar": "التذكيرات متوقفة مؤقتًا لحماية بياناتك. باقي خدمات سام شغّالة، وما حفظت هالتذكير.",
@@ -214,10 +231,9 @@ def reminder_unavailable_message(language: str) -> str:
 
 
 def mission_created_message(language: str, mission: dict[str, Any]) -> str:
-    reply = _ORIGINAL_MISSION_CREATED_MESSAGE(language, mission)
-    if reminder_delivery_ready() and str(mission.get("_operation") or "") == "due" and mission.get("due_at"):
-        return reply + "\n\n" + _reminder_prompt(language)
-    return reply
+    # This callback has no sender identity, so it cannot prove Canary
+    # eligibility. Do not advertise reminder creation at this boundary.
+    return _ORIGINAL_MISSION_CREATED_MESSAGE(language, mission)
 
 
 async def process_incoming(message: core.IncomingMessage) -> None:
@@ -246,7 +262,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
         await core._finish(message.message_id, reminder_cancelled_message(language, count), message.sender)
         return
-    if not reminder_delivery_ready():
+    if not reminder_delivery_ready(message.sender):
         await core._finish(message.message_id, reminder_unavailable_message(language), message.sender)
         return
     mission = core._hero_memory().get_latest_mission(message.sender)

@@ -27,6 +27,7 @@ def _env() -> dict[str, str]:
         "ADMIN_API_TOKEN": "admin-token-2026-unique-8xK2mP7qR4vN",
         "PRIVACY_RETENTION_ENABLED": "true",
         "REMINDER_WORKER_ENABLED": "true",
+        "REMINDER_CANARY_SENDERS": "+491701234567",
         "REMINDER_ENCRYPTION_KEY": "reminder-key-2026-unique-7fA9xQ2mLp8V",
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "approved_template",
