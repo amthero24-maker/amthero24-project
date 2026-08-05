@@ -32,6 +32,47 @@ class SmokeError(RuntimeError):
     """Raised when an endpoint cannot be read safely."""
 
 
+def _safe_code(value: Any, *, fallback: str = "missing") -> str:
+    cleaned = re.sub(r"[^a-z0-9_:-]+", "_", str(value or "").strip().casefold())
+    return cleaned.strip("_")[:80] or fallback
+
+
+def _safe_count(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_timestamp(value: Any) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned or len(cleaned) > 40 or not re.fullmatch(r"[0-9T:+.Z-]+", cleaned):
+        return "none"
+    return cleaned
+
+
+def _reminder_diagnostic_detail(payload: dict[str, Any]) -> str:
+    reminders = payload.get("reminders") if isinstance(payload.get("reminders"), dict) else {}
+    by_status = reminders.get("by_status") if isinstance(reminders.get("by_status"), dict) else {}
+    statuses = ",".join(
+        f"{_safe_code(key)}:{_safe_count(value)}"
+        for key, value in sorted(by_status.items(), key=lambda item: str(item[0]))
+    ) or "none"
+    latest = reminders.get("latest") if isinstance(reminders.get("latest"), dict) else {}
+    return (
+        f"total={_safe_count(reminders.get('total'))}; by_status={statuses}; "
+        f"due_unsent={_safe_count(reminders.get('due_unsent'))}; "
+        f"unsent_recipients={_safe_count(reminders.get('unsent_recipients'))}; "
+        f"latest_status={_safe_code(latest.get('status'), fallback='none')}; "
+        f"scheduled_at={_safe_timestamp(latest.get('scheduled_at'))}; "
+        f"attempt_count={_safe_count(latest.get('attempt_count'))}; "
+        f"last_error={_safe_code(latest.get('last_error_code'), fallback='none')}; "
+        f"next_attempt_at={_safe_timestamp(latest.get('next_attempt_at'))}; "
+        f"lease_until={_safe_timestamp(latest.get('lease_until'))}; "
+        f"sent_at={_safe_timestamp(latest.get('sent_at'))}"
+    )[:900]
+
+
 def _base_url(value: str) -> str:
     cleaned = str(value or "").strip()
     if not cleaned.startswith(("https://", "http://")):
@@ -185,6 +226,15 @@ def run_smoke(
                 checks[reminder_check_index] = SmokeCheck("reminders", "pass", reminders)
         except SmokeError as exc:
             checks.append(SmokeCheck("launch_report_endpoint", "fail", str(exc)))
+
+        try:
+            overview_status, overview = fetch_json(base_url, "/admin/overview", token=admin_token, timeout=timeout)
+            reminders = overview.get("reminders") if isinstance(overview.get("reminders"), dict) else None
+            diagnostics_ok = overview_status == 200 and reminders is not None
+            detail = _reminder_diagnostic_detail(overview) if diagnostics_ok else f"HTTP {overview_status}; reminders=missing"
+            checks.append(SmokeCheck("reminder_diagnostics", "pass" if diagnostics_ok else "fail", detail))
+        except SmokeError as exc:
+            checks.append(SmokeCheck("reminder_diagnostics", "fail", str(exc)))
 
     return checks
 

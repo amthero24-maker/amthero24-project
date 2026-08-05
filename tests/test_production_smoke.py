@@ -24,12 +24,31 @@ def _healthy(path: str) -> tuple[int, dict]:
                 "durable_inbound_queue": "configured",
                 "outbound_delivery_receipts": "enabled",
                 "reminders": "enabled",
+                "reminder_worker": "running",
                 "reminder_encryption": "configured",
                 "admin_overview": "configured",
                 "privacy_retention": "enabled",
                 "provider_telemetry": "enabled",
                 "abuse_guard": "enforced",
             },
+        }
+    if path == "/admin/overview":
+        return 200, {
+            "reminders": {
+                "total": 1,
+                "by_status": {"pending": 1},
+                "due_unsent": 1,
+                "unsent_recipients": 1,
+                "latest": {
+                    "status": "pending",
+                    "scheduled_at": "2026-08-05T00:12:00+00:00",
+                    "attempt_count": 0,
+                    "last_error_code": "",
+                    "next_attempt_at": "2026-08-05T00:12:00+00:00",
+                    "lease_until": None,
+                    "sent_at": None,
+                },
+            }
         }
     return 200, {"status": "ready"}
 
@@ -61,7 +80,10 @@ def test_smoke_passes_for_healthy_production() -> None:
         "reminder_encryption",
         "admin_secret",
         "launch_decision",
+        "reminder_diagnostics",
     }
+    diagnostics = next(item for item in checks if item.name == "reminder_diagnostics")
+    assert diagnostics.detail.startswith("total=1; by_status=pending:1; due_unsent=1")
 
 
 def test_smoke_fails_on_storage_schema_signature_delivery_and_lifecycle_misconfiguration() -> None:

@@ -72,7 +72,9 @@ async def test_missing_subject_asks_once_then_creates_from_short_answer(tmp_path
 
     first = reminders.core.IncomingMessage("r1", "49123", "ذكرني بعد دقيقة", "text")
     store.claim_message(first.message_id, first.sender, first.text)
-    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
         await reminders.process_incoming(first)
         assert "شو بتحب ذكّرك فيه" in send.await_args.args[1]
 
@@ -99,7 +101,34 @@ async def test_missing_time_asks_only_for_time(tmp_path, monkeypatch) -> None:
 
     message = reminders.core.IncomingMessage("r3", "49123", "ذكرني اتصل بالمكتب", "text")
     store.claim_message(message.message_id, message.sender, message.text)
-    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
         await reminders.process_incoming(message)
     assert "إيمتى أذكّرك" in send.await_args.args[1]
     assert store.get_user("49123")["pending_reminder_title"] == "اتصل بالمكتب"
+
+
+@pytest.mark.anyio
+async def test_worker_unavailable_does_not_save_conversational_reminder(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_WORKER_ENABLED", "false")
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    store.update_user("49123", {
+        "pending_reminder_title": "قديم",
+        "session_expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+    })
+
+    message = reminders.core.IncomingMessage("r4", "49123", "ذكرني بعد دقيقة اشرب مي", "text")
+    store.claim_message(message.message_id, message.sender, message.text)
+    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+        await reminders.process_incoming(message)
+
+    assert "متوقفة مؤقتًا" in send.await_args.args[1]
+    assert reminders.base._repository().list("49123") == []
+    assert "pending_reminder_title" not in store.get_user("49123")

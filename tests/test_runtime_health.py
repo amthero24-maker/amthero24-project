@@ -50,7 +50,22 @@ def test_configuration_readiness_does_not_expose_values() -> None:
         payload, status = runtime_health.readiness_payload(_JsonStore(Path("/tmp/store.json")), version="1", model="model")
     assert status == 200
     assert payload["components"]["database_schema_migrations"] == "not-applicable"
+    assert payload["components"]["reminder_worker"] == "disabled"
+    assert payload["components"]["reminders"] == "disabled"
     assert "secret" not in str(payload)
+
+
+def test_reminders_are_enabled_only_when_worker_task_is_running(tmp_path, monkeypatch) -> None:
+    env = {
+        "GROQ_API_KEY": "x", "WHATSAPP_TOKEN": "x", "PHONE_NUMBER_ID": "x", "VERIFY_TOKEN": "x",
+        "REMINDER_WORKER_ENABLED": "true", "REMINDER_ENCRYPTION_KEY": "reminder-key-2026-unique-7fA9xQ2mLp8V",
+    }
+    monkeypatch.setattr(runtime_health.reminder_layer, "reminder_worker_status", lambda store: "running")
+    with patch.dict("os.environ", env, clear=True):
+        payload, status = runtime_health.readiness_payload(_JsonStore(tmp_path / "store.json"), version="1", model="model")
+    assert status == 200
+    assert payload["components"]["reminders"] == "enabled"
+    assert payload["components"]["reminder_worker"] == "running"
 
 
 def test_missing_configuration_fails_readiness(tmp_path) -> None:

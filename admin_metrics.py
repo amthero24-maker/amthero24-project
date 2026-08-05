@@ -1,6 +1,7 @@
 """Privacy-safe aggregate metrics for AmtHero24 operators."""
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -24,6 +25,77 @@ def _as_datetime(value: Any) -> datetime | None:
 
 def _counter_dict(counter: Counter[str]) -> dict[str, int]:
     return dict(sorted(((str(key or "unknown"), int(value)) for key, value in counter.items()), key=lambda item: item[0]))
+
+
+_ACTIVE_REMINDER_STATUSES = {"pending", "failed", "blocked_template", "processing"}
+
+
+def _safe_error_code(value: Any) -> str:
+    raw = str(value or "").strip().casefold()
+    if not raw:
+        return ""
+    if not re.fullmatch(r"[a-z][a-z0-9_:-]{0,79}", raw):
+        return "redacted"
+    return re.sub(r"\d+", "n", raw)
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_timestamp(value: Any) -> str | None:
+    parsed = _as_datetime(value)
+    return parsed.isoformat() if parsed is not None else None
+
+
+def _latest_reminder(record: Any) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    return {
+        "status": _safe_error_code(record.get("status")) or "unknown",
+        "scheduled_at": _safe_timestamp(record.get("scheduled_at")),
+        "attempt_count": _safe_nonnegative_int(record.get("attempt_count")),
+        "last_error_code": _safe_error_code(record.get("last_error")),
+        "next_attempt_at": _safe_timestamp(record.get("next_attempt_at")),
+        "lease_until": _safe_timestamp(record.get("lease_until")),
+        "sent_at": _safe_timestamp(record.get("sent_at")),
+    }
+
+
+def _json_reminder_diagnostics(reminders: list[dict[str, Any]], current: datetime) -> dict[str, Any]:
+    due_unsent = 0
+    unsent_recipients: set[str] = set()
+    for reminder in reminders:
+        status = str(reminder.get("status") or "unknown")
+        if reminder.get("sent_at") is None and status != "cancelled":
+            recipient = str(reminder.get("phone_hash") or "")
+            if recipient:
+                unsent_recipients.add(recipient)
+        scheduled = _as_datetime(reminder.get("scheduled_at"))
+        next_attempt = _as_datetime(reminder.get("next_attempt_at")) or scheduled
+        lease = _as_datetime(reminder.get("lease_until"))
+        if (
+            status in _ACTIVE_REMINDER_STATUSES
+            and scheduled is not None
+            and next_attempt is not None
+            and scheduled <= current
+            and next_attempt <= current
+            and (lease is None or lease < current)
+        ):
+            due_unsent += 1
+    latest = max(
+        reminders,
+        key=lambda item: _as_datetime(item.get("created_at")) or datetime.min.replace(tzinfo=UTC),
+        default=None,
+    )
+    return {
+        "due_unsent": due_unsent,
+        "unsent_recipients": len(unsent_recipients),
+        "latest": _latest_reminder(latest),
+    }
 
 
 def _json_overview(store: Any, current: datetime) -> dict[str, Any]:
@@ -77,7 +149,11 @@ def _json_overview(store: Any, current: datetime) -> dict[str, Any]:
             "by_status": _counter_dict(mission_status),
             "by_topic": _counter_dict(mission_topics),
         },
-        "reminders": {"total": len(reminders), "by_status": _counter_dict(reminder_status)},
+        "reminders": {
+            "total": len(reminders),
+            "by_status": _counter_dict(reminder_status),
+            **_json_reminder_diagnostics(reminders, current),
+        },
         "messages_24h": {
             "total": len(recent_messages),
             "by_status": _counter_dict(message_status),
@@ -112,6 +188,33 @@ def _postgres_overview(store: Any, current: datetime) -> dict[str, Any]:
         reminder_rows = connection.execute(
             "SELECT status, COUNT(*) AS count FROM hero_reminders GROUP BY status"
         ).fetchall()
+        reminder_due_row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM hero_reminders
+            WHERE status = ANY(%s)
+              AND scheduled_at <= %s
+              AND next_attempt_at <= %s
+              AND (lease_until IS NULL OR lease_until < %s)
+            """,
+            (list(_ACTIVE_REMINDER_STATUSES), current, current, current),
+        ).fetchone()
+        reminder_recipient_row = connection.execute(
+            """
+            SELECT COUNT(DISTINCT phone_hash) AS count
+            FROM hero_reminders
+            WHERE sent_at IS NULL AND status <> 'cancelled'
+            """
+        ).fetchone()
+        latest_reminder_row = connection.execute(
+            """
+            SELECT status, scheduled_at, attempt_count, last_error,
+                   next_attempt_at, lease_until, sent_at
+            FROM hero_reminders
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
         message_rows = connection.execute(
             """
             SELECT status, message_type, COUNT(*) AS count
@@ -162,7 +265,13 @@ def _postgres_overview(store: Any, current: datetime) -> dict[str, Any]:
             "by_status": _counter_dict(mission_status),
             "by_topic": _counter_dict(mission_topics),
         },
-        "reminders": {"total": sum(reminder_status.values()), "by_status": _counter_dict(reminder_status)},
+        "reminders": {
+            "total": sum(reminder_status.values()),
+            "by_status": _counter_dict(reminder_status),
+            "due_unsent": int(reminder_due_row["count"] if reminder_due_row else 0),
+            "unsent_recipients": int(reminder_recipient_row["count"] if reminder_recipient_row else 0),
+            "latest": _latest_reminder(dict(latest_reminder_row)) if latest_reminder_row else None,
+        },
         "messages_24h": {
             "total": sum(message_status.values()),
             "by_status": _counter_dict(message_status),
