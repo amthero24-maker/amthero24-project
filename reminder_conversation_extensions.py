@@ -23,6 +23,7 @@ core = composed.core
 _ORIGINAL_PROCESS_INCOMING = base.process_incoming
 _PENDING_AT = "pending_reminder_at"
 _PENDING_TITLE = "pending_reminder_title"
+_PENDING_RECURRENCE_DAYS = "pending_reminder_recurrence_days"
 _CONVERSATION_TOPICS = {
     "", "unknown", "identity", "capabilities", "languages", "reminders",
     "greeting", "greeting_1", "greeting_2", "greeting_3",
@@ -240,6 +241,19 @@ def _parse_recurrence(normalized: str) -> tuple[int | None, int | None]:
     return days, count if 2 <= count <= 365 else None
 
 
+def _parse_recurrence_count_reply(text: str, recurrence_days: int) -> int | None:
+    normalized = _normalize(text)
+    match = re.fullmatch(
+        r"(?:لمدة|for|fur|für|протягом|για)?\s*(\d{1,3})\s*"
+        r"(?:مرات?|ايام?|اسابيع?|days?|weeks?|tage?|wochen?|днів|тижнів|ημερεσ|εβδομαδεσ)?",
+        normalized,
+    )
+    if not match:
+        return None
+    count = int(match.group(1))
+    return count if recurrence_days in {1, 7} and 2 <= count <= 365 else None
+
+
 def detect_conversational_reminder_intent(
     text: str,
     *,
@@ -340,7 +354,7 @@ def _question(language: str, missing: str) -> str:
 
 
 def _clear_pending(sender: str) -> None:
-    core.store.remove_user_fields(sender, {_PENDING_AT, _PENDING_TITLE})
+    core.store.remove_user_fields(sender, {_PENDING_AT, _PENDING_TITLE, _PENDING_RECURRENCE_DAYS})
 
 
 def _real_mission_title(mission: dict[str, Any] | None) -> str:
@@ -354,10 +368,24 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     stage = str(profile.get("onboarding_stage") or "")
     pending_at = str(profile.get(_PENDING_AT) or "").strip()
     pending_title = str(profile.get(_PENDING_TITLE) or "").strip()
+    pending_recurrence_days = int(profile.get(_PENDING_RECURRENCE_DAYS) or 0)
 
     intent = None
     if message.message_type == "text":
         intent = detect_conversational_reminder_intent(message.text)
+        if intent is None and pending_at and pending_title and pending_recurrence_days in {1, 7}:
+            count = _parse_recurrence_count_reply(message.text, pending_recurrence_days)
+            if count is not None:
+                intent = ConversationalReminderIntent(
+                    "create",
+                    scheduled_at=datetime.fromisoformat(pending_at),
+                    title=pending_title,
+                    exact_time=True,
+                    recurrence_days=pending_recurrence_days,
+                    recurrence_count=count,
+                )
+            else:
+                intent = ConversationalReminderIntent("recurrence_clarification")
         if intent is None and (pending_at or pending_title):
             if pending_at and not pending_title:
                 intent = ConversationalReminderIntent("create", scheduled_at=datetime.fromisoformat(pending_at), title=" ".join(message.text.split())[:180], exact_time=True)
@@ -374,6 +402,9 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         return
 
     repository = base._repository()
+    if intent.action == "recurrence_clarification":
+        await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
+        return
     if intent.action == "list":
         await core._finish(message.message_id, base.reminder_list_message(language, repository.list(message.sender, active_only=True, limit=10)), message.sender)
         return
@@ -421,10 +452,6 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         await core._finish(message.message_id, base.reminder_unavailable_message(language), message.sender)
         return
 
-    if intent.recurrence_days is not None and intent.recurrence_count is None:
-        await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
-        return
-
     mission = core._hero_memory().get_latest_mission(message.sender)
     scheduled_at = resolve_conversational_schedule(intent, mission)
     title = intent.title or _real_mission_title(mission)
@@ -444,6 +471,16 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             "session_expires_at": core._session_expiry(),
         })
         await core._finish(message.message_id, _question(language, "title"), message.sender)
+        return
+    if intent.recurrence_days is not None and intent.recurrence_count is None:
+        core.store.update_user(message.sender, {
+            _PENDING_AT: scheduled_at.isoformat(),
+            _PENDING_TITLE: title,
+            _PENDING_RECURRENCE_DAYS: str(intent.recurrence_days),
+            "session_language": language,
+            "session_expires_at": core._session_expiry(),
+        })
+        await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
         return
 
     _clear_pending(message.sender)
