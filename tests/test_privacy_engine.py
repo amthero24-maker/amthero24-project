@@ -58,12 +58,21 @@ def test_export_includes_safe_reminders_without_delivery_secrets(tmp_path, monke
     phone = "491234567"
     store = JsonDataStore(tmp_path / "store.json")
     memory, reminders = _seed_everything(store, phone, monkeypatch)
+    delivered_at = datetime(2026, 8, 6, 10, tzinfo=UTC)
+    reminder = reminders.list(phone)[0]
+    reminders.mark_sent(reminder["reminder_id"], now=delivered_at)
+    assert reminders.acknowledge_recent(
+        phone, now=delivered_at + timedelta(minutes=1),
+    )[0] == "acknowledged"
 
     payload = export_user_data(store, phone, memory.export_user_data(phone), reminders)
 
     assert payload["profile"]["first_name"] == "وسام"
     assert payload["missions"][0]["title"] == "WKK"
     assert payload["reminders"][0]["title"] == "WKK"
+    assert payload["reminders"][0]["status"] == "acknowledged"
+    assert "acknowledged_at" in payload["reminders"][0]
+    assert "acknowledged_sent_at" not in payload["reminders"][0]
     assert "recipient_ciphertext" not in payload["reminders"][0]
     assert "phone_hash" not in payload["reminders"][0]
     assert "last_error" not in payload["reminders"][0]
@@ -92,7 +101,7 @@ def test_retention_removes_old_closed_records_but_keeps_active_work(tmp_path, mo
         completed["completed_at"] = (now - timedelta(days=800)).isoformat()
         completed["updated_at"] = completed["completed_at"]
         sent = data["reminders"][old_reminder["reminder_id"]]
-        sent["status"] = "sent"
+        sent["status"] = "acknowledged"
         sent["updated_at"] = (now - timedelta(days=100)).isoformat()
         data["audit_log"].append({
             "phone_hash": "old",

@@ -6,7 +6,7 @@ AmtHero24 is a FastAPI service behind a WhatsApp assistant called **Sam von AmtH
 
 - consent-aware Hero Memory backed by PostgreSQL
 - multilingual text, image, PDF, DOCX, TXT, CSV, and voice input
-- structured missions and explicit reminders
+- structured missions and encrypted reminders with bounded recurrence, weekday/holiday scheduling, safe rescheduling, and recent-delivery acknowledgement
 - German official letter and email drafting
 - complete user export/deletion and automatic retention
 - webhook signature verification, abuse protection, and provider circuit breaking

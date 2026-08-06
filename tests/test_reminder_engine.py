@@ -12,9 +12,12 @@ from reminder_engine import (
     ReminderServiceError,
     deliver_due_reminders,
     detect_reminder_intent,
+    reminder_acknowledged_message,
+    reminder_acknowledgement_selection_message,
     reminder_created_message,
     reminder_list_message,
     reminder_recurrence_updated_message,
+    render_reminder,
     resolve_reminder_schedule,
     service_window_open,
 )
@@ -134,6 +137,104 @@ def test_recurring_reminder_advances_in_local_time_and_finishes(tmp_path, monkey
     repository.mark_sent(reminder["reminder_id"], now=datetime(2026, 10, 25, 7, tzinfo=UTC))
     assert repository.list("491234567") == []
     assert repository.list("491234567", active_only=False)[0]["status"] == "sent"
+
+
+def test_one_time_delivery_acknowledgement_is_scoped_and_idempotent(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    delivered_at = datetime(2026, 8, 6, 10, tzinfo=UTC)
+    reminder = repository.create(
+        phone, title="Call the office", scheduled_at=delivered_at, language="en",
+    )
+    repository.mark_sent(reminder["reminder_id"], now=delivered_at)
+
+    status, acknowledged = repository.acknowledge_recent(
+        phone, now=delivered_at + timedelta(minutes=5),
+    )
+
+    assert status == "acknowledged"
+    assert acknowledged["status"] == "acknowledged"
+    assert acknowledged["acknowledged_sent_at"] == delivered_at.isoformat()
+    assert repository.acknowledge_recent(
+        phone, now=delivered_at + timedelta(minutes=6),
+    )[0] == "already"
+    assert repository.acknowledge_recent(
+        "491999999", now=delivered_at + timedelta(minutes=6),
+    )[0] == "not_found"
+
+
+def test_recurring_acknowledgement_keeps_next_occurrence_active(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    first = datetime(2026, 8, 6, 8, tzinfo=UTC)
+    reminder = repository.create(
+        phone,
+        title="Drink water",
+        scheduled_at=first,
+        language="en",
+        recurrence_days=1,
+        recurrence_count=3,
+    )
+    repository.mark_sent(reminder["reminder_id"], now=first)
+
+    status, acknowledged = repository.acknowledge_recent(
+        phone, now=first + timedelta(minutes=2),
+    )
+
+    assert status == "acknowledged"
+    assert acknowledged["status"] == "pending"
+    assert acknowledged["recurrence_remaining"] == 2
+    assert len(repository.list(phone)) == 1
+
+    second = datetime.fromisoformat(acknowledged["scheduled_at"])
+    repository.mark_sent(reminder["reminder_id"], now=second)
+    recent = repository.recent_deliveries(
+        phone, now=second + timedelta(minutes=1), unacknowledged_only=True,
+    )
+    assert len(recent) == 1
+    assert recent[0]["sent_at"] == second.isoformat()
+
+
+def test_acknowledgement_never_guesses_between_recent_deliveries(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+    first = repository.create(
+        phone, title="First", scheduled_at=now - timedelta(minutes=10), language="en",
+    )
+    second = repository.create(
+        phone, title="Second", scheduled_at=now - timedelta(minutes=5), language="en",
+    )
+    repository.mark_sent(first["reminder_id"], now=now - timedelta(minutes=10))
+    repository.mark_sent(second["reminder_id"], now=now - timedelta(minutes=5))
+
+    assert repository.acknowledge_recent(phone, now=now)[0] == "ambiguous"
+    status, selected = repository.acknowledge_recent(phone, position=2, now=now)
+    assert status == "acknowledged"
+    assert selected["title"] == "First"
+    assert repository.acknowledge_recent(
+        phone, now=now + timedelta(hours=25),
+    )[0] == "not_found"
+
+
+@pytest.mark.parametrize(("language", "command"), (
+    ("ar", "تم التذكير"), ("de", "Erinnerung erledigt"),
+    ("en", "reminder done"), ("uk", "нагадування виконано"),
+    ("el", "η υπενθύμιση ολοκληρώθηκε"),
+))
+def test_delivery_and_acknowledgement_messages_explain_the_command(language, command) -> None:
+    reminder = {
+        "title": "Office",
+        "status": "pending",
+        "sent_at": datetime(2026, 8, 6, 10, tzinfo=UTC).isoformat(),
+        "timezone": "Europe/Berlin",
+    }
+    assert command.casefold() in render_reminder(language, "Office").casefold()
+    assert "Office" in reminder_acknowledged_message(language, reminder)
+    assert "1." in reminder_acknowledgement_selection_message(language, [reminder])
 
 
 def test_weekday_recurrence_skips_weekend_and_preserves_local_time(tmp_path, monkeypatch) -> None:

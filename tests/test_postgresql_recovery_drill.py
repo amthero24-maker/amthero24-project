@@ -139,6 +139,11 @@ def _seed_source(database_url: str) -> dict[str, str]:
             language="ar",
             mission_id=str(mission["mission_id"]),
         )
+        reminders.mark_sent(str(reminder["reminder_id"]), now=now)
+        acknowledgement_status, reminder = reminders.acknowledge_recent(
+            PHONE, now=now + timedelta(minutes=1),
+        )
+        assert acknowledgement_status == "acknowledged"
         pending.put(
             PHONE,
             {
@@ -262,6 +267,9 @@ def test_encrypted_backup_restores_complete_schema_compatible_application_state(
         reminder = ReminderRepository(target_store).list(PHONE, active_only=False, limit=10)[0]
         assert reminder["reminder_id"] == identifiers["reminder_id"]
         assert decrypt_recipient(str(reminder["recipient_ciphertext"])) == PHONE
+        assert reminder["status"] == "acknowledged"
+        assert reminder["acknowledged_at"] is not None
+        assert reminder["acknowledged_sent_at"] is not None
 
         mission = HeroMemory(target_store).get_latest_mission(PHONE)
         assert mission is not None

@@ -79,6 +79,25 @@ def test_reschedule_understands_position_and_relative_minutes() -> None:
     assert intent.scheduled_at == now + timedelta(minutes=10)
 
 
+@pytest.mark.parametrize(("text", "bare", "position"), (
+    ("تم ✅", True, None),
+    ("تم التذكير الأول", False, 1),
+    ("تم التذكير الثاني", False, 2),
+    ("Erinnerung 2 erledigt", False, 2),
+    ("reminder 3 done", False, 3),
+    ("нагадування 2 виконано", False, 2),
+    ("η υπενθύμιση 2 ολοκληρώθηκε", False, 2),
+))
+def test_acknowledgement_replies_are_multilingual_and_bounded(text, bare, position) -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        text, now=datetime(2026, 8, 6, 11, tzinfo=UTC), timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.action == "acknowledge"
+    assert intent.acknowledgement_bare is bare
+    assert intent.position == position
+
+
 def test_cancel_understands_multiple_arabic_ordinal_positions() -> None:
     intent = reminders.detect_conversational_reminder_intent(
         "الغي التذكير الاول والثاني",
@@ -380,6 +399,70 @@ async def test_reschedule_never_guesses_when_multiple_reminders_exist(tmp_path, 
     active = repository.list("49123")
     assert active[0]["title"] == "الثاني"
     assert active[1]["title"] == "الأول"
+
+
+@pytest.mark.anyio
+async def test_acknowledgement_selects_recent_delivery_and_is_idempotent(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    repository = reminders.base._repository()
+    now = datetime.now(UTC)
+    first = repository.create(
+        "49123", title="الأول", scheduled_at=now - timedelta(minutes=10), language="ar",
+    )
+    second = repository.create(
+        "49123", title="الثاني", scheduled_at=now - timedelta(minutes=5), language="ar",
+    )
+    repository.mark_sent(first["reminder_id"], now=now - timedelta(minutes=10))
+    repository.mark_sent(second["reminder_id"], now=now - timedelta(minutes=5))
+
+    generic = reminders.core.IncomingMessage("ack-1", "49123", "تم ✅", "text")
+    store.claim_message(generic.message_id, generic.sender, generic.text)
+    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+        await reminders.process_incoming(generic)
+        assert "عدة تذكيرات" in send.await_args.args[1]
+
+        selected = reminders.core.IncomingMessage(
+            "ack-2", "49123", "تم التذكير الثاني", "text",
+        )
+        store.claim_message(selected.message_id, selected.sender, selected.text)
+        await reminders.process_incoming(selected)
+        assert "سجّلت إنجاز تذكير «الأول»" in send.await_args.args[1]
+
+        repeated = reminders.core.IncomingMessage(
+            "ack-3", "49123", "تم التذكير الثاني", "text",
+        )
+        store.claim_message(repeated.message_id, repeated.sender, repeated.text)
+        await reminders.process_incoming(repeated)
+        assert "مسجّل عندي أصلًا" in send.await_args.args[1]
+
+    records = repository.list("49123", active_only=False, limit=10)
+    assert next(item for item in records if item["title"] == "الأول")["status"] == "acknowledged"
+    assert next(item for item in records if item["title"] == "الثاني")["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_bare_done_without_recent_delivery_falls_through(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    message = reminders.core.IncomingMessage("ack-fallback", "49123", "تم", "text")
+    store.claim_message(message.message_id, message.sender, message.text)
+
+    fallback = AsyncMock()
+    with patch.object(reminders, "_ORIGINAL_PROCESS_INCOMING", new=fallback):
+        await reminders.process_incoming(message)
+
+    fallback.assert_awaited_once_with(message)
 
 
 @pytest.mark.anyio
