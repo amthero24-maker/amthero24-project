@@ -91,6 +91,26 @@ def test_reschedule_requires_selection_when_multiple_reminders_exist(tmp_path, m
     assert updated["attempt_count"] == 0
 
 
+def test_cancel_selected_is_atomic_and_uses_displayed_order(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    start = datetime(2026, 8, 10, 7, tzinfo=UTC)
+    for index, title in enumerate(("First", "Second", "Third")):
+        repository.create(
+            phone,
+            title=title,
+            scheduled_at=start + timedelta(days=index),
+            language="en",
+        )
+
+    assert repository.cancel_selected(phone, (1, 4)) == 0
+    assert [item["title"] for item in repository.list(phone)] == ["First", "Second", "Third"]
+
+    assert repository.cancel_selected(phone, (2, 1, 2)) == 2
+    assert [item["title"] for item in repository.list(phone)] == ["Third"]
+
+
 def test_service_window_uses_last_inbound_activity() -> None:
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
     assert service_window_open({"last_seen": (now - timedelta(hours=2)).isoformat()}, now=now)
