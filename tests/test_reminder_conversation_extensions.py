@@ -344,3 +344,20 @@ def test_recurrence_count_reply_is_strict_and_bounded() -> None:
     assert reminders._parse_recurrence_count_reply("1", 1) is None
     assert reminders._parse_recurrence_count_reply("500 أيام", 1) is None
     assert reminders._parse_recurrence_count_reply("نعم 7 أيام", 1) is None
+
+
+def test_recurrence_control_intents_include_target_and_bounds() -> None:
+    update = reminders.detect_conversational_reminder_intent(
+        "خلي التذكير 2 كل اسبوع لمدة 4 اسابيع"
+    )
+    assert update is not None
+    assert update.action == "recurrence_update"
+    assert update.position == 2
+    assert update.recurrence_days == 7
+    assert update.recurrence_count == 4
+
+    stop = reminders.detect_conversational_reminder_intent("وقف تكرار التذكير 2")
+    assert stop is not None
+    assert stop.action == "recurrence_update"
+    assert stop.position == 2
+    assert stop.recurrence_stop is True
