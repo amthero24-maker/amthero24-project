@@ -37,6 +37,7 @@ class ConversationalReminderIntent:
     title: str = ""
     exact_time: bool = False
     position: int | None = None
+    positions: tuple[int, ...] = ()
 
 
 _RESCHEDULE_MARKERS = (
@@ -134,6 +135,18 @@ def _parse_reschedule_position(normalized: str) -> int | None:
     return next((number for word, number in words.items() if word in normalized), None)
 
 
+def _parse_cancel_positions(normalized: str) -> tuple[int, ...]:
+    values = {int(value) for value in re.findall(r"\b(\d{1,2})\b", normalized)}
+    ordinals = {
+        "الاول": 1, "الثاني": 2, "الثالث": 3, "الرابع": 4, "الخامس": 5,
+        "السادس": 6, "السابع": 7, "الثامن": 8, "التاسع": 9, "العاشر": 10,
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+        "erste": 1, "ersten": 1, "zweite": 2, "zweiten": 2, "dritte": 3, "dritten": 3,
+    }
+    values.update(number for word, number in ordinals.items() if word in normalized)
+    return tuple(sorted(value for value in values if 1 <= value <= 30))
+
+
 def _parse_reschedule_time(text: str, normalized: str, current: datetime, timezone_name: str) -> datetime | None:
     scheduled = _parse_relative_minutes(normalized, current) or _parse_relative_hours(normalized, current)
     if scheduled is not None:
@@ -212,7 +225,10 @@ def detect_conversational_reminder_intent(
     if base_intent is None:
         return None
     if base_intent.action != "create":
-        return ConversationalReminderIntent(base_intent.action)
+        return ConversationalReminderIntent(
+            base_intent.action,
+            positions=_parse_cancel_positions(normalized) if base_intent.action == "cancel" else (),
+        )
 
     scheduled = _parse_relative_minutes(normalized, current)
     exact = scheduled is not None
@@ -319,8 +335,19 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     if intent.action == "list":
         await core._finish(message.message_id, base.reminder_list_message(language, repository.list(message.sender, active_only=True, limit=10)), message.sender)
         return
-    if intent.action in {"cancel", "cancel_all"}:
-        count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
+    if intent.action == "cancel_all":
+        count = repository.cancel(message.sender, all_active=True)
+        await core._finish(message.message_id, base.reminder_cancelled_message(language, count), message.sender)
+        return
+    if intent.action == "cancel":
+        active = repository.list(message.sender, active_only=True, limit=30)
+        if intent.positions:
+            count = repository.cancel_selected(message.sender, intent.positions)
+        elif len(active) > 1:
+            await core._finish(message.message_id, base.reminder_cancel_selection_message(language, active), message.sender)
+            return
+        else:
+            count = repository.cancel(message.sender)
         await core._finish(message.message_id, base.reminder_cancelled_message(language, count), message.sender)
         return
     if intent.action == "reschedule":
