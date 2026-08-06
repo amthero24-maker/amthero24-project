@@ -30,6 +30,7 @@ def test_after_one_minute_is_exact_even_during_quiet_hours() -> None:
         "ذكرني بعد دقيقة اشرب مي", now=now, timezone_name="UTC"
     )
     assert intent is not None
+    assert intent.action == "create"
     assert intent.title == "اشرب مي"
     assert intent.exact_time is True
     scheduled = reminders.resolve_conversational_schedule(intent, None, now=now, timezone_name="UTC")
@@ -96,6 +97,26 @@ def test_acknowledgement_replies_are_multilingual_and_bounded(text, bare, positi
     assert intent.action == "acknowledge"
     assert intent.acknowledgement_bare is bare
     assert intent.position == position
+
+
+@pytest.mark.parametrize(("text", "implicit", "position"), (
+    ("ذكرني بعد 10 دقائق", True, None),
+    ("ذكرني مرة ثانية بعد 10 دقائق للتذكير 2", False, 2),
+    ("Erinnere mich nochmal in 10 Minuten", False, None),
+    ("remind me again in 10 minutes", False, None),
+    ("нагадай мені ще раз через 10 хвилин", False, None),
+    ("θύμισέ μου ξανά σε 10 λεπτά", False, None),
+))
+def test_post_delivery_snooze_is_multilingual_and_bounded(text, implicit, position) -> None:
+    now = datetime(2026, 8, 6, 11, tzinfo=UTC)
+    intent = reminders.detect_conversational_reminder_intent(
+        text, now=now, timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.action == "snooze"
+    assert intent.snooze_implicit is implicit
+    assert intent.position == position
+    assert intent.scheduled_at == now + timedelta(minutes=10)
 
 
 def test_cancel_understands_multiple_arabic_ordinal_positions() -> None:
@@ -444,6 +465,90 @@ async def test_acknowledgement_selects_recent_delivery_and_is_idempotent(tmp_pat
     records = repository.list("49123", active_only=False, limit=10)
     assert next(item for item in records if item["title"] == "الأول")["status"] == "acknowledged"
     assert next(item for item in records if item["title"] == "الثاني")["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_bare_relative_command_snoozes_recent_delivery_without_moving_source(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    repository = reminders.base._repository()
+    delivered_at = datetime.now(UTC) - timedelta(minutes=2)
+    source = repository.create(
+        "49123", title="اتصل بالمكتب", scheduled_at=delivered_at, language="ar",
+    )
+    repository.mark_sent(source["reminder_id"], now=delivered_at)
+
+    message = reminders.core.IncomingMessage(
+        "snooze-1", "49123", "ذكرني بعد 10 دقائق", "text",
+    )
+    store.claim_message(message.message_id, message.sender, message.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(message)
+
+    assert "غفوة مستقلة" in send.await_args.args[1]
+    records = repository.list("49123", active_only=False, limit=10)
+    assert len(records) == 2
+    original = next(item for item in records if item["reminder_id"] == source["reminder_id"])
+    snooze = next(item for item in records if item["reminder_id"] != source["reminder_id"])
+    assert original["status"] == "sent"
+    assert original["scheduled_at"] == delivered_at.isoformat()
+    assert snooze["status"] == "pending"
+    assert snooze["snooze_origin_id"] == source["reminder_id"]
+    assert snooze["recurrence_days"] is None
+
+
+@pytest.mark.anyio
+async def test_snooze_selection_uses_recent_delivery_order_and_never_guesses(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    repository = reminders.base._repository()
+    now = datetime.now(UTC)
+    first = repository.create(
+        "49123", title="الأول", scheduled_at=now - timedelta(minutes=10), language="ar",
+    )
+    second = repository.create(
+        "49123", title="الثاني", scheduled_at=now - timedelta(minutes=5), language="ar",
+    )
+    repository.mark_sent(first["reminder_id"], now=now - timedelta(minutes=10))
+    repository.mark_sent(second["reminder_id"], now=now - timedelta(minutes=5))
+
+    generic = reminders.core.IncomingMessage(
+        "snooze-ambiguous", "49123", "ذكرني بعد 10 دقائق", "text",
+    )
+    store.claim_message(generic.message_id, generic.sender, generic.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(generic)
+        assert "عدة تذكيرات" in send.await_args.args[1]
+        assert "1. الثاني" in send.await_args.args[1]
+
+        selected = reminders.core.IncomingMessage(
+            "snooze-selected", "49123",
+            "ذكرني مرة ثانية بعد 10 دقائق للتذكير 2", "text",
+        )
+        store.claim_message(selected.message_id, selected.sender, selected.text)
+        await reminders.process_incoming(selected)
+        assert "«الأول»" in send.await_args.args[1]
+
+    children = [
+        item for item in repository.list("49123", active_only=False, limit=10)
+        if item.get("snooze_origin_id")
+    ]
+    assert len(children) == 1
+    assert children[0]["snooze_origin_id"] == first["reminder_id"]
 
 
 @pytest.mark.anyio

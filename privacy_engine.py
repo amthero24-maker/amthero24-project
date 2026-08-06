@@ -39,7 +39,7 @@ def _as_datetime(value: Any) -> datetime | None:
 def _safe_reminder(record: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "reminder_id", "mission_id", "title", "language", "timezone", "scheduled_at",
-        "status", "sent_at", "acknowledged_at", "created_at",
+        "status", "sent_at", "acknowledged_at", "snooze_count", "created_at",
     }
     return {
         key: deepcopy(record[key])

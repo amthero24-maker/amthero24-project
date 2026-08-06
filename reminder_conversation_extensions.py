@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,6 +56,7 @@ class ConversationalReminderIntent:
     holiday_region: str = ""
     recurrence_stop: bool = False
     acknowledgement_bare: bool = False
+    snooze_implicit: bool = False
 
 
 _RESCHEDULE_MARKERS = (
@@ -63,6 +64,15 @@ _RESCHEDULE_MARKERS = (
     "غير موعد التذكير", "غيّر موعد التذكير", "verschiebe die erinnerung",
     "erinnerung verschieben", "snooze reminder", "postpone reminder", "move reminder",
     "перенеси нагадування", "μεταφερε την υπενθυμιση",
+)
+
+_SNOOZE_AGAIN_MARKERS = (
+    "ذكرني كمان", "ذكرني مرة ثانية", "ذكرني مره ثانيه",
+    "ذكرني مرة اخرى", "ذكرني مرة أخرى", "ذكرني مره اخرى",
+    "erinnere mich nochmal", "nochmal erinnern", "noch einmal erinnern", "erneut erinnern",
+    "remind me again", "remind me one more time",
+    "нагадай мені ще раз", "нагадай ще раз",
+    "θυμισε μου ξανα", "θυμισε ξανα", "θύμισέ μου ξανά", "θύμισέ ξανά",
 )
 
 _RECURRENCE_STOP_MARKERS = (
@@ -287,14 +297,14 @@ def _clock_hour(raw_hour: int, qualifier: str) -> int | None:
 
 
 def _parse_relative_minutes(normalized: str, current: datetime) -> datetime | None:
-    singular = re.search(r"(?:بعد|in|через|σε)\s+(?:دقيقة|minute|min|хвилину|λεπτο)\b", normalized)
+    singular = re.search(r"(?:بعد|in|через|σε)\s+(?:دقيقة|minute|min|хвилину|λεπτ[όο])\b", normalized)
     if singular:
         return current + timedelta(minutes=1)
-    dual = re.search(r"(?:بعد|in|через|σε)\s+(?:دقيقتين|two minutes|zwei minuten|дві хвилини|δυο λεπτα)\b", normalized)
+    dual = re.search(r"(?:بعد|in|через|σε)\s+(?:دقيقتين|two minutes|zwei minuten|дві хвилини|δ[ύυ]ο λεπτ[άα])\b", normalized)
     if dual:
         return current + timedelta(minutes=2)
     match = re.search(
-        r"(?:بعد|in|через|σε)\s+(\d{1,4})\s*(?:دقيقة|دقائق|دقايق|minuten?|minutes?|mins?|хвилин(?:и)?|λεπτα)",
+        r"(?:بعد|in|через|σε)\s+(\d{1,4})\s*(?:دقيقة|دقائق|دقايق|minuten?|minutes?|mins?|хвилин(?:и)?|λεπτ[άα])",
         normalized,
     )
     if match:
@@ -311,14 +321,14 @@ def _parse_relative_minutes(normalized: str, current: datetime) -> datetime | No
 
 
 def _parse_relative_hours(normalized: str, current: datetime) -> datetime | None:
-    singular = re.search(r"(?:بعد|in|через|σε)\s+(?:ساعة|hour|einer stunde|годину|μια ωρα)\b", normalized)
+    singular = re.search(r"(?:بعد|in|через|σε)\s+(?:ساعة|hour|einer stunde|годину|μ[ίι]α [ώω]ρα)\b", normalized)
     if singular:
         return current + timedelta(hours=1)
-    dual = re.search(r"(?:بعد|in|через|σε)\s+(?:ساعتين|two hours|zwei stunden|дві години|δυο ωρες)\b", normalized)
+    dual = re.search(r"(?:بعد|in|через|σε)\s+(?:ساعتين|two hours|zwei stunden|дві години|δ[ύυ]ο [ώω]ρες)\b", normalized)
     if dual:
         return current + timedelta(hours=2)
     match = re.search(
-        r"(?:بعد|in|через|σε)\s+(\d{1,3})\s*(?:ساعة|ساعات|stunden?|hours?|hrs?|годин(?:и)?|ωρες)",
+        r"(?:بعد|in|через|σε)\s+(\d{1,3})\s*(?:ساعة|ساعات|stunden?|hours?|hrs?|годин(?:и)?|[ώω]ρες)",
         normalized,
     )
     if match:
@@ -335,7 +345,7 @@ def _parse_relative_hours(normalized: str, current: datetime) -> datetime | None
 
 
 def _parse_reschedule_position(normalized: str) -> int | None:
-    match = re.search(r"(?:التذكير|erinnerung|reminder|нагадування|υπενθ[ύυ]μιση)\s*(\d{1,2})\b", normalized)
+    match = re.search(r"(?:التذكير|للتذكير|erinnerung|reminder|нагадування|υπενθ[ύυ]μιση)\s*(\d{1,2})\b", normalized)
     if match:
         return int(match.group(1))
     words = {
@@ -362,10 +372,10 @@ def _parse_reschedule_time(text: str, normalized: str, current: datetime, timezo
     scheduled = _parse_relative_minutes(normalized, current) or _parse_relative_hours(normalized, current)
     if scheduled is not None:
         return scheduled
-    compact = re.search(r"(\d{1,4})\s*(?:دقيقة|دقائق|دقايق|minuten?|minutes?|mins?|хвилин(?:и)?|λεπτα)", normalized)
+    compact = re.search(r"(\d{1,4})\s*(?:دقيقة|دقائق|دقايق|minuten?|minutes?|mins?|хвилин(?:и)?|λεπτ[άα])", normalized)
     if compact and 1 <= int(compact.group(1)) <= 10080:
         return current + timedelta(minutes=int(compact.group(1)))
-    compact = re.search(r"(\d{1,3})\s*(?:ساعة|ساعات|stunden?|hours?|hrs?|годин(?:и)?|ωρες)", normalized)
+    compact = re.search(r"(\d{1,3})\s*(?:ساعة|ساعات|stunden?|hours?|hrs?|годин(?:и)?|[ώω]ρες)", normalized)
     if compact and 1 <= int(compact.group(1)) <= 720:
         return current + timedelta(hours=int(compact.group(1)))
     scheduled = _parse_clock(text, normalized, current, timezone_name)
@@ -410,6 +420,8 @@ def _extract_title(text: str) -> str:
         r"\b(?:الساعة|ساعه)\s*\d{1,2}(?::\d{2})?\s*(?:صباحا|صباح|الصبح|مساء|المسا|ليلا|ليل)?",
         r"\b(?:in\s+\d+\s*(?:minutes?|hours?|days?)|tomorrow|today\s+at\s+\d{1,2}(?::\d{2})?)\b",
         r"\b(?:morgen\s+um\s+\d{1,2}(?::\d{2})?|in\s+\d+\s*(?:minuten?|stunden?|tagen?))\b",
+        r"\b(?:через\s+\d+\s*(?:хвилин(?:и)?|годин(?:и)?))\b",
+        r"\b(?:σε\s+\d+\s*(?:λεπτ[άα]|[ώω]ρε[ςσ]))\b",
         r"\bكل(?:\s+يوم)?\s+(?:[اأإآ]?(?:لاثنين|لثلاثاء|لاربعاء|لأربعاء|لخميس|لجمعة|لسبت|لاحد|لأحد)|(?:اثنين|ثلاثاء|اربعاء|أربعاء|خميس|جمعة|سبت|احد|أحد))(?:\s+و?(?:ال)?(?:اثنين|ثلاثاء|اربعاء|أربعاء|خميس|جمعة|سبت|احد|أحد))*\b",
         r"\bevery\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+(?:and\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))*\b",
         r"\b(?:jeden|jede)\s+(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)(?:\s+(?:und\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))*\b",
@@ -515,6 +527,16 @@ def detect_conversational_reminder_intent(
     current = _local_now(now, timezone_name)
     skip_public_holidays = _holiday_exclusion_requested(normalized)
     holiday_region = _parse_holiday_region(normalized) if skip_public_holidays else ""
+    explicit_snooze = any(
+        _normalize(marker) in normalized for marker in _SNOOZE_AGAIN_MARKERS
+    )
+    if explicit_snooze:
+        return ConversationalReminderIntent(
+            "snooze",
+            scheduled_at=_parse_reschedule_time(text, normalized, current, timezone_name),
+            exact_time=True,
+            position=_parse_reschedule_position(normalized),
+        )
     if any(_normalize(marker) in normalized for marker in _RECURRENCE_STOP_MARKERS):
         return ConversationalReminderIntent(
             "recurrence_update", position=_parse_reschedule_position(normalized), recurrence_stop=True,
@@ -570,6 +592,14 @@ def detect_conversational_reminder_intent(
     title = _extract_title(text)
     if skip_public_holidays:
         title = _strip_holiday_directive(title, holiday_region)
+    if exact and not title and recurrence_days is None:
+        return ConversationalReminderIntent(
+            "snooze",
+            scheduled_at=scheduled,
+            exact_time=True,
+            position=_parse_reschedule_position(normalized),
+            snooze_implicit=True,
+        )
     return ConversationalReminderIntent(
         "create",
         scheduled_at=scheduled,
@@ -748,6 +778,72 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         return
 
     repository = base._repository()
+    if intent.action == "snooze":
+        if not base.reminder_delivery_ready(message.sender):
+            await core._finish(message.message_id, base.reminder_unavailable_message(language), message.sender)
+            return
+        current = datetime.now(UTC)
+        if intent.scheduled_at is None or intent.scheduled_at.astimezone(UTC) <= current:
+            await core._finish(
+                message.message_id,
+                base.reminder_snooze_invalid_message(language),
+                message.sender,
+            )
+            return
+        status, reminder = repository.snooze_recent(
+            message.sender,
+            scheduled_at=intent.scheduled_at,
+            position=intent.position,
+            now=current,
+        )
+        if status == "ambiguous":
+            recent = repository.recent_deliveries(message.sender, now=current, limit=10)
+            await core._finish(
+                message.message_id,
+                base.reminder_snooze_selection_message(language, recent),
+                message.sender,
+            )
+            return
+        if status == "not_found" and intent.snooze_implicit:
+            intent = replace(intent, action="create", snooze_implicit=False)
+        elif status == "not_found":
+            await core._finish(
+                message.message_id,
+                base.reminder_snooze_not_found_message(language),
+                message.sender,
+            )
+            return
+        elif status == "invalid":
+            await core._finish(
+                message.message_id,
+                base.reminder_snooze_invalid_message(language),
+                message.sender,
+            )
+            return
+        elif status == "limit":
+            await core._finish(
+                message.message_id,
+                base.reminder_snooze_limit_message(language),
+                message.sender,
+            )
+            return
+        elif status == "conflict":
+            await core._finish(
+                message.message_id,
+                base.reminder_snooze_conflict_message(language),
+                message.sender,
+            )
+            return
+        elif status in {"snoozed", "existing"}:
+            _clear_pending(message.sender)
+            await core._finish(
+                message.message_id,
+                base.reminder_snoozed_message(
+                    language, reminder, existing=status == "existing",
+                ),
+                message.sender,
+            )
+            return
     if intent.action == "acknowledge":
         status, reminder = repository.acknowledge_recent(
             message.sender, position=intent.position,
