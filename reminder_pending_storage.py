@@ -16,6 +16,8 @@ PENDING_REMINDER_FIELDS = {
     "pending_reminder_recurrence_count",
     "pending_reminder_weekdays_only",
     "pending_reminder_weekdays",
+    "pending_reminder_skip_holidays",
+    "pending_reminder_holiday_region",
 }
 
 data_store._ALLOWED_USER_FIELDS.update(PENDING_REMINDER_FIELDS)
@@ -26,3 +28,5 @@ data_store._FIELD_LIMITS.setdefault("pending_reminder_recurrence_days", 3)
 data_store._FIELD_LIMITS.setdefault("pending_reminder_recurrence_count", 3)
 data_store._FIELD_LIMITS.setdefault("pending_reminder_weekdays_only", 1)
 data_store._FIELD_LIMITS.setdefault("pending_reminder_weekdays", 13)
+data_store._FIELD_LIMITS.setdefault("pending_reminder_skip_holidays", 1)
+data_store._FIELD_LIMITS.setdefault("pending_reminder_holiday_region", 2)

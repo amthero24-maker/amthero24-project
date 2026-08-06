@@ -164,6 +164,63 @@ def test_multilingual_specific_weekdays_are_bounded_and_clean_title(text, count,
     assert intent.title == title
 
 
+@pytest.mark.parametrize(("text", "region", "title"), (
+    (
+        "ذكرني كل اثنين وخميس الساعة 8 اتصل بالمكتب لمدة 6 مرات ما عدا العطل الرسمية في برلين",
+        "BE", "اتصل بالمكتب",
+    ),
+    (
+        "remind me every Monday and Thursday tomorrow call the office for 5 times excluding public holidays in Berlin",
+        "BE", "call the office",
+    ),
+    (
+        "erinnere mich jeden Montag und Donnerstag morgen um 9 Unterlagen prüfen für 4 mal außer an Feiertagen in Bayern",
+        "BY", "unterlagen prüfen",
+    ),
+    (
+        "нагадай мені кожного понеділка і четверга завтра пити воду протягом 5 разів крім державних свят у Берлін",
+        "BE", "пити воду",
+    ),
+    (
+        "θυμισε μου καθε δευτερα και πεμπτη αυριο ελεγξε τα εγγραφα για 4 φορες εκτος δημοσιων αργιων στη Βερολίνο",
+        "BE", "ελεγξε τα εγγραφα",
+    ),
+))
+def test_multilingual_holiday_exclusion_requires_explicit_state(text, region, title) -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        text, now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC"
+    )
+    assert intent is not None
+    assert intent.skip_public_holidays is True
+    assert intent.holiday_region == region
+    assert intent.title == title
+
+
+def test_holiday_exclusion_without_state_never_guesses() -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        "ذكرني كل اثنين الساعة 8 اتصل بالمكتب لمدة 4 مرات ما عدا العطل الرسمية",
+        now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.skip_public_holidays is True
+    assert intent.holiday_region == ""
+    assert reminders._parse_holiday_region("برلين", strict_reply=True) == "BE"
+    assert reminders._parse_holiday_region("ألمانيا", strict_reply=True) == ""
+
+
+@pytest.mark.parametrize(("name", "region"), (
+    ("Baden-Württemberg", "BW"), ("Bavaria", "BY"), ("Berlin", "BE"),
+    ("Brandenburg", "BB"), ("Bremen", "HB"), ("Hamburg", "HH"),
+    ("Hesse", "HE"), ("Mecklenburg-Vorpommern", "MV"),
+    ("Lower Saxony", "NI"), ("North Rhine-Westphalia", "NW"),
+    ("Rhineland-Palatinate", "RP"), ("Saarland", "SL"),
+    ("Saxony", "SN"), ("Saxony-Anhalt", "ST"),
+    ("Schleswig-Holstein", "SH"), ("Thuringia", "TH"),
+))
+def test_all_state_names_are_resolved_without_nested_name_ambiguity(name, region) -> None:
+    assert reminders._parse_holiday_region(name, strict_reply=True) == region
+
+
 def test_weekday_name_without_explicit_recurrence_is_not_repeating() -> None:
     intent = reminders.detect_conversational_reminder_intent(
         "ذكرني بعد ساعة اتصل بمكتب الاثنين",
@@ -463,6 +520,50 @@ async def test_specific_weekdays_followup_preserves_selected_days(tmp_path, monk
     assert created[0]["recurrence_weekdays"] == "0,3"
     assert created[0]["weekdays_only"] is False
     assert "pending_reminder_weekdays" not in store.get_user("49123")
+
+
+@pytest.mark.anyio
+async def test_holiday_region_followup_is_strict_persisted_and_then_creates(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    first = reminders.core.IncomingMessage(
+        "holiday-1", "49123",
+        "ذكرني بعد ساعة كل اثنين اتصل بالمكتب لمدة 4 مرات ما عدا العطل الرسمية",
+        "text",
+    )
+    store.claim_message(first.message_id, first.sender, first.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(first)
+        assert "أي ولاية ألمانية" in send.await_args.args[1]
+        profile = store.get_user("49123")
+        assert profile["pending_reminder_skip_holidays"] == "1"
+        assert profile["pending_reminder_holiday_region"] == ""
+        assert reminders.base._repository().list("49123") == []
+
+        invalid = reminders.core.IncomingMessage("holiday-2", "49123", "ألمانيا", "text")
+        store.claim_message(invalid.message_id, invalid.sender, invalid.text)
+        await reminders.process_incoming(invalid)
+        assert "أي ولاية ألمانية" in send.await_args.args[1]
+        assert reminders.base._repository().list("49123") == []
+
+        valid = reminders.core.IncomingMessage("holiday-3", "49123", "برلين", "text")
+        store.claim_message(valid.message_id, valid.sender, valid.text)
+        await reminders.process_incoming(valid)
+        assert "ولاية برلين" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["holiday_region"] == "BE"
+    assert created[0]["recurrence_weekdays"] == "0"
+    assert "pending_reminder_holiday_region" not in store.get_user("49123")
 
 
 @pytest.mark.anyio

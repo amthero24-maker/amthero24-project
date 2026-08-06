@@ -71,6 +71,7 @@ jobs:
       - name: Reminder system tests
         run: >-
           python -m pytest -q
+          tests/test_german_holidays.py
           tests/test_reminder_engine.py
           tests/test_reminder_extensions.py
           tests/test_reminder_conversation_extensions.py

@@ -17,6 +17,10 @@ from zoneinfo import ZoneInfo
 import reminder_extensions as base
 import reminder_pending_storage  # noqa: F401
 import shared_drain_extensions as composed
+from german_holidays import (
+    GERMAN_STATE_LABELS,
+    canonical_german_state_code,
+)
 from reminder_engine import DEFAULT_TIMEZONE, ReminderIntent, resolve_reminder_schedule
 
 core = composed.core
@@ -27,6 +31,8 @@ _PENDING_RECURRENCE_DAYS = "pending_reminder_recurrence_days"
 _PENDING_RECURRENCE_COUNT = "pending_reminder_recurrence_count"
 _PENDING_WEEKDAYS_ONLY = "pending_reminder_weekdays_only"
 _PENDING_WEEKDAYS = "pending_reminder_weekdays"
+_PENDING_SKIP_HOLIDAYS = "pending_reminder_skip_holidays"
+_PENDING_HOLIDAY_REGION = "pending_reminder_holiday_region"
 _CONVERSATION_TOPICS = {
     "", "unknown", "identity", "capabilities", "languages", "reminders",
     "greeting", "greeting_1", "greeting_2", "greeting_3",
@@ -46,6 +52,8 @@ class ConversationalReminderIntent:
     recurrence_count: int | None = None
     weekdays_only: bool = False
     recurrence_weekdays: tuple[int, ...] = ()
+    skip_public_holidays: bool = False
+    holiday_region: str = ""
     recurrence_stop: bool = False
 
 
@@ -76,6 +84,36 @@ _WEEKDAY_RECURRENCE_MARKERS = (
     "εργασιμες ημερες", "εργάσιμες ημέρες", "καθημερινες", "καθημερινές",
     "καθε μερα εκτος σαββατου και κυριακης",
 )
+
+_PUBLIC_HOLIDAY_MARKERS = (
+    "ما عدا العطل الرسمية", "عدا العطل الرسمية", "باستثناء العطل الرسمية",
+    "بدون العطل الرسمية", "تجاوز العطل الرسمية",
+    "außer an feiertagen", "ausser an feiertagen", "feiertage auslassen",
+    "nicht an feiertagen", "ohne feiertage",
+    "excluding public holidays", "except public holidays", "skip public holidays",
+    "not on public holidays",
+    "крім державних свят", "не у державні свята", "пропускаючи державні свята",
+    "εκτός δημόσιων αργιών", "εκτος δημοσιων αργιων", "χωρίς δημόσιες αργίες",
+)
+
+_STATE_ALTERNATE_ALIASES = {
+    "BW": ("Baden Wurttemberg", "Baden Wuerttemberg", "بادن فورتمبيرغ"),
+    "BY": ("Bayern", "Bavaria", "بافاريا"),
+    "BE": ("Berlin", "برلين"),
+    "BB": ("Brandenburg", "براندنبورغ"),
+    "HB": ("Bremen", "بريمن"),
+    "HH": ("Hamburg", "هامبورغ"),
+    "HE": ("Hessen", "Hesse", "هيسن"),
+    "MV": ("Mecklenburg Vorpommern", "مكلنبورغ فوربومرن"),
+    "NI": ("Niedersachsen", "Lower Saxony", "ساكسونيا السفلى"),
+    "NW": ("Nordrhein Westfalen", "North Rhine Westphalia", "شمال الراين وستفاليا"),
+    "RP": ("Rheinland Pfalz", "Rhineland Palatinate", "راينلاند بالاتينات"),
+    "SL": ("Saarland", "Saar", "سارلاند"),
+    "SN": ("Sachsen", "Saxony", "ساكسونيا"),
+    "ST": ("Sachsen Anhalt", "Saxony Anhalt", "ساكسونيا انهالت"),
+    "SH": ("Schleswig Holstein", "شليسفيغ هولشتاين"),
+    "TH": ("Thüringen", "Thueringen", "Thuringia", "تورينغن"),
+}
 
 _WEEKDAY_TOKENS = {
     # Monday
@@ -119,6 +157,62 @@ def _normalize(text: str) -> str:
     value = value.translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
     value = re.sub(r"[؟،؛!?.,:;]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _holiday_exclusion_requested(normalized: str) -> bool:
+    return any(_normalize(marker) in normalized for marker in _PUBLIC_HOLIDAY_MARKERS)
+
+
+def _state_aliases() -> dict[str, tuple[str, ...]]:
+    aliases: dict[str, tuple[str, ...]] = {}
+    for code, labels in GERMAN_STATE_LABELS.items():
+        values = set(labels.values())
+        values.update(_STATE_ALTERNATE_ALIASES.get(code, ()))
+        aliases[code] = tuple(sorted({_normalize(value) for value in values}, key=len, reverse=True))
+    return aliases
+
+
+_NORMALIZED_STATE_ALIASES = _state_aliases()
+
+
+def _parse_holiday_region(text: str, *, strict_reply: bool = False) -> str:
+    normalized = _normalize(text)
+    if strict_reply:
+        direct_code = canonical_german_state_code(normalized)
+        if direct_code:
+            return direct_code
+        normalized = re.sub(
+            r"^(?:في|ولاية|الولاية|in|state|bundesland|land|у|земля|στη|κρατιδιο)\s+",
+            "",
+            normalized,
+        ).strip()
+    padded = f" {normalized} "
+    matches = [
+        (len(alias), code)
+        for code, aliases in _NORMALIZED_STATE_ALIASES.items()
+        for alias in aliases
+        if f" {alias} " in padded
+    ]
+    if not matches:
+        return ""
+    longest = max(length for length, _ in matches)
+    codes = {code for length, code in matches if length == longest}
+    return next(iter(codes)) if len(codes) == 1 else ""
+
+
+def _strip_holiday_directive(title: str, region: str) -> str:
+    """Remove only the explicit calendar directive from a user-facing title."""
+    value = _normalize(title)
+    for marker in sorted({_normalize(item) for item in _PUBLIC_HOLIDAY_MARKERS}, key=len, reverse=True):
+        value = value.replace(marker, " ")
+    for alias in _NORMALIZED_STATE_ALIASES.get(region, ()):
+        value = re.sub(rf"(?<!\w){re.escape(alias)}(?!\w)", " ", value)
+    value = re.sub(
+        r"(?:\s|^)(?:في|ولاية|الولاية|in|state|bundesland|land|у|земля|στη|κρατιδιο)\s*$",
+        " ",
+        value,
+    )
+    return re.sub(r"\s+", " ", value).strip(" -،.")[:180]
 
 
 def _weekday_number(token: str) -> int | None:
@@ -392,6 +486,8 @@ def detect_conversational_reminder_intent(
 ) -> ConversationalReminderIntent | None:
     normalized = _normalize(text)
     current = _local_now(now, timezone_name)
+    skip_public_holidays = _holiday_exclusion_requested(normalized)
+    holiday_region = _parse_holiday_region(normalized) if skip_public_holidays else ""
     if any(_normalize(marker) in normalized for marker in _RECURRENCE_STOP_MARKERS):
         return ConversationalReminderIntent(
             "recurrence_update", position=_parse_reschedule_position(normalized), recurrence_stop=True,
@@ -407,6 +503,8 @@ def detect_conversational_reminder_intent(
             recurrence_count=recurrence_count,
             weekdays_only=weekdays_only,
             recurrence_weekdays=recurrence_weekdays,
+            skip_public_holidays=skip_public_holidays,
+            holiday_region=holiday_region,
         )
     if any(_normalize(marker) in normalized for marker in _RESCHEDULE_MARKERS):
         return ConversationalReminderIntent(
@@ -435,16 +533,21 @@ def detect_conversational_reminder_intent(
     if scheduled is None:
         scheduled = base_intent.scheduled_at
     recurrence_days, recurrence_count, weekdays_only, recurrence_weekdays = _parse_recurrence(normalized)
+    title = _extract_title(text)
+    if skip_public_holidays:
+        title = _strip_holiday_directive(title, holiday_region)
     return ConversationalReminderIntent(
         "create",
         scheduled_at=scheduled,
         lead_days=base_intent.lead_days,
-        title=_extract_title(text),
+        title=title,
         exact_time=exact,
         recurrence_days=recurrence_days,
         recurrence_count=recurrence_count,
         weekdays_only=weekdays_only,
         recurrence_weekdays=recurrence_weekdays,
+        skip_public_holidays=skip_public_holidays,
+        holiday_region=holiday_region,
     )
 
 
@@ -475,26 +578,31 @@ def _question(language: str, missing: str) -> str:
             "title": "تمام. شو بتحب ذكّرك فيه؟ اكتبها بكلمتين مثل: اتصل بالمكتب.",
             "time": "إيمتى أذكّرك؟ فيك تقول: بعد دقيقة، بعد ساعتين، اليوم الساعة 7، أو بكرا الصبح.",
             "recurrence": "لكم مرة أكرر التذكير؟ مثال: كل يوم الساعة 8 لمدة 7 أيام.",
+            "holiday_region": "أي ولاية ألمانية نعتمد للعطل؟ اكتب اسمها صراحةً، مثل: برلين، بافاريا، أو شمال الراين-وستفاليا. ما رح أخمّن موقعك.",
         },
         "de": {
             "title": "Woran soll ich dich erinnern? Ein kurzer Satz reicht, zum Beispiel: beim Amt anrufen.",
             "time": "Wann soll ich dich erinnern? Zum Beispiel: in einer Minute, in zwei Stunden oder morgen um 9.",
             "recurrence": "Wie oft soll ich erinnern? Zum Beispiel: jeden Tag um 8 Uhr für 7 Tage.",
+            "holiday_region": "Für welches Bundesland sollen landesweite Feiertage ausgelassen werden? Zum Beispiel Berlin, Bayern oder Nordrhein-Westfalen. Ich rate deinen Standort nicht.",
         },
         "en": {
             "title": "What should I remind you about? A few words are enough, for example: call the office.",
             "time": "When should I remind you? You can say: in one minute, in two hours, or tomorrow at 9.",
             "recurrence": "How many times should it repeat? For example: every day at 8 for 7 days.",
+            "holiday_region": "Which German state should I use for state-wide public holidays? For example Berlin, Bavaria, or North Rhine-Westphalia. I will not guess your location.",
         },
         "uk": {
             "title": "Про що нагадати? Достатньо кількох слів, наприклад: зателефонувати до установи.",
             "time": "Коли нагадати? Наприклад: через хвилину, через дві години або завтра о 9.",
             "recurrence": "Скільки разів повторити? Наприклад: щодня о 8 протягом 7 днів.",
+            "holiday_region": "Для якої федеральної землі пропускати загальноземельні свята? Наприклад: Берлін, Баварія або Північний Рейн-Вестфалія. Я не вгадуватиму місце.",
         },
         "el": {
             "title": "Για τι να σου θυμίσω; Αρκούν λίγες λέξεις, π.χ. τηλεφώνησε στην υπηρεσία.",
             "time": "Πότε να σου θυμίσω; Π.χ. σε ένα λεπτό, σε δύο ώρες ή αύριο στις 9.",
             "recurrence": "Πόσες φορές να επαναληφθεί; Π.χ. κάθε μέρα στις 8 για 7 ημέρες.",
+            "holiday_region": "Για ποιο γερμανικό κρατίδιο να παραλείπονται οι αργίες του κρατιδίου; Π.χ. Βερολίνο, Βαυαρία ή Βόρεια Ρηνανία-Βεστφαλία. Δεν θα μαντέψω την τοποθεσία.",
         },
     }
     lang = language if language in messages else "de"
@@ -505,6 +613,7 @@ def _clear_pending(sender: str) -> None:
     core.store.remove_user_fields(sender, {
         _PENDING_AT, _PENDING_TITLE, _PENDING_RECURRENCE_DAYS,
         _PENDING_RECURRENCE_COUNT, _PENDING_WEEKDAYS_ONLY, _PENDING_WEEKDAYS,
+        _PENDING_SKIP_HOLIDAYS, _PENDING_HOLIDAY_REGION,
     })
 
 
@@ -523,6 +632,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     pending_recurrence_count = int(profile.get(_PENDING_RECURRENCE_COUNT) or 0)
     pending_weekdays_only = str(profile.get(_PENDING_WEEKDAYS_ONLY) or "") == "1"
     pending_weekdays = _parse_pending_weekdays(profile.get(_PENDING_WEEKDAYS))
+    pending_skip_holidays = str(profile.get(_PENDING_SKIP_HOLIDAYS) or "") == "1"
+    pending_holiday_region = canonical_german_state_code(profile.get(_PENDING_HOLIDAY_REGION))
 
     intent = None
     if message.message_type == "text":
@@ -542,9 +653,34 @@ async def process_incoming(message: core.IncomingMessage) -> None:
                     recurrence_count=count,
                     weekdays_only=pending_weekdays_only,
                     recurrence_weekdays=pending_weekdays,
+                    skip_public_holidays=pending_skip_holidays,
+                    holiday_region=pending_holiday_region,
                 )
             else:
                 intent = ConversationalReminderIntent("recurrence_clarification")
+        recurrence_ready = (
+            pending_recurrence_days == 0 or pending_recurrence_count >= 2
+        )
+        if (
+            intent is None and pending_skip_holidays and not pending_holiday_region
+            and pending_at and pending_title and recurrence_ready
+        ):
+            region = _parse_holiday_region(message.text, strict_reply=True)
+            if region:
+                intent = ConversationalReminderIntent(
+                    "create",
+                    scheduled_at=datetime.fromisoformat(pending_at),
+                    title=pending_title,
+                    exact_time=True,
+                    recurrence_days=pending_recurrence_days or None,
+                    recurrence_count=pending_recurrence_count or None,
+                    weekdays_only=pending_weekdays_only,
+                    recurrence_weekdays=pending_weekdays,
+                    skip_public_holidays=True,
+                    holiday_region=region,
+                )
+            else:
+                intent = ConversationalReminderIntent("holiday_region_clarification")
         if intent is None and (pending_at or pending_title):
             if pending_at and not pending_title:
                 intent = ConversationalReminderIntent(
@@ -554,6 +690,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
                     recurrence_count=pending_recurrence_count or None,
                     weekdays_only=pending_weekdays_only,
                     recurrence_weekdays=pending_weekdays,
+                    skip_public_holidays=pending_skip_holidays,
+                    holiday_region=pending_holiday_region,
                 )
             elif pending_title and not pending_at:
                 parsed = detect_conversational_reminder_intent("ذكرني " + message.text)
@@ -564,6 +702,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
                         recurrence_count=pending_recurrence_count or parsed.recurrence_count,
                         weekdays_only=pending_weekdays_only or parsed.weekdays_only,
                         recurrence_weekdays=pending_weekdays or parsed.recurrence_weekdays,
+                        skip_public_holidays=pending_skip_holidays or parsed.skip_public_holidays,
+                        holiday_region=pending_holiday_region or parsed.holiday_region,
                     )
 
     if intent is None or stage != "complete":
@@ -577,7 +717,13 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     if intent.action == "recurrence_clarification":
         await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
         return
+    if intent.action == "holiday_region_clarification":
+        await core._finish(message.message_id, _question(language, "holiday_region"), message.sender)
+        return
     if intent.action == "recurrence_update":
+        if intent.skip_public_holidays and not intent.holiday_region:
+            await core._finish(message.message_id, _question(language, "holiday_region"), message.sender)
+            return
         if not intent.recurrence_stop and intent.recurrence_count is None:
             await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
             return
@@ -587,6 +733,11 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             recurrence_count=None if intent.recurrence_stop else intent.recurrence_count,
             weekdays_only=False if intent.recurrence_stop else intent.weekdays_only,
             recurrence_weekdays=None if intent.recurrence_stop else intent.recurrence_weekdays or None,
+            holiday_region=(
+                "" if intent.recurrence_stop
+                else intent.holiday_region if intent.skip_public_holidays
+                else None
+            ),
             position=intent.position,
         )
         if status == "ambiguous":
@@ -670,6 +821,9 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             pending[_PENDING_RECURRENCE_COUNT] = str(intent.recurrence_count or "")
             pending[_PENDING_WEEKDAYS_ONLY] = "1" if intent.weekdays_only else "0"
             pending[_PENDING_WEEKDAYS] = _serialize_weekdays(intent.recurrence_weekdays)
+        if intent.skip_public_holidays:
+            pending[_PENDING_SKIP_HOLIDAYS] = "1"
+            pending[_PENDING_HOLIDAY_REGION] = intent.holiday_region
         core.store.update_user(message.sender, pending)
         await core._finish(message.message_id, _question(language, "time"), message.sender)
         return
@@ -684,6 +838,9 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             pending[_PENDING_RECURRENCE_COUNT] = str(intent.recurrence_count or "")
             pending[_PENDING_WEEKDAYS_ONLY] = "1" if intent.weekdays_only else "0"
             pending[_PENDING_WEEKDAYS] = _serialize_weekdays(intent.recurrence_weekdays)
+        if intent.skip_public_holidays:
+            pending[_PENDING_SKIP_HOLIDAYS] = "1"
+            pending[_PENDING_HOLIDAY_REGION] = intent.holiday_region
         core.store.update_user(message.sender, pending)
         await core._finish(message.message_id, _question(language, "title"), message.sender)
         return
@@ -695,10 +852,28 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             _PENDING_RECURRENCE_COUNT: "",
             _PENDING_WEEKDAYS_ONLY: "1" if intent.weekdays_only else "0",
             _PENDING_WEEKDAYS: _serialize_weekdays(intent.recurrence_weekdays),
+            _PENDING_SKIP_HOLIDAYS: "1" if intent.skip_public_holidays else "0",
+            _PENDING_HOLIDAY_REGION: intent.holiday_region,
             "session_language": language,
             "session_expires_at": core._session_expiry(),
         })
         await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
+        return
+
+    if intent.skip_public_holidays and not intent.holiday_region:
+        core.store.update_user(message.sender, {
+            _PENDING_AT: scheduled_at.isoformat(),
+            _PENDING_TITLE: title,
+            _PENDING_RECURRENCE_DAYS: str(intent.recurrence_days or ""),
+            _PENDING_RECURRENCE_COUNT: str(intent.recurrence_count or ""),
+            _PENDING_WEEKDAYS_ONLY: "1" if intent.weekdays_only else "0",
+            _PENDING_WEEKDAYS: _serialize_weekdays(intent.recurrence_weekdays),
+            _PENDING_SKIP_HOLIDAYS: "1",
+            _PENDING_HOLIDAY_REGION: "",
+            "session_language": language,
+            "session_expires_at": core._session_expiry(),
+        })
+        await core._finish(message.message_id, _question(language, "holiday_region"), message.sender)
         return
 
     _clear_pending(message.sender)
@@ -718,6 +893,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         recurrence_count=intent.recurrence_count,
         weekdays_only=intent.weekdays_only,
         recurrence_weekdays=intent.recurrence_weekdays or None,
+        holiday_region=intent.holiday_region,
     )
     await core._finish(message.message_id, base.reminder_created_message(language, reminder), message.sender)
 
