@@ -60,8 +60,10 @@ def _queue_check(queue_enabled: bool) -> dict[str, object]:
 
 
 def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, object]:
-    """Apply only the explicitly limited, read-only Controlled Canary scope."""
+    """Apply only the explicitly limited Controlled Canary launch scope."""
     reminders_enabled = _flag("REMINDER_WORKER_ENABLED", False)
+    reminder_canary = bool(os.getenv("REMINDER_CANARY_SENDERS", "").strip())
+    reminder_template = bool(os.getenv("WHATSAPP_REMINDER_TEMPLATE", "").strip())
     queue_enabled = _flag("DURABLE_QUEUE_ENABLED", False)
     checks = report.get("checks")
     if not isinstance(checks, list):
@@ -84,6 +86,18 @@ def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, objec
                 "code": code,
                 "status": "ready",
                 "detail": "Reminder delivery is outside the current Controlled Canary scope.",
+            }
+        elif (
+            reminders_enabled
+            and reminder_canary
+            and not reminder_template
+            and code == "reminder_delivery"
+            and item.get("status") == "warning"
+        ):
+            item = {
+                "code": code,
+                "status": "ready",
+                "detail": "Reminder delivery is ready for the exact-sender Canary inside the 24-hour service window; long-term template rollout remains outside this scope.",
             }
         elif code == "durable_queue":
             queue_seen = True
