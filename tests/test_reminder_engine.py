@@ -216,6 +216,89 @@ def test_specific_weekdays_move_first_date_and_reschedule_to_next_selected_day(t
     assert moved["scheduled_at"] == datetime(2026, 11, 2, 9, tzinfo=UTC).isoformat()
 
 
+def test_statewide_holiday_schedule_skips_to_next_selected_weekday(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    easter_monday = datetime(2026, 4, 6, 6, tzinfo=UTC)  # 08:00 Europe/Berlin
+    reminder = repository.create(
+        "491234567",
+        title="Office",
+        scheduled_at=easter_monday,
+        language="en",
+        recurrence_days=1,
+        recurrence_count=3,
+        recurrence_weekdays=(0,),
+        holiday_region="BE",
+    )
+
+    assert reminder["holiday_region"] == "BE"
+    assert reminder["scheduled_at"] == datetime(2026, 4, 13, 6, tzinfo=UTC).isoformat()
+
+    repository.mark_sent(reminder["reminder_id"], now=datetime(2026, 4, 13, 6, tzinfo=UTC))
+    active = repository.list("491234567")
+    assert active[0]["scheduled_at"] == datetime(2026, 4, 20, 6, tzinfo=UTC).isoformat()
+    assert active[0]["recurrence_remaining"] == 2
+
+
+def test_statewide_holiday_schedule_combines_with_weekdays_and_reschedule(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    christmas = datetime(2026, 12, 25, 7, tzinfo=UTC)  # Friday, 08:00 Europe/Berlin
+    reminder = repository.create(
+        "491234567",
+        title="Workday office",
+        scheduled_at=christmas,
+        language="en",
+        recurrence_days=1,
+        recurrence_count=3,
+        weekdays_only=True,
+        holiday_region="BE",
+    )
+    assert reminder["scheduled_at"] == datetime(2026, 12, 28, 7, tzinfo=UTC).isoformat()
+
+    status, moved = repository.reschedule(
+        "491234567", scheduled_at=datetime(2027, 1, 1, 7, tzinfo=UTC),
+    )
+    assert status == "updated"
+    assert moved["scheduled_at"] == datetime(2027, 1, 4, 7, tzinfo=UTC).isoformat()
+
+
+def test_weekly_holiday_schedule_preserves_anchor_weekday(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    christmas_friday = datetime(2026, 12, 25, 7, tzinfo=UTC)
+    reminder = repository.create(
+        "491234567",
+        title="Weekly office",
+        scheduled_at=christmas_friday,
+        language="en",
+        recurrence_days=7,
+        recurrence_count=3,
+        holiday_region="BE",
+    )
+
+    assert reminder["scheduled_at"] == datetime(2027, 1, 8, 7, tzinfo=UTC).isoformat()
+
+
+def test_holiday_region_is_strict_and_changes_dedupe_semantics(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    scheduled = datetime(2026, 8, 10, 7, tzinfo=UTC)
+    normal = repository.create(
+        "491234567", title="Office", scheduled_at=scheduled, language="en",
+    )
+    holiday_aware = repository.create(
+        "491234567", title="Office", scheduled_at=scheduled, language="en", holiday_region="BE",
+    )
+    assert normal["reminder_id"] != holiday_aware["reminder_id"]
+
+    with pytest.raises(ReminderServiceError, match="invalid_holiday_region"):
+        repository.create(
+            "491234567", title="Unsafe", scheduled_at=scheduled, language="en",
+            holiday_region="DE-BE",
+        )
+
+
 @pytest.mark.parametrize(("language", "expected"), (
     ("ar", "الاثنين والخميس"),
     ("de", "Montag und Donnerstag"),
@@ -237,6 +320,29 @@ def test_specific_weekday_messages_name_selected_days(language, expected) -> Non
     assert expected in reminder_created_message(language, reminder)
     assert expected in reminder_list_message(language, [reminder])
     assert expected in reminder_recurrence_updated_message(language, reminder)
+
+
+@pytest.mark.parametrize(("language", "expected"), (
+    ("ar", "ولاية برلين"),
+    ("de", "Feiertage in Berlin"),
+    ("en", "public holidays in Berlin"),
+    ("uk", "землі Берлін"),
+    ("el", "κρατιδίου Βερολίνο"),
+))
+def test_holiday_scope_is_visible_in_messages(language, expected) -> None:
+    reminder = {
+        "title": "Office",
+        "scheduled_at": datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat(),
+        "timezone": "Europe/Berlin",
+        "recurrence_days": 1,
+        "recurrence_remaining": 6,
+        "weekdays_only": True,
+        "recurrence_weekdays": "",
+        "holiday_region": "BE",
+    }
+
+    assert expected in reminder_created_message(language, reminder)
+    assert "Berlin" in reminder_list_message("de", [reminder])
 
 
 def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
@@ -342,6 +448,36 @@ def test_update_to_specific_weekdays_moves_both_schedule_fields(tmp_path, monkey
         "491234567", recurrence_days=1, recurrence_count=6,
         recurrence_weekdays=(),
     )[0] == "invalid"
+
+
+def test_recurrence_update_preserves_or_explicitly_changes_holiday_region(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    repository.create(
+        "491234567",
+        title="Office",
+        scheduled_at=datetime(2026, 8, 10, 7, tzinfo=UTC),
+        language="en",
+        holiday_region="BE",
+    )
+
+    status, preserved = repository.update_recurrence(
+        "491234567", recurrence_days=1, recurrence_count=4,
+    )
+    assert status == "updated"
+    assert preserved["holiday_region"] == "BE"
+
+    status, changed = repository.update_recurrence(
+        "491234567", recurrence_days=1, recurrence_count=5, holiday_region="NW",
+    )
+    assert status == "updated"
+    assert changed["holiday_region"] == "NW"
+
+    status, stopped = repository.update_recurrence(
+        "491234567", recurrence_days=None, recurrence_count=None, holiday_region="",
+    )
+    assert status == "updated"
+    assert stopped["holiday_region"] == ""
 
 
 def test_service_window_uses_last_inbound_activity() -> None:

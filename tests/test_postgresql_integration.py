@@ -442,6 +442,33 @@ def test_postgres_specific_weekdays_advance_atomically() -> None:
     assert active[0]["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
 
 
+def test_postgres_statewide_holiday_schedule_advances_atomically() -> None:
+    store = _store()
+    phone = "+49164" + uuid4().hex[:8]
+    repository = ReminderRepository(store)
+    easter_monday = datetime(2026, 4, 6, 6, tzinfo=UTC)
+    reminder = repository.create(
+        phone,
+        title="Holiday-aware integration reminder",
+        scheduled_at=easter_monday,
+        language="de",
+        recurrence_days=1,
+        recurrence_count=4,
+        recurrence_weekdays=(0,),
+        holiday_region="BE",
+    )
+
+    assert reminder["holiday_region"] == "BE"
+    assert reminder["scheduled_at"] == datetime(2026, 4, 13, 6, tzinfo=UTC).isoformat()
+    repository.mark_sent(reminder["reminder_id"], now=datetime(2026, 4, 13, 6, tzinfo=UTC))
+
+    active = repository.list(phone)
+    assert len(active) == 1
+    assert active[0]["holiday_region"] == "BE"
+    assert active[0]["recurrence_remaining"] == 3
+    assert active[0]["scheduled_at"] == datetime(2026, 4, 20, 6, tzinfo=UTC).isoformat()
+
+
 def test_reminder_ciphertext_migration_is_atomic_and_idempotent() -> None:
     store = _store()
     database_url = os.environ["DATABASE_URL"]
