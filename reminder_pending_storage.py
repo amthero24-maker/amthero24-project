@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import data_store
 
-PENDING_REMINDER_FIELDS = {"pending_reminder_at", "pending_reminder_title"}
+PENDING_REMINDER_FIELDS = {
+    "pending_reminder_at",
+    "pending_reminder_title",
+    "pending_reminder_recurrence_days",
+}
 
 data_store._ALLOWED_USER_FIELDS.update(PENDING_REMINDER_FIELDS)
 data_store._SESSION_FIELDS.update(PENDING_REMINDER_FIELDS)
 data_store._FIELD_LIMITS.setdefault("pending_reminder_at", 64)
 data_store._FIELD_LIMITS.setdefault("pending_reminder_title", 180)
+data_store._FIELD_LIMITS.setdefault("pending_reminder_recurrence_days", 3)
