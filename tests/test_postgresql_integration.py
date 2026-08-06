@@ -394,6 +394,46 @@ def test_postgres_recurring_reminder_advances_atomically() -> None:
     assert datetime.fromisoformat(active[0]["scheduled_at"]) > first
 
 
+def test_postgres_reminder_acknowledgement_is_atomic_and_recipient_scoped() -> None:
+    store = _store()
+    phone = "+49165" + uuid4().hex[:8]
+    other_phone = "+49166" + uuid4().hex[:8]
+    repository = ReminderRepository(store)
+    delivered_at = datetime.now(UTC)
+    reminder = repository.create(
+        phone,
+        title="Acknowledgement integration reminder",
+        scheduled_at=delivered_at,
+        language="de",
+    )
+    repository.mark_sent(reminder["reminder_id"], now=delivered_at)
+
+    status, acknowledged = repository.acknowledge_recent(
+        phone, now=delivered_at + timedelta(minutes=1),
+    )
+
+    assert status == "acknowledged"
+    assert acknowledged["status"] == "acknowledged"
+    assert acknowledged["acknowledged_sent_at"] == delivered_at.isoformat()
+    assert repository.acknowledge_recent(
+        phone, now=delivered_at + timedelta(minutes=2),
+    )[0] == "already"
+    assert repository.acknowledge_recent(
+        other_phone, now=delivered_at + timedelta(minutes=2),
+    )[0] == "not_found"
+    with store.pool.connection() as connection:
+        row = connection.execute(
+            """
+            SELECT status, acknowledged_at, acknowledged_sent_at
+            FROM hero_reminders WHERE reminder_id = %s
+            """,
+            (reminder["reminder_id"],),
+        ).fetchone()
+    assert row["status"] == "acknowledged"
+    assert row["acknowledged_at"] is not None
+    assert row["acknowledged_sent_at"] == delivered_at
+
+
 def test_postgres_weekday_reminder_skips_weekend_atomically() -> None:
     store = _store()
     phone = "+49162" + uuid4().hex[:8]

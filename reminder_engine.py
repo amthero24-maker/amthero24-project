@@ -34,6 +34,7 @@ logger = logging.getLogger("amthero24.reminders")
 SUPPORTED_LANGUAGES = {"de", "ar", "en", "uk", "el"}
 DEFAULT_TIMEZONE = "Europe/Berlin"
 SERVICE_WINDOW = timedelta(hours=24)
+ACKNOWLEDGEMENT_WINDOW_HOURS = 24
 
 
 class ReminderServiceError(RuntimeError):
@@ -358,6 +359,8 @@ class ReminderRepository:
                 weekdays_only BOOLEAN NOT NULL DEFAULT FALSE,
                 recurrence_weekdays TEXT NOT NULL DEFAULT '',
                 holiday_region TEXT NOT NULL DEFAULT '',
+                acknowledged_at TIMESTAMPTZ,
+                acknowledged_sent_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
@@ -367,6 +370,8 @@ class ReminderRepository:
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS weekdays_only BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS recurrence_weekdays TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS holiday_region TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ",
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS acknowledged_sent_at TIMESTAMPTZ",
             """
             CREATE INDEX IF NOT EXISTS hero_reminders_due_idx
             ON hero_reminders (status, next_attempt_at, scheduled_at)
@@ -374,6 +379,10 @@ class ReminderRepository:
             """
             CREATE INDEX IF NOT EXISTS hero_reminders_phone_idx
             ON hero_reminders (phone_hash, status, scheduled_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS hero_reminders_ack_idx
+            ON hero_reminders (phone_hash, sent_at DESC)
             """,
         )
         with self.store.pool.connection() as connection:
@@ -469,6 +478,8 @@ class ReminderRepository:
             "weekdays_only": weekday_schedule,
             "recurrence_weekdays": specific_weekdays,
             "holiday_region": region,
+            "acknowledged_at": None,
+            "acknowledged_sent_at": None,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -972,6 +983,137 @@ class ReminderRepository:
 
         return self.store._transaction(claim_json)
 
+    @staticmethod
+    def _delivery_is_acknowledged(item: dict[str, Any]) -> bool:
+        sent_at = _parse_datetime(item.get("sent_at"))
+        acknowledged_sent_at = _parse_datetime(item.get("acknowledged_sent_at"))
+        return bool(sent_at and acknowledged_sent_at and sent_at == acknowledged_sent_at)
+
+    def recent_deliveries(
+        self,
+        phone: str,
+        *,
+        now: datetime | None = None,
+        within_hours: int = ACKNOWLEDGEMENT_WINDOW_HOURS,
+        limit: int = 10,
+        unacknowledged_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """List bounded recent deliveries for the same recipient, newest first."""
+        key = _phone_hash(phone)
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        cutoff = current - timedelta(hours=max(1, min(int(within_hours), 168)))
+        safe_limit = max(1, min(int(limit), 30))
+        statuses = ("sent", "pending", "acknowledged")
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM hero_reminders
+                    WHERE phone_hash = %s AND sent_at IS NOT NULL AND sent_at >= %s
+                      AND status = ANY(%s)
+                    ORDER BY sent_at DESC, reminder_id ASC LIMIT %s
+                    """,
+                    (key, cutoff, list(statuses), safe_limit),
+                ).fetchall()
+            records = [self._from_row(row) for row in rows]
+        else:
+            records = []
+            for item in self.store.snapshot().get("reminders", {}).values():
+                if not isinstance(item, dict) or item.get("phone_hash") != key:
+                    continue
+                if item.get("status") not in statuses:
+                    continue
+                sent_at = _parse_datetime(item.get("sent_at"))
+                if sent_at is not None and sent_at >= cutoff:
+                    records.append(deepcopy(item))
+            records.sort(key=lambda item: str(item.get("sent_at") or ""), reverse=True)
+            records = records[:safe_limit]
+        if unacknowledged_only:
+            records = [item for item in records if not self._delivery_is_acknowledged(item)]
+        return records
+
+    def acknowledge_recent(
+        self,
+        phone: str,
+        *,
+        position: int | None = None,
+        now: datetime | None = None,
+        within_hours: int = ACKNOWLEDGEMENT_WINDOW_HOURS,
+    ) -> tuple[str, dict[str, Any]]:
+        """Acknowledge exactly one recent delivery without guessing or double-writing."""
+        if position is not None and not 1 <= int(position) <= 30:
+            return "not_found", {}
+        key = _phone_hash(phone)
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        cutoff = current - timedelta(hours=max(1, min(int(within_hours), 168)))
+        statuses = ("sent", "pending", "acknowledged")
+
+        def select(records: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+            if position is not None:
+                index = int(position) - 1
+                if index >= len(records):
+                    return "not_found", {}
+                selected = records[index]
+                if self._delivery_is_acknowledged(selected):
+                    return "already", selected
+                return "selected", selected
+            candidates = [item for item in records if not self._delivery_is_acknowledged(item)]
+            if not candidates:
+                return ("already", records[0]) if records else ("not_found", {})
+            if len(candidates) != 1:
+                return "ambiguous", {}
+            return "selected", candidates[0]
+
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM hero_reminders
+                    WHERE phone_hash = %s AND sent_at IS NOT NULL AND sent_at >= %s
+                      AND status = ANY(%s)
+                    ORDER BY sent_at DESC, reminder_id ASC LIMIT 30 FOR UPDATE
+                    """,
+                    (key, cutoff, list(statuses)),
+                ).fetchall()
+                records = [dict(row) for row in rows]
+                status, selected = select(records)
+                if status != "selected":
+                    return status, self._from_row(selected)
+                row = connection.execute(
+                    """
+                    UPDATE hero_reminders
+                    SET status = CASE WHEN status = 'sent' THEN 'acknowledged' ELSE status END,
+                        acknowledged_at = %s, acknowledged_sent_at = sent_at, updated_at = NOW()
+                    WHERE reminder_id = %s
+                    RETURNING *
+                    """,
+                    (current, selected["reminder_id"]),
+                ).fetchone()
+            return "acknowledged", self._from_row(row)
+
+        def acknowledge_json(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            records = []
+            for item in data.setdefault("reminders", {}).values():
+                if not isinstance(item, dict) or item.get("phone_hash") != key:
+                    continue
+                if item.get("status") not in statuses:
+                    continue
+                sent_at = _parse_datetime(item.get("sent_at"))
+                if sent_at is not None and sent_at >= cutoff:
+                    records.append(item)
+            records.sort(key=lambda item: str(item.get("sent_at") or ""), reverse=True)
+            status, selected = select(records[:30])
+            if status != "selected":
+                return status, deepcopy(selected)
+            if selected.get("status") == "sent":
+                selected["status"] = "acknowledged"
+            selected["acknowledged_at"] = current.isoformat()
+            selected["acknowledged_sent_at"] = str(selected.get("sent_at") or "")
+            selected["updated_at"] = current.isoformat()
+            return "acknowledged", deepcopy(selected)
+
+        return self.store._transaction(acknowledge_json)
+
     def mark_sent(self, reminder_id: str, *, now: datetime | None = None) -> None:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         if self._advance_recurrence(reminder_id, current):
@@ -1105,7 +1247,10 @@ class ReminderRepository:
         if not row:
             return {}
         result = dict(row)
-        for field in ("scheduled_at", "next_attempt_at", "lease_until", "sent_at", "created_at", "updated_at"):
+        for field in (
+            "scheduled_at", "next_attempt_at", "lease_until", "sent_at",
+            "acknowledged_at", "acknowledged_sent_at", "created_at", "updated_at",
+        ):
             value = result.get(field)
             if isinstance(value, datetime):
                 result[field] = value.astimezone(UTC).isoformat()
@@ -1133,11 +1278,11 @@ def render_reminder(language: str, title: str) -> str:
     lang = language if language in SUPPORTED_LANGUAGES else "de"
     clean_title = _clean(title, 180)
     return {
-        "ar": f"تذكير لطيف 📅 عندك متابعة بخصوص «{clean_title}». افتح المحادثة واكتبلي شو صار، ومنكمل من آخر خطوة.",
-        "de": f"Kleine Erinnerung 📅 Du hast eine offene متابعة zu „{clean_title}“. Schreib kurz, was passiert ist, dann machen wir beim letzten Schritt weiter.",
-        "en": f"A quick reminder 📅 You have a follow-up for “{clean_title}”. Tell me what happened and we will continue from the last step.",
-        "uk": f"Нагадування 📅 У тебе є подальша дія щодо «{clean_title}». Напиши, що сталося, і продовжимо з останнього кроку.",
-        "el": f"Μικρή υπενθύμιση 📅 Έχεις συνέχεια για «{clean_title}». Γράψε μου τι έγινε και συνεχίζουμε από το τελευταίο βήμα.",
+        "ar": f"تذكير لطيف 📅 عندك متابعة بخصوص «{clean_title}». لما تخلص اكتب «تم التذكير»، أو اكتبلي شو صار ومنكمل من آخر خطوة.",
+        "de": f"Kleine Erinnerung 📅 Du hast eine offene Aufgabe zu „{clean_title}“. Wenn du fertig bist, antworte mit „Erinnerung erledigt“, oder schreib kurz, was passiert ist.",
+        "en": f"A quick reminder 📅 You have a follow-up for “{clean_title}”. Reply “reminder done” when finished, or tell me what happened.",
+        "uk": f"Нагадування 📅 У тебе є подальша дія щодо «{clean_title}». Коли завершиш, напиши «нагадування виконано», або розкажи, що сталося.",
+        "el": f"Μικρή υπενθύμιση 📅 Έχεις συνέχεια για «{clean_title}». Όταν τελειώσεις, γράψε «η υπενθύμιση ολοκληρώθηκε» ή πες μου τι έγινε.",
     }[lang]
 
 
@@ -1343,6 +1488,70 @@ def reminder_list_message(language: str, reminders: list[dict[str, Any]]) -> str
         "uk": "Твої активні нагадування:", "el": "Οι ενεργές υπενθυμίσεις σου:",
     }.get(language, "Active reminders:")
     return heading + "\n" + "\n".join(lines)
+
+
+def reminder_acknowledgement_selection_message(
+    language: str, reminders: list[dict[str, Any]],
+) -> str:
+    prefix = {
+        "ar": "وصلتك عدة تذكيرات مؤخرًا. حدّد الرقم، مثل: «تم التذكير 2».\n",
+        "de": "Du hast mehrere Erinnerungen erhalten. Nenne die Nummer, z. B. „Erinnerung 2 erledigt“.\n",
+        "en": "You received several reminders. Include the number, for example: “reminder 2 done”.\n",
+        "uk": "Ти отримав кілька нагадувань. Вкажи номер, наприклад: «нагадування 2 виконано».\n",
+        "el": "Έλαβες πολλές υπενθυμίσεις. Βάλε τον αριθμό, π.χ. «η υπενθύμιση 2 ολοκληρώθηκε».\n",
+    }.get(language, "Choose a recent reminder number.\n")
+    lines = []
+    for index, reminder in enumerate(reminders, start=1):
+        sent_at = _parse_datetime(reminder.get("sent_at")) or datetime.now(UTC)
+        acknowledged_sent_at = _parse_datetime(reminder.get("acknowledged_sent_at"))
+        try:
+            local = sent_at.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
+        except (KeyError, ValueError):
+            local = sent_at.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+        acknowledged = " ✓" if acknowledged_sent_at == sent_at else ""
+        lines.append(f"{index}. {reminder.get('title')} — {local.strftime('%d.%m.%Y %H:%M')}{acknowledged}")
+    return prefix + "\n".join(lines)
+
+
+def reminder_acknowledged_message(language: str, reminder: dict[str, Any]) -> str:
+    title = str(reminder.get("title") or "")
+    recurring = str(reminder.get("status") or "") == "pending"
+    if recurring:
+        return {
+            "ar": f"تم ✅ سجّلت إنجاز آخر تذكير بخصوص «{title}»، والتكرار القادم بقي فعّالًا.",
+            "de": f"Erledigt ✅ Die letzte Erinnerung zu „{title}“ ist bestätigt; die nächste Wiederholung bleibt aktiv.",
+            "en": f"Done ✅ The latest “{title}” reminder is acknowledged; the next recurrence remains active.",
+            "uk": f"Готово ✅ Останнє нагадування «{title}» підтверджено; наступне повторення залишається активним.",
+            "el": f"Έγινε ✅ Η τελευταία υπενθύμιση «{title}» επιβεβαιώθηκε· η επόμενη επανάληψη παραμένει ενεργή.",
+        }.get(language, f"The latest reminder for {title} is acknowledged.")
+    return {
+        "ar": f"تم ✅ سجّلت إنجاز تذكير «{title}».",
+        "de": f"Erledigt ✅ Die Erinnerung „{title}“ ist bestätigt.",
+        "en": f"Done ✅ The “{title}” reminder is acknowledged.",
+        "uk": f"Готово ✅ Нагадування «{title}» підтверджено.",
+        "el": f"Έγινε ✅ Η υπενθύμιση «{title}» επιβεβαιώθηκε.",
+    }.get(language, f"Reminder {title} acknowledged.")
+
+
+def reminder_already_acknowledged_message(language: str, reminder: dict[str, Any]) -> str:
+    title = str(reminder.get("title") or "")
+    return {
+        "ar": f"مسجّل عندي أصلًا ✅ آخر تذكير بخصوص «{title}» منجَز.",
+        "de": f"Bereits gespeichert ✅ Die letzte Erinnerung zu „{title}“ ist schon bestätigt.",
+        "en": f"Already recorded ✅ The latest “{title}” reminder is acknowledged.",
+        "uk": f"Уже записано ✅ Останнє нагадування «{title}» підтверджено.",
+        "el": f"Έχει ήδη καταγραφεί ✅ Η τελευταία υπενθύμιση «{title}» επιβεβαιώθηκε.",
+    }.get(language, "That reminder is already acknowledged.")
+
+
+def reminder_acknowledgement_not_found_message(language: str) -> str:
+    return {
+        "ar": "ما لقيت تذكيرًا مُرسلًا خلال آخر 24 ساعة حتى أسجّل إنجازه.",
+        "de": "Ich habe in den letzten 24 Stunden keine gesendete Erinnerung zum Bestätigen gefunden.",
+        "en": "I found no sent reminder from the last 24 hours to acknowledge.",
+        "uk": "Не знайдено надісланого нагадування за останні 24 години для підтвердження.",
+        "el": "Δεν βρήκα απεσταλμένη υπενθύμιση των τελευταίων 24 ωρών για επιβεβαίωση.",
+    }.get(language, "No recent delivered reminder found.")
 
 
 def reminder_cancelled_message(language: str, count: int) -> str:

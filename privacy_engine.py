@@ -37,7 +37,10 @@ def _as_datetime(value: Any) -> datetime | None:
 
 
 def _safe_reminder(record: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"reminder_id", "mission_id", "title", "language", "timezone", "scheduled_at", "status", "sent_at", "created_at"}
+    allowed = {
+        "reminder_id", "mission_id", "title", "language", "timezone", "scheduled_at",
+        "status", "sent_at", "acknowledged_at", "created_at",
+    }
     return {
         key: deepcopy(record[key])
         for key in allowed
@@ -162,7 +165,7 @@ def cleanup_retention(
             reminder_cursor = connection.execute(
                 """
                 DELETE FROM hero_reminders
-                WHERE (status IN ('sent', 'cancelled') AND updated_at < %s)
+                WHERE (status IN ('sent', 'acknowledged', 'cancelled') AND updated_at < %s)
                    OR (status IN ('failed', 'blocked_template') AND updated_at < %s)
                 """,
                 (delivered_cutoff, failed_cutoff),
@@ -189,7 +192,7 @@ def cleanup_retention(
             updated = _as_datetime(record.get("updated_at"))
             status = str(record.get("status") or "")
             if updated and (
-                (status in {"sent", "cancelled"} and updated < delivered_cutoff)
+                (status in {"sent", "acknowledged", "cancelled"} and updated < delivered_cutoff)
                 or (status in {"failed", "blocked_template"} and updated < failed_cutoff)
             ):
                 removable_reminders.append(reminder_id)

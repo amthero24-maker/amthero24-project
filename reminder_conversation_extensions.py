@@ -55,6 +55,7 @@ class ConversationalReminderIntent:
     skip_public_holidays: bool = False
     holiday_region: str = ""
     recurrence_stop: bool = False
+    acknowledgement_bare: bool = False
 
 
 _RESCHEDULE_MARKERS = (
@@ -94,6 +95,21 @@ _PUBLIC_HOLIDAY_MARKERS = (
     "not on public holidays",
     "крім державних свят", "не у державні свята", "пропускаючи державні свята",
     "εκτός δημόσιων αργιών", "εκτος δημοσιων αργιων", "χωρίς δημόσιες αργίες",
+)
+
+_ACKNOWLEDGEMENT_BARE_REPLIES = {
+    "تم", "خلص", "انجزت", "أنجزت", "done", "completed", "erledigt", "fertig",
+    "готово", "виконано", "έγινε", "ολοκληρώθηκε",
+}
+_ACKNOWLEDGEMENT_PATTERNS = (
+    r"^(?:تم|انجزت|أنجزت|خلصت)(?:\s+من)?\s+(?:هذا\s+)?التذكير(?:\s+(?:رقم\s+)?(?:\d{1,2}|الأول|الاول|الثاني|الثالث|الرابع|الخامس))?$",
+    r"^التذكير(?:\s+(?:رقم\s+)?(?:\d{1,2}|الأول|الاول|الثاني|الثالث|الرابع|الخامس))?\s+(?:تم|منجز|خلص)$",
+    r"^(?:reminder)(?:\s+(?:number\s+)?(?:\d{1,2}|first|second|third|fourth|fifth))?\s+(?:done|completed)$",
+    r"^(?:done|completed)(?:\s+with)?\s+(?:reminder)(?:\s+(?:number\s+)?(?:\d{1,2}|first|second|third|fourth|fifth))?$",
+    r"^(?:erinnerung)(?:\s+(?:nummer\s+)?(?:\d{1,2}|erste[n]?|zweite[n]?|dritte[n]?))?\s+(?:erledigt|fertig)$",
+    r"^(?:erledigt|fertig)(?:\s+mit)?\s+(?:erinnerung)(?:\s+(?:nummer\s+)?(?:\d{1,2}|erste[n]?|zweite[n]?|dritte[n]?))?$",
+    r"^нагадування(?:\s+\d{1,2})?\s+(?:виконано|готово)$",
+    r"^(?:η\s+)?υπενθ[ύυ]μιση(?:\s+\d{1,2})?\s+(?:ολοκληρ[ώω]θηκε|έγινε)$",
 )
 
 _STATE_ALTERNATE_ALIASES = {
@@ -319,10 +335,14 @@ def _parse_relative_hours(normalized: str, current: datetime) -> datetime | None
 
 
 def _parse_reschedule_position(normalized: str) -> int | None:
-    match = re.search(r"(?:التذكير|erinnerung|reminder|нагадування|υπενθυμιση)\s*(\d{1,2})\b", normalized)
+    match = re.search(r"(?:التذكير|erinnerung|reminder|нагадування|υπενθ[ύυ]μιση)\s*(\d{1,2})\b", normalized)
     if match:
         return int(match.group(1))
-    words = {"الاول": 1, "الأول": 1, "الثاني": 2, "الثالث": 3, "first": 1, "second": 2, "third": 3}
+    words = {
+        "الاول": 1, "الأول": 1, "الثاني": 2, "الثالث": 3, "الرابع": 4, "الخامس": 5,
+        "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+        "erste": 1, "ersten": 1, "zweite": 2, "zweiten": 2, "dritte": 3, "dritten": 3,
+    }
     return next((number for word, number in words.items() if word in normalized), None)
 
 
@@ -478,6 +498,13 @@ def _parse_pending_weekdays(value: Any) -> tuple[int, ...]:
     return weekdays if weekdays and all(0 <= weekday <= 6 for weekday in weekdays) else ()
 
 
+def _parse_acknowledgement(normalized: str) -> tuple[bool, bool]:
+    compact = re.sub(r"[✅☑✔\ufe0f]+", "", normalized).strip()
+    if compact in {_normalize(value) for value in _ACKNOWLEDGEMENT_BARE_REPLIES}:
+        return True, True
+    return any(re.fullmatch(pattern, compact) for pattern in _ACKNOWLEDGEMENT_PATTERNS), False
+
+
 def detect_conversational_reminder_intent(
     text: str,
     *,
@@ -512,6 +539,13 @@ def detect_conversational_reminder_intent(
             scheduled_at=_parse_reschedule_time(text, normalized, current, timezone_name),
             exact_time=True,
             position=_parse_reschedule_position(normalized),
+        )
+    acknowledgement, bare_acknowledgement = _parse_acknowledgement(normalized)
+    if acknowledgement:
+        return ConversationalReminderIntent(
+            "acknowledge",
+            position=_parse_reschedule_position(normalized),
+            acknowledgement_bare=bare_acknowledgement,
         )
     base_intent = base.detect_reminder_intent(base._command_text(text), now=now, timezone_name=timezone_name)
     if base_intent is None:
@@ -714,6 +748,43 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         return
 
     repository = base._repository()
+    if intent.action == "acknowledge":
+        status, reminder = repository.acknowledge_recent(
+            message.sender, position=intent.position,
+        )
+        if status == "ambiguous":
+            recent = repository.recent_deliveries(
+                message.sender, limit=10,
+            )
+            await core._finish(
+                message.message_id,
+                base.reminder_acknowledgement_selection_message(language, recent),
+                message.sender,
+            )
+            return
+        if status in {"not_found", "already"} and intent.acknowledgement_bare:
+            await _ORIGINAL_PROCESS_INCOMING(message)
+            return
+        if status == "not_found":
+            await core._finish(
+                message.message_id,
+                base.reminder_acknowledgement_not_found_message(language),
+                message.sender,
+            )
+            return
+        if status == "already":
+            await core._finish(
+                message.message_id,
+                base.reminder_already_acknowledged_message(language, reminder),
+                message.sender,
+            )
+            return
+        await core._finish(
+            message.message_id,
+            base.reminder_acknowledged_message(language, reminder),
+            message.sender,
+        )
+        return
     if intent.action == "recurrence_clarification":
         await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
         return
