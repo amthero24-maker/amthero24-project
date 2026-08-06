@@ -127,6 +127,36 @@ def test_multilingual_bounded_recurrence(text, days, count, title) -> None:
     assert intent.title == title
 
 
+@pytest.mark.parametrize(("text", "count", "title"), (
+    ("ذكرني أيام العمل فقط الساعة 8 اتصل بالمكتب لمدة 7 مرات", 7, "اتصل بالمكتب"),
+    ("remind me every workday tomorrow call the office for 5 times", 5, "call the office"),
+    ("erinnere mich jeden werktag morgen um 9 Unterlagen prüfen für 4 mal", 4, "Unterlagen prüfen"),
+    ("нагадай мені у робочі дні завтра пити воду протягом 5 разів", 5, "пити воду"),
+    ("θυμισε μου εργασιμες ημερες αυριο ελεγξε τα εγγραφα για 4 φορες", 4, "ελεγξε τα εγγραφα"),
+))
+def test_multilingual_weekday_recurrence_is_bounded_and_cleans_title(text, count, title) -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        text, now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC"
+    )
+    assert intent is not None
+    assert intent.recurrence_days == 1
+    assert intent.recurrence_count == count
+    assert intent.weekdays_only is True
+    assert intent.title == title
+
+
+def test_arabic_excluding_weekend_phrase_is_a_weekday_recurrence() -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        "ذكرني كل يوم ما عدا السبت والأحد الساعة 8 راجع البريد لمدة 6 مرات",
+        now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.weekdays_only is True
+    assert intent.recurrence_days == 1
+    assert intent.recurrence_count == 6
+    assert intent.title == "راجع البريد"
+
+
 def test_conversation_topics_are_never_reminder_titles() -> None:
     assert reminders._real_mission_title({"title": "identity"}) == ""
     assert reminders._real_mission_title({"title": "greeting_3"}) == ""
@@ -338,9 +368,83 @@ async def test_conversation_creates_only_bounded_recurrence(tmp_path, monkeypatc
     assert "pending_reminder_recurrence_days" not in store.get_user("49123")
 
 
+@pytest.mark.anyio
+async def test_weekday_recurrence_followup_preserves_schedule_type(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    first = reminders.core.IncomingMessage(
+        "weekday-1", "49123", "ذكرني بعد ساعة أيام العمل فقط اشرب الدواء", "text"
+    )
+    store.claim_message(first.message_id, first.sender, first.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(first)
+        assert "لكم مرة" in send.await_args.args[1]
+        profile = store.get_user("49123")
+        assert profile["pending_reminder_weekdays_only"] == "1"
+
+        second = reminders.core.IncomingMessage("weekday-2", "49123", "7 مرات", "text")
+        store.claim_message(second.message_id, second.sender, second.text)
+        await reminders.process_incoming(second)
+        assert "أيام العمل فقط، 7 مرات" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["weekdays_only"] is True
+    assert created[0]["recurrence_remaining"] == 7
+    assert "pending_reminder_weekdays_only" not in store.get_user("49123")
+
+
+@pytest.mark.anyio
+async def test_weekday_recurrence_survives_missing_time_followup(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    first = reminders.core.IncomingMessage(
+        "weekday-time-1", "49123",
+        "ذكرني أيام العمل فقط اتصل بالمكتب لمدة 5 مرات", "text",
+    )
+    store.claim_message(first.message_id, first.sender, first.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(first)
+        assert "إيمتى أذكّرك" in send.await_args.args[1]
+        profile = store.get_user("49123")
+        assert profile["pending_reminder_recurrence_count"] == "5"
+        assert profile["pending_reminder_weekdays_only"] == "1"
+
+        second = reminders.core.IncomingMessage("weekday-time-2", "49123", "بعد ساعة", "text")
+        store.claim_message(second.message_id, second.sender, second.text)
+        await reminders.process_incoming(second)
+        assert "أيام العمل فقط، 5 مرات" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["title"] == "اتصل بالمكتب"
+    assert created[0]["recurrence_remaining"] == 5
+    assert created[0]["weekdays_only"] is True
+
+
 def test_recurrence_count_reply_is_strict_and_bounded() -> None:
     assert reminders._parse_recurrence_count_reply("7 أيام", 1) == 7
     assert reminders._parse_recurrence_count_reply("4 أسابيع", 7) == 4
+    assert reminders._parse_recurrence_count_reply("5 times", 1) == 5
+    assert reminders._parse_recurrence_count_reply("6 mal", 1) == 6
+    assert reminders._parse_recurrence_count_reply("7 разів", 1) == 7
+    assert reminders._parse_recurrence_count_reply("8 φορες", 1) == 8
     assert reminders._parse_recurrence_count_reply("1", 1) is None
     assert reminders._parse_recurrence_count_reply("500 أيام", 1) is None
     assert reminders._parse_recurrence_count_reply("نعم 7 أيام", 1) is None
@@ -355,6 +459,16 @@ def test_recurrence_control_intents_include_target_and_bounds() -> None:
     assert update.position == 2
     assert update.recurrence_days == 7
     assert update.recurrence_count == 4
+
+    weekdays = reminders.detect_conversational_reminder_intent(
+        "خلي التذكير 2 أيام العمل فقط لمدة 10 مرات"
+    )
+    assert weekdays is not None
+    assert weekdays.action == "recurrence_update"
+    assert weekdays.position == 2
+    assert weekdays.weekdays_only is True
+    assert weekdays.recurrence_days == 1
+    assert weekdays.recurrence_count == 10
 
     stop = reminders.detect_conversational_reminder_intent("وقف تكرار التذكير 2")
     assert stop is not None

@@ -133,6 +133,40 @@ def test_recurring_reminder_advances_in_local_time_and_finishes(tmp_path, monkey
     assert repository.list("491234567", active_only=False)[0]["status"] == "sent"
 
 
+def test_weekday_recurrence_skips_weekend_and_preserves_local_time(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    friday = datetime(2026, 10, 23, 6, tzinfo=UTC)  # 08:00 Europe/Berlin before DST ends
+    reminder = repository.create(
+        "491234567", title="Workday follow-up", scheduled_at=friday, language="en",
+        recurrence_days=1, recurrence_count=3, weekdays_only=True,
+    )
+
+    repository.mark_sent(reminder["reminder_id"], now=friday)
+
+    active = repository.list("491234567")
+    assert active[0]["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
+    assert active[0]["recurrence_remaining"] == 2
+    assert active[0]["weekdays_only"] is True
+
+
+def test_weekday_recurrence_moves_weekend_first_date_and_reschedule(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    saturday = datetime(2026, 10, 24, 6, tzinfo=UTC)  # 08:00 Europe/Berlin
+    reminder = repository.create(
+        "491234567", title="Office", scheduled_at=saturday, language="en",
+        recurrence_days=1, recurrence_count=4, weekdays_only=True,
+    )
+    assert reminder["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
+
+    status, moved = repository.reschedule(
+        "491234567", scheduled_at=datetime(2026, 10, 31, 9, tzinfo=UTC)
+    )
+    assert status == "updated"
+    assert moved["scheduled_at"] == datetime(2026, 11, 2, 9, tzinfo=UTC).isoformat()
+
+
 def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
     repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
@@ -140,6 +174,16 @@ def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
         repository.create(
             "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
             language="en", recurrence_days=1, recurrence_count=500,
+        )
+    with pytest.raises(ReminderServiceError, match="invalid_recurrence"):
+        repository.create(
+            "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+            language="en", weekdays_only=True,
+        )
+    with pytest.raises(ReminderServiceError, match="invalid_recurrence"):
+        repository.create(
+            "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+            language="en", recurrence_days=7, recurrence_count=4, weekdays_only=True,
         )
 
 
@@ -162,12 +206,19 @@ def test_update_recurrence_never_guesses_and_can_stop(tmp_path, monkeypatch) -> 
     assert updated["recurrence_days"] == 7
     assert updated["recurrence_remaining"] == 4
 
+    status, weekdays = repository.update_recurrence(
+        phone, recurrence_days=1, recurrence_count=6, weekdays_only=True, position=2
+    )
+    assert status == "updated"
+    assert weekdays["weekdays_only"] is True
+
     status, stopped = repository.update_recurrence(
         phone, recurrence_days=None, recurrence_count=None, position=2
     )
     assert status == "updated"
     assert stopped["recurrence_days"] is None
     assert stopped["recurrence_remaining"] is None
+    assert stopped["weekdays_only"] is False
 
 
 def test_service_window_uses_last_inbound_activity() -> None:

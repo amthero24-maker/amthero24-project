@@ -24,6 +24,8 @@ _ORIGINAL_PROCESS_INCOMING = base.process_incoming
 _PENDING_AT = "pending_reminder_at"
 _PENDING_TITLE = "pending_reminder_title"
 _PENDING_RECURRENCE_DAYS = "pending_reminder_recurrence_days"
+_PENDING_RECURRENCE_COUNT = "pending_reminder_recurrence_count"
+_PENDING_WEEKDAYS_ONLY = "pending_reminder_weekdays_only"
 _CONVERSATION_TOPICS = {
     "", "unknown", "identity", "capabilities", "languages", "reminders",
     "greeting", "greeting_1", "greeting_2", "greeting_3",
@@ -41,6 +43,7 @@ class ConversationalReminderIntent:
     positions: tuple[int, ...] = ()
     recurrence_days: int | None = None
     recurrence_count: int | None = None
+    weekdays_only: bool = False
     recurrence_stop: bool = False
 
 
@@ -60,6 +63,16 @@ _RECURRENCE_UPDATE_MARKERS = (
     "خلي التذكير", "خلي تذكير", "غير تكرار", "غيّر تكرار",
     "change reminder recurrence", "make reminder", "erinnerung wiederholen",
     "зміни повторення", "αλλαξε την επαναληψη",
+)
+_WEEKDAY_RECURRENCE_MARKERS = (
+    "ايام العمل", "ايام الدوام", "كل يوم ما عدا السبت والاحد", "كل يوم عدا السبت والاحد",
+    "weekdays", "weekday only", "every workday", "workdays", "excluding weekends",
+    "every day except weekends", "every day except saturday and sunday",
+    "werktags", "jeden werktag", "nur werktags", "montag bis freitag",
+    "ausser samstag und sonntag", "außer samstag und sonntag",
+    "по буднях", "у робочі дні", "щодня крім суботи та неділі",
+    "εργασιμες ημερες", "εργάσιμες ημέρες", "καθημερινες", "καθημερινές",
+    "καθε μερα εκτος σαββατου και κυριακης",
 )
 
 _ARABIC_QUANTITIES = {
@@ -214,17 +227,23 @@ def _extract_title(text: str) -> str:
         r"\b(?:الساعة|ساعه)\s*\d{1,2}(?::\d{2})?\s*(?:صباحا|صباح|الصبح|مساء|المسا|ليلا|ليل)?",
         r"\b(?:in\s+\d+\s*(?:minutes?|hours?|days?)|tomorrow|today\s+at\s+\d{1,2}(?::\d{2})?)\b",
         r"\b(?:morgen\s+um\s+\d{1,2}(?::\d{2})?|in\s+\d+\s*(?:minuten?|stunden?|tagen?))\b",
+        r"\b(?:أيام|ايام)\s+(?:العمل|الدوام)(?:\s+فقط)?\b",
+        r"\bكل\s+يوم\s+(?:ما\s+عدا|عدا)\s+السبت\s+و(?:الأحد|الاحد)\b",
+        r"\b(?:every\s+workday|weekdays?(?:\s+only)?|workdays?|excluding\s+weekends|every\s+day\s+except\s+(?:weekends|saturday\s+and\s+sunday))\b",
+        r"\b(?:jeden\s+werktag|nur\s+werktags?|werktags?|montag\s+bis\s+freitag|außer\s+samstag\s+und\s+sonntag|ausser\s+samstag\s+und\s+sonntag)\b",
+        r"\b(?:по\s+буднях|у\s+робочі\s+дні|щодня\s+крім\s+суботи\s+та\s+неділі)\b",
+        r"\b(?:εργάσιμες\s+ημέρες|εργασιμες\s+ημερες|καθημερινές|καθημερινες|κάθε\s+μέρα\s+εκτός\s+σαββάτου\s+και\s+κυριακής|καθε\s+μερα\s+εκτος\s+σαββατου\s+και\s+κυριακης)\b",
         r"\b(?:كل\s+(?:يوم|اسبوع|أسبوع)|يوميا|يوميًا|اسبوعيا|أسبوعيًا)\b",
-        r"\bلمدة\s+\d{1,3}\s*(?:يوم|ايام|أيام|اسبوع|أسابيع|اسابيع)\b",
+        r"\bلمدة\s+\d{1,3}\s*(?:مرات?|يوم|ايام|أيام|اسبوع|أسابيع|اسابيع)\b",
         r"\b(?:every\s+(?:day|week)|daily|weekly)\b",
-        r"\bfor\s+\d{1,3}\s*(?:days?|weeks?)\b",
+        r"\bfor\s+\d{1,3}\s*(?:times?|occurrences?|days?|weeks?)\b",
         r"\b(?:jeden\s+tag|jede\s+woche|täglich|wöchentlich)\b",
-        r"\bfür\s+\d{1,3}\s*(?:tage?|wochen?)\b",
+        r"\bfür\s+\d{1,3}\s*(?:mal|tage?|wochen?)\b",
         r"\b(?:щодня|кожного\s+дня|щотижня|кожного\s+тижня)\b",
-        r"\bпротягом\s+\d{1,3}\s*(?:днів|тижнів)\b",
+        r"\bпротягом\s+\d{1,3}\s*(?:разів|днів|тижнів)\b",
         r"\bзавтра\b",
         r"\b(?:καθε\s+μερα|καθε\s+εβδομαδα)\b",
-        r"\bγια\s+\d{1,3}\s*(?:ημερες|εβδομαδες)\b",
+        r"\bγια\s+\d{1,3}\s*(?:φορες|φορές|ημερες|εβδομαδες)\b",
         r"\bαυριο\b",
     )
     for pattern in time_patterns:
@@ -233,8 +252,13 @@ def _extract_title(text: str) -> str:
     return value[:180]
 
 
-def _parse_recurrence(normalized: str) -> tuple[int | None, int | None]:
-    daily = any(token in normalized for token in (
+def _weekdays_only(normalized: str) -> bool:
+    return any(_normalize(marker) in normalized for marker in _WEEKDAY_RECURRENCE_MARKERS)
+
+
+def _parse_recurrence(normalized: str) -> tuple[int | None, int | None, bool]:
+    weekday_schedule = _weekdays_only(normalized)
+    daily = weekday_schedule or any(token in normalized for token in (
         "كل يوم", "يوميا", "every day", "daily", "jeden tag", "taglich", "täglich",
         "щодня", "кожного дня", "καθε μερα",
     ))
@@ -243,21 +267,25 @@ def _parse_recurrence(normalized: str) -> tuple[int | None, int | None]:
         "щотижня", "кожного тижня", "καθε εβδομαδα",
     ))
     if not daily and not weekly:
-        return None, None
+        return None, None, False
     days = 1 if daily else 7
-    unit = r"(?:يوم|ايام|اسبوع|اسابيع|days?|weeks?|tage?|wochen?|днів|тижнів|ημερεσ|εβδομαδεσ)"
+    unit = (
+        r"(?:مرات?|يوم|ايام|اسبوع|اسابيع|times?|occurrences?|days?|weeks?|mal|tage?|"
+        r"wochen?|разів|днів|тижнів|φορεσ|φορές|ημερεσ|εβδομαδεσ)"
+    )
     match = re.search(rf"(?:لمدة|for|fur|für|протягом|για)\s+(\d{{1,3}})\s*{unit}\b", normalized)
     if not match:
-        return days, None
+        return days, None, weekday_schedule
     count = int(match.group(1))
-    return days, count if 2 <= count <= 365 else None
+    return days, count if 2 <= count <= 365 else None, weekday_schedule
 
 
 def _parse_recurrence_count_reply(text: str, recurrence_days: int) -> int | None:
     normalized = _normalize(text)
     match = re.fullmatch(
         r"(?:لمدة|for|fur|für|протягом|για)?\s*(\d{1,3})\s*"
-        r"(?:مرات?|ايام?|اسابيع?|days?|weeks?|tage?|wochen?|днів|тижнів|ημερεσ|εβδομαδεσ)?",
+        r"(?:مرات?|ايام?|اسابيع?|times?|occurrences?|days?|weeks?|mal|tage?|wochen?|"
+        r"разів|днів|тижнів|φορεσ|φορές|ημερεσ|εβδομαδεσ)?",
         normalized,
     )
     if not match:
@@ -278,7 +306,7 @@ def detect_conversational_reminder_intent(
         return ConversationalReminderIntent(
             "recurrence_update", position=_parse_reschedule_position(normalized), recurrence_stop=True,
         )
-    recurrence_days, recurrence_count = _parse_recurrence(normalized)
+    recurrence_days, recurrence_count, weekdays_only = _parse_recurrence(normalized)
     if recurrence_days is not None and any(
         _normalize(marker) in normalized for marker in _RECURRENCE_UPDATE_MARKERS
     ):
@@ -287,6 +315,7 @@ def detect_conversational_reminder_intent(
             position=_parse_reschedule_position(normalized),
             recurrence_days=recurrence_days,
             recurrence_count=recurrence_count,
+            weekdays_only=weekdays_only,
         )
     if any(_normalize(marker) in normalized for marker in _RESCHEDULE_MARKERS):
         return ConversationalReminderIntent(
@@ -314,7 +343,7 @@ def detect_conversational_reminder_intent(
         exact = scheduled is not None
     if scheduled is None:
         scheduled = base_intent.scheduled_at
-    recurrence_days, recurrence_count = _parse_recurrence(normalized)
+    recurrence_days, recurrence_count, weekdays_only = _parse_recurrence(normalized)
     return ConversationalReminderIntent(
         "create",
         scheduled_at=scheduled,
@@ -323,6 +352,7 @@ def detect_conversational_reminder_intent(
         exact_time=exact,
         recurrence_days=recurrence_days,
         recurrence_count=recurrence_count,
+        weekdays_only=weekdays_only,
     )
 
 
@@ -380,7 +410,10 @@ def _question(language: str, missing: str) -> str:
 
 
 def _clear_pending(sender: str) -> None:
-    core.store.remove_user_fields(sender, {_PENDING_AT, _PENDING_TITLE, _PENDING_RECURRENCE_DAYS})
+    core.store.remove_user_fields(sender, {
+        _PENDING_AT, _PENDING_TITLE, _PENDING_RECURRENCE_DAYS,
+        _PENDING_RECURRENCE_COUNT, _PENDING_WEEKDAYS_ONLY,
+    })
 
 
 def _real_mission_title(mission: dict[str, Any] | None) -> str:
@@ -395,11 +428,16 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     pending_at = str(profile.get(_PENDING_AT) or "").strip()
     pending_title = str(profile.get(_PENDING_TITLE) or "").strip()
     pending_recurrence_days = int(profile.get(_PENDING_RECURRENCE_DAYS) or 0)
+    pending_recurrence_count = int(profile.get(_PENDING_RECURRENCE_COUNT) or 0)
+    pending_weekdays_only = str(profile.get(_PENDING_WEEKDAYS_ONLY) or "") == "1"
 
     intent = None
     if message.message_type == "text":
         intent = detect_conversational_reminder_intent(message.text)
-        if intent is None and pending_at and pending_title and pending_recurrence_days in {1, 7}:
+        if (
+            intent is None and pending_at and pending_title
+            and pending_recurrence_days in {1, 7} and pending_recurrence_count == 0
+        ):
             count = _parse_recurrence_count_reply(message.text, pending_recurrence_days)
             if count is not None:
                 intent = ConversationalReminderIntent(
@@ -409,16 +447,28 @@ async def process_incoming(message: core.IncomingMessage) -> None:
                     exact_time=True,
                     recurrence_days=pending_recurrence_days,
                     recurrence_count=count,
+                    weekdays_only=pending_weekdays_only,
                 )
             else:
                 intent = ConversationalReminderIntent("recurrence_clarification")
         if intent is None and (pending_at or pending_title):
             if pending_at and not pending_title:
-                intent = ConversationalReminderIntent("create", scheduled_at=datetime.fromisoformat(pending_at), title=" ".join(message.text.split())[:180], exact_time=True)
+                intent = ConversationalReminderIntent(
+                    "create", scheduled_at=datetime.fromisoformat(pending_at),
+                    title=" ".join(message.text.split())[:180], exact_time=True,
+                    recurrence_days=pending_recurrence_days or None,
+                    recurrence_count=pending_recurrence_count or None,
+                    weekdays_only=pending_weekdays_only,
+                )
             elif pending_title and not pending_at:
                 parsed = detect_conversational_reminder_intent("ذكرني " + message.text)
                 if parsed is not None:
-                    intent = ConversationalReminderIntent("create", parsed.scheduled_at, parsed.lead_days, pending_title, parsed.exact_time)
+                    intent = ConversationalReminderIntent(
+                        "create", parsed.scheduled_at, parsed.lead_days, pending_title,
+                        parsed.exact_time, recurrence_days=pending_recurrence_days or parsed.recurrence_days,
+                        recurrence_count=pending_recurrence_count or parsed.recurrence_count,
+                        weekdays_only=pending_weekdays_only or parsed.weekdays_only,
+                    )
 
     if intent is None or stage != "complete":
         await _ORIGINAL_PROCESS_INCOMING(message)
@@ -439,6 +489,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             message.sender,
             recurrence_days=None if intent.recurrence_stop else intent.recurrence_days,
             recurrence_count=None if intent.recurrence_stop else intent.recurrence_count,
+            weekdays_only=False if intent.recurrence_stop else intent.weekdays_only,
             position=intent.position,
         )
         if status == "ambiguous":
@@ -512,19 +563,29 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     title = intent.title or _real_mission_title(mission)
 
     if scheduled_at is None:
-        core.store.update_user(message.sender, {
+        pending = {
             _PENDING_TITLE: title,
             "session_language": language,
             "session_expires_at": core._session_expiry(),
-        })
+        }
+        if intent.recurrence_days is not None:
+            pending[_PENDING_RECURRENCE_DAYS] = str(intent.recurrence_days)
+            pending[_PENDING_RECURRENCE_COUNT] = str(intent.recurrence_count or "")
+            pending[_PENDING_WEEKDAYS_ONLY] = "1" if intent.weekdays_only else "0"
+        core.store.update_user(message.sender, pending)
         await core._finish(message.message_id, _question(language, "time"), message.sender)
         return
     if not title:
-        core.store.update_user(message.sender, {
+        pending = {
             _PENDING_AT: scheduled_at.isoformat(),
             "session_language": language,
             "session_expires_at": core._session_expiry(),
-        })
+        }
+        if intent.recurrence_days is not None:
+            pending[_PENDING_RECURRENCE_DAYS] = str(intent.recurrence_days)
+            pending[_PENDING_RECURRENCE_COUNT] = str(intent.recurrence_count or "")
+            pending[_PENDING_WEEKDAYS_ONLY] = "1" if intent.weekdays_only else "0"
+        core.store.update_user(message.sender, pending)
         await core._finish(message.message_id, _question(language, "title"), message.sender)
         return
     if intent.recurrence_days is not None and intent.recurrence_count is None:
@@ -532,6 +593,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
             _PENDING_AT: scheduled_at.isoformat(),
             _PENDING_TITLE: title,
             _PENDING_RECURRENCE_DAYS: str(intent.recurrence_days),
+            _PENDING_RECURRENCE_COUNT: "",
+            _PENDING_WEEKDAYS_ONLY: "1" if intent.weekdays_only else "0",
             "session_language": language,
             "session_expires_at": core._session_expiry(),
         })
@@ -553,6 +616,7 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         mission_id=str((mission or {}).get("mission_id") or ""),
         recurrence_days=intent.recurrence_days,
         recurrence_count=intent.recurrence_count,
+        weekdays_only=intent.weekdays_only,
     )
     await core._finish(message.message_id, base.reminder_created_message(language, reminder), message.sender)
 
