@@ -90,6 +90,43 @@ def test_cancel_understands_multiple_arabic_ordinal_positions() -> None:
     assert intent.positions == (1, 2)
 
 
+def test_daily_recurrence_is_bounded_and_removed_from_title() -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        "ذكرني كل يوم الساعة 8 اشرب الدواء لمدة 7 أيام",
+        now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.recurrence_days == 1
+    assert intent.recurrence_count == 7
+    assert intent.title == "اشرب الدواء"
+
+
+def test_unbounded_recurrence_asks_for_count() -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        "ذكرني كل يوم الساعة 8 اشرب الدواء",
+        now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.recurrence_days == 1
+    assert intent.recurrence_count is None
+
+
+@pytest.mark.parametrize(("text", "days", "count", "title"), (
+    ("remind me every day tomorrow drink water for 5 days", 1, 5, "drink water"),
+    ("erinnere mich jede woche morgen um 9 Unterlagen prüfen für 4 wochen", 7, 4, "Unterlagen prüfen"),
+    ("нагадай мені щодня завтра пити воду протягом 5 днів", 1, 5, "пити воду"),
+    ("θυμισε μου καθε εβδομαδα αυριο ελεγξε τα εγγραφα για 4 εβδομαδες", 7, 4, "ελεγξε τα εγγραφα"),
+))
+def test_multilingual_bounded_recurrence(text, days, count, title) -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        text, now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC"
+    )
+    assert intent is not None
+    assert intent.recurrence_days == days
+    assert intent.recurrence_count == count
+    assert intent.title == title
+
+
 def test_conversation_topics_are_never_reminder_titles() -> None:
     assert reminders._real_mission_title({"title": "identity"}) == ""
     assert reminders._real_mission_title({"title": "greeting_3"}) == ""
@@ -256,3 +293,38 @@ async def test_cancel_multiple_positions_and_never_guess(tmp_path, monkeypatch) 
         assert "ألغيت 2 تذكير" in send.await_args.args[1]
 
     assert repository.list("49123") == []
+
+
+@pytest.mark.anyio
+async def test_conversation_creates_only_bounded_recurrence(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    unbounded = reminders.core.IncomingMessage(
+        "r9", "49123", "ذكرني كل يوم الساعة 8 اشرب الدواء", "text"
+    )
+    store.claim_message(unbounded.message_id, unbounded.sender, unbounded.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(unbounded)
+        assert "لكم مرة" in send.await_args.args[1]
+        assert reminders.base._repository().list("49123") == []
+
+        bounded = reminders.core.IncomingMessage(
+            "r10", "49123", "ذكرني كل يوم الساعة 8 اشرب الدواء لمدة 7 أيام", "text"
+        )
+        store.claim_message(bounded.message_id, bounded.sender, bounded.text)
+        await reminders.process_incoming(bounded)
+        assert "يتكرر كل 1 يوم، 7 مرات" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["title"] == "اشرب الدواء"
+    assert created[0]["recurrence_days"] == 1
+    assert created[0]["recurrence_remaining"] == 7
