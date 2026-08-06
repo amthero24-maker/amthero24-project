@@ -36,6 +36,15 @@ class ConversationalReminderIntent:
     lead_days: int | None = None
     title: str = ""
     exact_time: bool = False
+    position: int | None = None
+
+
+_RESCHEDULE_MARKERS = (
+    "اجل التذكير", "أجل التذكير", "أجّل التذكير", "اخر التذكير", "أخر التذكير",
+    "غير موعد التذكير", "غيّر موعد التذكير", "verschiebe die erinnerung",
+    "erinnerung verschieben", "snooze reminder", "postpone reminder", "move reminder",
+    "перенеси нагадування", "μεταφερε την υπενθυμιση",
+)
 
 
 def _normalize(text: str) -> str:
@@ -97,6 +106,31 @@ def _parse_relative_hours(normalized: str, current: datetime) -> datetime | None
     return None
 
 
+def _parse_reschedule_position(normalized: str) -> int | None:
+    match = re.search(r"(?:التذكير|erinnerung|reminder|нагадування|υπενθυμιση)\s*(\d{1,2})\b", normalized)
+    if match:
+        return int(match.group(1))
+    words = {"الاول": 1, "الأول": 1, "الثاني": 2, "الثالث": 3, "first": 1, "second": 2, "third": 3}
+    return next((number for word, number in words.items() if word in normalized), None)
+
+
+def _parse_reschedule_time(text: str, normalized: str, current: datetime, timezone_name: str) -> datetime | None:
+    scheduled = _parse_relative_minutes(normalized, current) or _parse_relative_hours(normalized, current)
+    if scheduled is not None:
+        return scheduled
+    compact = re.search(r"(\d{1,4})\s*(?:دقيقة|دقائق|دقايق|minuten?|minutes?|mins?|хвилин(?:и)?|λεπτα)", normalized)
+    if compact and 1 <= int(compact.group(1)) <= 10080:
+        return current + timedelta(minutes=int(compact.group(1)))
+    compact = re.search(r"(\d{1,3})\s*(?:ساعة|ساعات|stunden?|hours?|hrs?|годин(?:и)?|ωρες)", normalized)
+    if compact and 1 <= int(compact.group(1)) <= 720:
+        return current + timedelta(hours=int(compact.group(1)))
+    scheduled = _parse_clock(text, normalized, current, timezone_name)
+    if scheduled is not None:
+        return scheduled
+    parsed = base.detect_reminder_intent("ذكرني " + text, now=current, timezone_name=timezone_name)
+    return parsed.scheduled_at if parsed is not None else None
+
+
 def _parse_clock(text: str, normalized: str, current: datetime, timezone_name: str) -> datetime | None:
     match = re.search(
         r"(?:الساعة|ساعه|um|at|о|στις)?\s*(\d{1,2})(?::(\d{2}))?\s*"
@@ -145,14 +179,21 @@ def detect_conversational_reminder_intent(
     now: datetime | None = None,
     timezone_name: str = DEFAULT_TIMEZONE,
 ) -> ConversationalReminderIntent | None:
+    normalized = _normalize(text)
+    current = _local_now(now, timezone_name)
+    if any(_normalize(marker) in normalized for marker in _RESCHEDULE_MARKERS):
+        return ConversationalReminderIntent(
+            "reschedule",
+            scheduled_at=_parse_reschedule_time(text, normalized, current, timezone_name),
+            exact_time=True,
+            position=_parse_reschedule_position(normalized),
+        )
     base_intent = base.detect_reminder_intent(base._command_text(text), now=now, timezone_name=timezone_name)
     if base_intent is None:
         return None
     if base_intent.action != "create":
         return ConversationalReminderIntent(base_intent.action)
 
-    normalized = _normalize(text)
-    current = _local_now(now, timezone_name)
     scheduled = _parse_relative_minutes(normalized, current)
     exact = scheduled is not None
     if scheduled is None:
@@ -261,6 +302,30 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     if intent.action in {"cancel", "cancel_all"}:
         count = repository.cancel(message.sender, all_active=intent.action == "cancel_all")
         await core._finish(message.message_id, base.reminder_cancelled_message(language, count), message.sender)
+        return
+    if intent.action == "reschedule":
+        if not base.reminder_delivery_ready(message.sender):
+            await core._finish(message.message_id, base.reminder_unavailable_message(language), message.sender)
+            return
+        if intent.scheduled_at is None or intent.scheduled_at.astimezone(UTC) <= datetime.now(UTC):
+            await core._finish(message.message_id, _question(language, "time"), message.sender)
+            return
+        status, reminder = repository.reschedule(
+            message.sender,
+            scheduled_at=intent.scheduled_at,
+            position=intent.position,
+        )
+        if status == "ambiguous":
+            active = repository.list(message.sender, active_only=True, limit=10)
+            await core._finish(message.message_id, base.reminder_selection_message(language, active), message.sender)
+            return
+        if status == "not_found":
+            await core._finish(message.message_id, base.reminder_cancelled_message(language, 0), message.sender)
+            return
+        if status == "conflict":
+            await core._finish(message.message_id, base.reminder_reschedule_conflict_message(language), message.sender)
+            return
+        await core._finish(message.message_id, base.reminder_rescheduled_message(language, reminder), message.sender)
         return
     if not base.reminder_delivery_ready(message.sender):
         _clear_pending(message.sender)

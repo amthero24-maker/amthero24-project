@@ -55,6 +55,42 @@ def test_json_repository_encrypts_recipient_and_deduplicates(tmp_path, monkeypat
     assert repository.list("491234567") == []
 
 
+def test_reschedule_requires_selection_when_multiple_reminders_exist(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    store = JsonDataStore(tmp_path / "store.json")
+    repository = ReminderRepository(store)
+    first_at = datetime(2026, 8, 10, 7, tzinfo=UTC)
+    second_at = datetime(2026, 8, 11, 7, tzinfo=UTC)
+    repository.create("491234567", title="First", scheduled_at=first_at, language="en")
+    repository.create("491234567", title="Second", scheduled_at=second_at, language="en")
+
+    status, _ = repository.reschedule(
+        "491234567", scheduled_at=datetime(2026, 8, 12, 7, tzinfo=UTC)
+    )
+    assert status == "ambiguous"
+    assert [item["scheduled_at"] for item in repository.list("491234567")] == [
+        first_at.isoformat(), second_at.isoformat(),
+    ]
+
+    conflict_at = datetime(2026, 8, 12, 7, tzinfo=UTC)
+    repository.create("491234567", title="Second", scheduled_at=conflict_at, language="en")
+    status, _ = repository.reschedule(
+        "491234567", scheduled_at=conflict_at, position=2,
+    )
+    assert status == "conflict"
+
+    status, updated = repository.reschedule(
+        "491234567",
+        scheduled_at=datetime(2026, 8, 13, 7, tzinfo=UTC),
+        position=2,
+    )
+    assert status == "updated"
+    assert updated["title"] == "Second"
+    assert updated["scheduled_at"] == datetime(2026, 8, 13, 7, tzinfo=UTC).isoformat()
+    assert updated["status"] == "pending"
+    assert updated["attempt_count"] == 0
+
+
 def test_service_window_uses_last_inbound_activity() -> None:
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
     assert service_window_open({"last_seen": (now - timedelta(hours=2)).isoformat()}, now=now)
