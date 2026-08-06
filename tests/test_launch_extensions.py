@@ -132,7 +132,7 @@ def test_disabled_reminders_and_queue_are_ready_for_read_only_canary(tmp_path) -
     assert payload["status"] == "ready"
 
 
-def test_explicit_reminder_activation_preserves_template_gate(tmp_path) -> None:
+def test_exact_sender_canary_is_ready_inside_service_window_without_template(tmp_path) -> None:
     _install_store(tmp_path)
     client = TestClient(launch_extensions.core.app)
     environment = _env()
@@ -147,8 +147,34 @@ def test_explicit_reminder_activation_preserves_template_gate(tmp_path) -> None:
         )
 
     assert response.status_code == 200
-    checks = {item["code"]: item for item in response.json()["checks"]}
-    assert checks["reminder_delivery"]["status"] == "warning"
+    payload = response.json()
+    checks = {item["code"]: item for item in payload["checks"]}
+    assert checks["reminder_delivery"]["status"] == "ready"
+    assert "24-hour service window" in checks["reminder_delivery"]["detail"]
+    assert payload["status"] == "ready"
+
+
+def test_worker_without_canary_remains_blocked_without_template(tmp_path) -> None:
+    _install_store(tmp_path)
+    client = TestClient(launch_extensions.core.app)
+    environment = _env()
+    environment.pop("REMINDER_CANARY_SENDERS")
+    environment.pop("WHATSAPP_REMINDER_TEMPLATE")
+
+    with patch.dict("os.environ", environment, clear=True), patch.object(
+        launch_extensions.admin_module, "build_overview", return_value=_overview()
+    ):
+        response = client.get(
+            "/admin/launch-readiness",
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {item["code"]: item for item in payload["checks"]}
+    assert checks["reminder_canary"]["status"] == "blocked"
+    assert checks["reminder_delivery"]["status"] == "blocked"
+    assert payload["status"] == "blocked"
 
 
 def test_explicit_queue_activation_preserves_encryption_gate(tmp_path) -> None:
