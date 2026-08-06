@@ -580,6 +580,111 @@ class ReminderRepository:
 
         return self.store._transaction(update_json)
 
+    def update_recurrence(
+        self,
+        phone: str,
+        *,
+        recurrence_days: int | None,
+        recurrence_count: int | None,
+        position: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Change or stop recurrence without guessing between active reminders."""
+        if position is not None and not 1 <= position <= 30:
+            return "not_found", {}
+        if (recurrence_days is None) != (recurrence_count is None):
+            return "invalid", {}
+        if recurrence_days is not None and (
+            recurrence_days not in {1, 7} or not 2 <= recurrence_count <= 365
+        ):
+            return "invalid", {}
+        key = _phone_hash(phone)
+        statuses = ("pending", "failed", "blocked_template")
+
+        def recurrence_values(item: dict[str, Any]) -> tuple[str, datetime]:
+            scheduled = _parse_datetime(item.get("scheduled_at"))
+            if scheduled is None:
+                raise ReminderServiceError("invalid_schedule")
+            dedupe = self._dedupe(
+                key,
+                str(item.get("mission_id") or ""),
+                scheduled,
+                str(item.get("title") or "Follow-up"),
+                recurrence_days,
+            )
+            return dedupe, scheduled
+
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM hero_reminders
+                    WHERE phone_hash = %s AND status = ANY(%s)
+                    ORDER BY scheduled_at ASC LIMIT 30 FOR UPDATE
+                    """,
+                    (key, list(statuses)),
+                ).fetchall()
+                if not rows:
+                    return "not_found", {}
+                if position is None and len(rows) != 1:
+                    return "ambiguous", {}
+                index = (position - 1) if position is not None else 0
+                if index >= len(rows):
+                    return "not_found", {}
+                selected = dict(rows[index])
+                dedupe, scheduled = recurrence_values(selected)
+                conflict = connection.execute(
+                    "SELECT 1 FROM hero_reminders WHERE dedupe_key = %s AND reminder_id <> %s LIMIT 1",
+                    (dedupe, selected["reminder_id"]),
+                ).fetchone()
+                if conflict:
+                    return "conflict", {}
+                row = connection.execute(
+                    """
+                    UPDATE hero_reminders
+                    SET recurrence_days = %s, recurrence_remaining = %s, dedupe_key = %s,
+                        status = 'pending', attempt_count = 0, last_error = '',
+                        next_attempt_at = %s, lease_until = NULL, updated_at = NOW()
+                    WHERE reminder_id = %s RETURNING *
+                    """,
+                    (recurrence_days, recurrence_count, dedupe, scheduled, selected["reminder_id"]),
+                ).fetchone()
+            return "updated", self._from_row(row)
+
+        def update_json(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            candidates = [
+                item for item in data.setdefault("reminders", {}).values()
+                if isinstance(item, dict) and item.get("phone_hash") == key and item.get("status") in statuses
+            ]
+            candidates.sort(key=lambda item: str(item.get("scheduled_at") or ""))
+            if not candidates:
+                return "not_found", {}
+            if position is None and len(candidates) != 1:
+                return "ambiguous", {}
+            index = (position - 1) if position is not None else 0
+            if index >= len(candidates):
+                return "not_found", {}
+            item = candidates[index]
+            dedupe, scheduled = recurrence_values(item)
+            if any(
+                existing is not item and isinstance(existing, dict) and existing.get("dedupe_key") == dedupe
+                for existing in data.setdefault("reminders", {}).values()
+            ):
+                return "conflict", {}
+            item.update({
+                "recurrence_days": recurrence_days,
+                "recurrence_remaining": recurrence_count,
+                "dedupe_key": dedupe,
+                "status": "pending",
+                "attempt_count": 0,
+                "last_error": "",
+                "next_attempt_at": scheduled.isoformat(),
+                "lease_until": None,
+                "updated_at": datetime.now(UTC).isoformat(),
+            })
+            return "updated", deepcopy(item)
+
+        return self.store._transaction(update_json)
+
     def claim_due(
         self,
         *,
@@ -998,3 +1103,35 @@ def reminder_cancel_selection_message(language: str, reminders: list[dict[str, A
         "el": "Έχεις πολλές υπενθυμίσεις. Βάλε τους αριθμούς, π.χ. «ακύρωσε τις υπενθυμίσεις 1 και 2».\n",
     }.get(language, "Choose one or more reminder numbers.\n")
     return prefix + reminder_list_message(language, reminders)
+
+
+def reminder_recurrence_updated_message(language: str, reminder: dict[str, Any]) -> str:
+    title = str(reminder.get("title") or "")
+    days = int(reminder.get("recurrence_days") or 0)
+    count = int(reminder.get("recurrence_remaining") or 0)
+    if days and count:
+        return {
+            "ar": f"تمام ✅ صار تذكير «{title}» يتكرر كل {days} يوم، {count} مرات.",
+            "de": f"Erledigt ✅ „{title}“ wiederholt sich alle {days} Tag(e), insgesamt {count}-mal.",
+            "en": f"Done ✅ “{title}” now repeats every {days} day(s), {count} times.",
+            "uk": f"Готово ✅ «{title}» повторюється кожні {days} дн., {count} разів.",
+            "el": f"Έγινε ✅ Το «{title}» επαναλαμβάνεται κάθε {days} ημέρα/ες, {count} φορές.",
+        }.get(language, f"Recurrence updated for {title}.")
+    return {
+        "ar": f"تمام ✅ وقفت تكرار «{title}» وخليته مرة واحدة.",
+        "de": f"Erledigt ✅ Die Wiederholung für „{title}“ wurde beendet.",
+        "en": f"Done ✅ Repetition was stopped for “{title}”.",
+        "uk": f"Готово ✅ Повторення «{title}» зупинено.",
+        "el": f"Έγινε ✅ Η επανάληψη για το «{title}» σταμάτησε.",
+    }.get(language, f"Recurrence stopped for {title}.")
+
+
+def reminder_recurrence_selection_message(language: str, reminders: list[dict[str, Any]]) -> str:
+    prefix = {
+        "ar": "عندك أكثر من تذكير. حدّد الرقم، مثل: «وقف تكرار التذكير 2».",
+        "de": "Du hast mehrere Erinnerungen. Nenne die Nummer, z. B. „Wiederholung für Erinnerung 2 stoppen“.",
+        "en": "You have several reminders. Include the number, for example: “stop repeating reminder 2”.",
+        "uk": "У вас кілька нагадувань. Вкажіть номер нагадування.",
+        "el": "Έχεις πολλές υπενθυμίσεις. Βάλε τον αριθμό της υπενθύμισης.",
+    }.get(language, "Choose a reminder number.")
+    return prefix + "\n" + reminder_list_message(language, reminders)
