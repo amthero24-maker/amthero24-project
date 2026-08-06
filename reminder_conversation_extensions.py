@@ -41,6 +41,7 @@ class ConversationalReminderIntent:
     positions: tuple[int, ...] = ()
     recurrence_days: int | None = None
     recurrence_count: int | None = None
+    recurrence_stop: bool = False
 
 
 _RESCHEDULE_MARKERS = (
@@ -48,6 +49,17 @@ _RESCHEDULE_MARKERS = (
     "غير موعد التذكير", "غيّر موعد التذكير", "verschiebe die erinnerung",
     "erinnerung verschieben", "snooze reminder", "postpone reminder", "move reminder",
     "перенеси нагадування", "μεταφερε την υπενθυμιση",
+)
+
+_RECURRENCE_STOP_MARKERS = (
+    "وقف التكرار", "وقف تكرار", "اوقف التكرار", "اوقف تكرار", "خليه مرة واحدة", "خليها مرة واحدة",
+    "stop repeating", "make it one time", "wiederholung stoppen",
+    "зупини повторення", "σταματησε την επαναληψη",
+)
+_RECURRENCE_UPDATE_MARKERS = (
+    "خلي التذكير", "خلي تذكير", "غير تكرار", "غيّر تكرار",
+    "change reminder recurrence", "make reminder", "erinnerung wiederholen",
+    "зміни повторення", "αλλαξε την επαναληψη",
 )
 
 _ARABIC_QUANTITIES = {
@@ -262,6 +274,20 @@ def detect_conversational_reminder_intent(
 ) -> ConversationalReminderIntent | None:
     normalized = _normalize(text)
     current = _local_now(now, timezone_name)
+    if any(_normalize(marker) in normalized for marker in _RECURRENCE_STOP_MARKERS):
+        return ConversationalReminderIntent(
+            "recurrence_update", position=_parse_reschedule_position(normalized), recurrence_stop=True,
+        )
+    recurrence_days, recurrence_count = _parse_recurrence(normalized)
+    if recurrence_days is not None and any(
+        _normalize(marker) in normalized for marker in _RECURRENCE_UPDATE_MARKERS
+    ):
+        return ConversationalReminderIntent(
+            "recurrence_update",
+            position=_parse_reschedule_position(normalized),
+            recurrence_days=recurrence_days,
+            recurrence_count=recurrence_count,
+        )
     if any(_normalize(marker) in normalized for marker in _RESCHEDULE_MARKERS):
         return ConversationalReminderIntent(
             "reschedule",
@@ -404,6 +430,35 @@ async def process_incoming(message: core.IncomingMessage) -> None:
     repository = base._repository()
     if intent.action == "recurrence_clarification":
         await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
+        return
+    if intent.action == "recurrence_update":
+        if not intent.recurrence_stop and intent.recurrence_count is None:
+            await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
+            return
+        status, reminder = repository.update_recurrence(
+            message.sender,
+            recurrence_days=None if intent.recurrence_stop else intent.recurrence_days,
+            recurrence_count=None if intent.recurrence_stop else intent.recurrence_count,
+            position=intent.position,
+        )
+        if status == "ambiguous":
+            await core._finish(
+                message.message_id,
+                base.reminder_recurrence_selection_message(
+                    language, repository.list(message.sender, active_only=True, limit=10)
+                ),
+                message.sender,
+            )
+            return
+        if status == "not_found":
+            await core._finish(message.message_id, base.reminder_cancelled_message(language, 0), message.sender)
+            return
+        if status in {"conflict", "invalid"}:
+            await core._finish(message.message_id, base.reminder_reschedule_conflict_message(language), message.sender)
+            return
+        await core._finish(
+            message.message_id, base.reminder_recurrence_updated_message(language, reminder), message.sender
+        )
         return
     if intent.action == "list":
         await core._finish(message.message_id, base.reminder_list_message(language, repository.list(message.sender, active_only=True, limit=10)), message.sender)

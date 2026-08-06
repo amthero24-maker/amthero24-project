@@ -143,6 +143,33 @@ def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
         )
 
 
+def test_update_recurrence_never_guesses_and_can_stop(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    now = datetime.now(UTC)
+    repository.create(phone, title="First", scheduled_at=now + timedelta(hours=1), language="en")
+    repository.create(phone, title="Second", scheduled_at=now + timedelta(hours=2), language="en")
+
+    assert repository.update_recurrence(
+        phone, recurrence_days=7, recurrence_count=4
+    )[0] == "ambiguous"
+    status, updated = repository.update_recurrence(
+        phone, recurrence_days=7, recurrence_count=4, position=2
+    )
+    assert status == "updated"
+    assert updated["title"] == "Second"
+    assert updated["recurrence_days"] == 7
+    assert updated["recurrence_remaining"] == 4
+
+    status, stopped = repository.update_recurrence(
+        phone, recurrence_days=None, recurrence_count=None, position=2
+    )
+    assert status == "updated"
+    assert stopped["recurrence_days"] is None
+    assert stopped["recurrence_remaining"] is None
+
+
 def test_service_window_uses_last_inbound_activity() -> None:
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
     assert service_window_open({"last_seen": (now - timedelta(hours=2)).isoformat()}, now=now)
