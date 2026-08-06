@@ -18,6 +18,8 @@ from reminder_engine import (
     detect_reminder_intent,
     reminder_cancelled_message,
     reminder_cancel_selection_message,
+    reminder_recurrence_selection_message,
+    reminder_recurrence_updated_message,
     reminder_created_message,
     reminder_list_message,
     reminder_needs_date_message,
