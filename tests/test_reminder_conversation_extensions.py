@@ -46,6 +46,20 @@ def test_relative_minutes_and_hours_need_no_full_date() -> None:
     assert two_hours and two_hours.scheduled_at == now + timedelta(hours=2)
 
 
+def test_arabic_word_hours_are_understood_and_removed_from_title() -> None:
+    now = datetime(2026, 8, 6, 9, 0, tzinfo=UTC)
+    four_hours = reminders.detect_conversational_reminder_intent(
+        "ذكرني بعد اربع ساعات اشرب مي", now=now, timezone_name="UTC"
+    )
+    one_hour = reminders.detect_conversational_reminder_intent(
+        "ذكرني بعد ساعة اتصل بالمكتب", now=now, timezone_name="UTC"
+    )
+    assert four_hours and four_hours.scheduled_at == now + timedelta(hours=4)
+    assert four_hours.title == "اشرب مي"
+    assert one_hour and one_hour.scheduled_at == now + timedelta(hours=1)
+    assert one_hour.title == "اتصل بالمكتب"
+
+
 def test_explicit_same_day_clock_is_understood() -> None:
     now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
     intent = reminders.detect_conversational_reminder_intent("ذكرني اليوم الساعة 7 مساء اتصل بامي", now=now, timezone_name="UTC")
@@ -118,6 +132,33 @@ async def test_missing_time_asks_only_for_time(tmp_path, monkeypatch) -> None:
         await reminders.process_incoming(message)
     assert "إيمتى أذكّرك" in send.await_args.args[1]
     assert store.get_user("49123")["pending_reminder_title"] == "اتصل بالمكتب"
+
+
+@pytest.mark.anyio
+async def test_existing_time_followup_accepts_arabic_word_hours(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    store.update_user("49123", {
+        "pending_reminder_title": "اشرب مي",
+        "session_expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+    })
+
+    message = reminders.core.IncomingMessage("r-word-hours", "49123", "بعد اربع ساعات", "text")
+    store.claim_message(message.message_id, message.sender, message.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(message)
+
+    assert "رح ذكّرك" in send.await_args.args[1]
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["title"] == "اشرب مي"
 
 
 @pytest.mark.anyio
