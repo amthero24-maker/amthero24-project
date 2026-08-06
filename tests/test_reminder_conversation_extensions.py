@@ -54,6 +54,17 @@ def test_explicit_same_day_clock_is_understood() -> None:
     assert intent.title == "اتصل بامي"
 
 
+def test_reschedule_understands_position_and_relative_minutes() -> None:
+    now = datetime(2026, 8, 5, 10, 0, tzinfo=UTC)
+    intent = reminders.detect_conversational_reminder_intent(
+        "أجّل التذكير 2 لمدة 10 دقائق", now=now, timezone_name="UTC"
+    )
+    assert intent is not None
+    assert intent.action == "reschedule"
+    assert intent.position == 2
+    assert intent.scheduled_at == now + timedelta(minutes=10)
+
+
 def test_conversation_topics_are_never_reminder_titles() -> None:
     assert reminders._real_mission_title({"title": "identity"}) == ""
     assert reminders._real_mission_title({"title": "greeting_3"}) == ""
@@ -132,3 +143,35 @@ async def test_worker_unavailable_does_not_save_conversational_reminder(tmp_path
     assert "متوقفة مؤقتًا" in send.await_args.args[1]
     assert reminders.base._repository().list("49123") == []
     assert "pending_reminder_title" not in store.get_user("49123")
+
+
+@pytest.mark.anyio
+async def test_reschedule_never_guesses_when_multiple_reminders_exist(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    repository = reminders.base._repository()
+    now = datetime.now(UTC)
+    repository.create("49123", title="الأول", scheduled_at=now + timedelta(hours=1), language="ar")
+    repository.create("49123", title="الثاني", scheduled_at=now + timedelta(hours=2), language="ar")
+
+    ambiguous = reminders.core.IncomingMessage("r5", "49123", "أجّل التذكير لمدة 10 دقائق", "text")
+    store.claim_message(ambiguous.message_id, ambiguous.sender, ambiguous.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(ambiguous)
+        assert "أكثر من تذكير" in send.await_args.args[1]
+
+        selected = reminders.core.IncomingMessage("r6", "49123", "أجّل التذكير 2 لمدة 10 دقائق", "text")
+        store.claim_message(selected.message_id, selected.sender, selected.text)
+        await reminders.process_incoming(selected)
+        assert "أجّلت «الثاني»" in send.await_args.args[1]
+
+    active = repository.list("49123")
+    assert active[0]["title"] == "الثاني"
+    assert active[1]["title"] == "الأول"
