@@ -315,10 +315,17 @@ async def test_conversation_creates_only_bounded_recurrence(tmp_path, monkeypatc
         await reminders.process_incoming(unbounded)
         assert "لكم مرة" in send.await_args.args[1]
         assert reminders.base._repository().list("49123") == []
+        profile = store.get_user("49123")
+        assert profile["pending_reminder_title"] == "اشرب الدواء"
+        assert profile["pending_reminder_recurrence_days"] == "1"
 
-        bounded = reminders.core.IncomingMessage(
-            "r10", "49123", "ذكرني كل يوم الساعة 8 اشرب الدواء لمدة 7 أيام", "text"
-        )
+        invalid = reminders.core.IncomingMessage("r9-invalid", "49123", "نعم سبع", "text")
+        store.claim_message(invalid.message_id, invalid.sender, invalid.text)
+        await reminders.process_incoming(invalid)
+        assert "لكم مرة" in send.await_args.args[1]
+        assert reminders.base._repository().list("49123") == []
+
+        bounded = reminders.core.IncomingMessage("r10", "49123", "7 أيام", "text")
         store.claim_message(bounded.message_id, bounded.sender, bounded.text)
         await reminders.process_incoming(bounded)
         assert "يتكرر كل 1 يوم، 7 مرات" in send.await_args.args[1]
@@ -328,3 +335,12 @@ async def test_conversation_creates_only_bounded_recurrence(tmp_path, monkeypatc
     assert created[0]["title"] == "اشرب الدواء"
     assert created[0]["recurrence_days"] == 1
     assert created[0]["recurrence_remaining"] == 7
+    assert "pending_reminder_recurrence_days" not in store.get_user("49123")
+
+
+def test_recurrence_count_reply_is_strict_and_bounded() -> None:
+    assert reminders._parse_recurrence_count_reply("7 أيام", 1) == 7
+    assert reminders._parse_recurrence_count_reply("4 أسابيع", 7) == 4
+    assert reminders._parse_recurrence_count_reply("1", 1) is None
+    assert reminders._parse_recurrence_count_reply("500 أيام", 1) is None
+    assert reminders._parse_recurrence_count_reply("نعم 7 أيام", 1) is None
