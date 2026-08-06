@@ -371,6 +371,29 @@ def test_complete_user_deletion_removes_every_linked_postgres_layer() -> None:
     assert int(privacy_event["count"]) == 1
 
 
+def test_postgres_recurring_reminder_advances_atomically() -> None:
+    store = _store()
+    phone = "+49161" + uuid4().hex[:8]
+    repository = ReminderRepository(store)
+    first = datetime.now(UTC) + timedelta(hours=1)
+    reminder = repository.create(
+        phone,
+        title="Recurring integration reminder",
+        scheduled_at=first,
+        language="de",
+        recurrence_days=7,
+        recurrence_count=3,
+    )
+
+    repository.mark_sent(reminder["reminder_id"], now=first)
+    active = repository.list(phone)
+    assert len(active) == 1
+    assert active[0]["status"] == "pending"
+    assert active[0]["recurrence_days"] == 7
+    assert active[0]["recurrence_remaining"] == 2
+    assert datetime.fromisoformat(active[0]["scheduled_at"]) > first
+
+
 def test_reminder_ciphertext_migration_is_atomic_and_idempotent() -> None:
     store = _store()
     database_url = os.environ["DATABASE_URL"]
