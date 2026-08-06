@@ -79,6 +79,17 @@ def test_reschedule_understands_position_and_relative_minutes() -> None:
     assert intent.scheduled_at == now + timedelta(minutes=10)
 
 
+def test_cancel_understands_multiple_arabic_ordinal_positions() -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        "الغي التذكير الاول والثاني",
+        now=datetime(2026, 8, 6, 11, 32, tzinfo=UTC),
+        timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.action == "cancel"
+    assert intent.positions == (1, 2)
+
+
 def test_conversation_topics_are_never_reminder_titles() -> None:
     assert reminders._real_mission_title({"title": "identity"}) == ""
     assert reminders._real_mission_title({"title": "greeting_3"}) == ""
@@ -216,3 +227,32 @@ async def test_reschedule_never_guesses_when_multiple_reminders_exist(tmp_path, 
     active = repository.list("49123")
     assert active[0]["title"] == "الثاني"
     assert active[1]["title"] == "الأول"
+
+
+@pytest.mark.anyio
+async def test_cancel_multiple_positions_and_never_guess(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+    repository = reminders.base._repository()
+    now = datetime.now(UTC)
+    repository.create("49123", title="الأول", scheduled_at=now + timedelta(hours=1), language="ar")
+    repository.create("49123", title="الثاني", scheduled_at=now + timedelta(hours=2), language="ar")
+
+    generic = reminders.core.IncomingMessage("r7", "49123", "الغي التذكير", "text")
+    store.claim_message(generic.message_id, generic.sender, generic.text)
+    with patch.object(reminders.core, "send_whatsapp_message", new=AsyncMock()) as send:
+        await reminders.process_incoming(generic)
+        assert "حدّد الرقم أو الأرقام" in send.await_args.args[1]
+        assert len(repository.list("49123")) == 2
+
+        selected = reminders.core.IncomingMessage("r8", "49123", "الغي التذكير الاول والثاني", "text")
+        store.claim_message(selected.message_id, selected.sender, selected.text)
+        await reminders.process_incoming(selected)
+        assert "ألغيت 2 تذكير" in send.await_args.args[1]
+
+    assert repository.list("49123") == []
