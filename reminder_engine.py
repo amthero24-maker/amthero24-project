@@ -408,6 +408,104 @@ class ReminderRepository:
 
         return self.store._transaction(cancel_json)
 
+    def reschedule(
+        self,
+        phone: str,
+        *,
+        scheduled_at: datetime,
+        position: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Move one active reminder without guessing when several are present."""
+        key = _phone_hash(phone)
+        when = scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=UTC)
+        when = when.astimezone(UTC)
+        statuses = ("pending", "failed", "blocked_template")
+        if position is not None and not 1 <= position <= 30:
+            return "not_found", {}
+
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM hero_reminders
+                    WHERE phone_hash = %s AND status = ANY(%s)
+                    ORDER BY scheduled_at ASC LIMIT 30 FOR UPDATE
+                    """,
+                    (key, list(statuses)),
+                ).fetchall()
+                if not rows:
+                    return "not_found", {}
+                if position is None and len(rows) != 1:
+                    return "ambiguous", {}
+                index = (position - 1) if position is not None else 0
+                if index >= len(rows):
+                    return "not_found", {}
+                selected = dict(rows[index])
+                dedupe = self._dedupe(
+                    key,
+                    str(selected.get("mission_id") or ""),
+                    when,
+                    str(selected.get("title") or "Follow-up"),
+                )
+                conflict = connection.execute(
+                    "SELECT 1 FROM hero_reminders WHERE dedupe_key = %s AND reminder_id <> %s LIMIT 1",
+                    (dedupe, selected["reminder_id"]),
+                ).fetchone()
+                if conflict:
+                    return "conflict", {}
+                row = connection.execute(
+                    """
+                    UPDATE hero_reminders
+                    SET scheduled_at = %s, next_attempt_at = %s, dedupe_key = %s,
+                        status = 'pending', attempt_count = 0, last_error = '',
+                        lease_until = NULL, sent_at = NULL, updated_at = NOW()
+                    WHERE reminder_id = %s
+                    RETURNING *
+                    """,
+                    (when, when, dedupe, selected["reminder_id"]),
+                ).fetchone()
+            return "updated", self._from_row(row)
+
+        def update_json(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            candidates = [
+                item for item in data.setdefault("reminders", {}).values()
+                if isinstance(item, dict) and item.get("phone_hash") == key and item.get("status") in statuses
+            ]
+            candidates.sort(key=lambda item: str(item.get("scheduled_at") or ""))
+            if not candidates:
+                return "not_found", {}
+            if position is None and len(candidates) != 1:
+                return "ambiguous", {}
+            index = (position - 1) if position is not None else 0
+            if index >= len(candidates):
+                return "not_found", {}
+            item = candidates[index]
+            dedupe = self._dedupe(
+                key,
+                str(item.get("mission_id") or ""),
+                when,
+                str(item.get("title") or "Follow-up"),
+            )
+            if any(
+                existing is not item and isinstance(existing, dict) and existing.get("dedupe_key") == dedupe
+                for existing in data.setdefault("reminders", {}).values()
+            ):
+                return "conflict", {}
+            item.update({
+                "scheduled_at": when.isoformat(),
+                "next_attempt_at": when.isoformat(),
+                "dedupe_key": dedupe,
+                "status": "pending",
+                "attempt_count": 0,
+                "last_error": "",
+                "lease_until": None,
+                "sent_at": None,
+                "updated_at": datetime.now(UTC).isoformat(),
+            })
+            return "updated", deepcopy(item)
+
+        return self.store._transaction(update_json)
+
     def claim_due(
         self,
         *,
@@ -702,3 +800,38 @@ def reminder_cancelled_message(language: str, count: int) -> str:
         "en": f"Done, {count} reminder(s) cancelled ✅", "uk": f"Готово, скасовано нагадувань: {count} ✅",
         "el": f"Έγινε, ακυρώθηκαν {count} υπενθυμίσεις ✅",
     }.get(language, f"Cancelled {count} reminder(s).")
+
+
+def reminder_rescheduled_message(language: str, reminder: dict[str, Any]) -> str:
+    when = _parse_datetime(reminder.get("scheduled_at")) or datetime.now(UTC)
+    local = when.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
+    date_text = local.strftime("%d.%m.%Y, %H:%M")
+    title = str(reminder.get("title") or "")
+    return {
+        "ar": f"تمام ✅ أجّلت «{title}» للموعد {date_text}.",
+        "de": f"Erledigt ✅ „{title}“ wurde auf den {date_text} verschoben.",
+        "en": f"Done ✅ “{title}” was moved to {date_text}.",
+        "uk": f"Готово ✅ «{title}» перенесено на {date_text}.",
+        "el": f"Έγινε ✅ Το «{title}» μεταφέρθηκε στις {date_text}.",
+    }.get(language, f"Reminder moved to {date_text}.")
+
+
+def reminder_selection_message(language: str, reminders: list[dict[str, Any]]) -> str:
+    prefix = {
+        "ar": "عندك أكثر من تذكير. حدّد الرقم، مثل: «أجّل التذكير 2 لمدة 10 دقائق».\n",
+        "de": "Du hast mehrere Erinnerungen. Nenne die Nummer, z. B. „Erinnerung 2 um 10 Minuten verschieben“.\n",
+        "en": "You have several reminders. Include the number, for example: “snooze reminder 2 for 10 minutes”.\n",
+        "uk": "У вас кілька нагадувань. Вкажіть номер, наприклад: «перенеси нагадування 2 на 10 хвилин».\n",
+        "el": "Έχεις πολλές υπενθυμίσεις. Βάλε τον αριθμό, π.χ. «μετάφερε την υπενθύμιση 2 κατά 10 λεπτά».\n",
+    }.get(language, "Choose a reminder number.\n")
+    return prefix + reminder_list_message(language, reminders)
+
+
+def reminder_reschedule_conflict_message(language: str) -> str:
+    return {
+        "ar": "عندك تذكير مطابق بهذا الموعد أصلًا، لذلك ما غيّرت شي.",
+        "de": "Für diesen Zeitpunkt gibt es bereits dieselbe Erinnerung; ich habe nichts geändert.",
+        "en": "The same reminder already exists at that time, so I changed nothing.",
+        "uk": "На цей час уже є таке саме нагадування, тому нічого не змінено.",
+        "el": "Υπάρχει ήδη η ίδια υπενθύμιση για τότε, οπότε δεν άλλαξα τίποτα.",
+    }.get(language, "The same reminder already exists at that time.")
