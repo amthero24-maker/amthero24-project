@@ -223,17 +223,65 @@ def _clean(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _weekday_occurrence_at_or_after(scheduled_at: datetime, timezone_name: str) -> datetime:
-    """Keep the local clock while moving weekend occurrences to Monday."""
+def _parse_recurrence_weekdays(value: Any) -> tuple[int, ...] | None:
+    """Parse the compact weekday representation, returning None for corrupt data."""
+    if value is None or value == "":
+        return ()
+    raw_values = value.split(",") if isinstance(value, str) else value
+    if not isinstance(raw_values, (list, tuple, set, frozenset)):
+        return None
+    weekdays: set[int] = set()
+    for raw in raw_values:
+        if isinstance(raw, bool):
+            return None
+        text = str(raw).strip()
+        if not text.isdigit():
+            return None
+        weekday = int(text)
+        if not 0 <= weekday <= 6:
+            return None
+        weekdays.add(weekday)
+    return tuple(sorted(weekdays)) if weekdays else None
+
+
+def _canonical_recurrence_weekdays(value: Any) -> str:
+    weekdays = _parse_recurrence_weekdays(value)
+    if not weekdays:
+        raise ReminderServiceError("invalid_recurrence")
+    return ",".join(str(weekday) for weekday in weekdays)
+
+
+def _occurrence_at_or_after(
+    scheduled_at: datetime,
+    timezone_name: str,
+    allowed_weekdays: tuple[int, ...],
+) -> datetime:
+    """Keep the local clock while moving to the nearest allowed weekday."""
     try:
         timezone = ZoneInfo(timezone_name)
     except (KeyError, ValueError):
         timezone = ZoneInfo(DEFAULT_TIMEZONE)
     local = scheduled_at.astimezone(timezone)
-    if local.weekday() < 5:
+    if local.weekday() in allowed_weekdays:
         return scheduled_at.astimezone(UTC)
-    next_date = local.date() + timedelta(days=7 - local.weekday())
+    next_date = local.date() + timedelta(days=1)
+    while next_date.weekday() not in allowed_weekdays:
+        next_date += timedelta(days=1)
     return datetime.combine(next_date, local.timetz()).astimezone(UTC)
+
+
+def _weekday_occurrence_at_or_after(scheduled_at: datetime, timezone_name: str) -> datetime:
+    """Keep the local clock while moving weekend occurrences to Monday."""
+    return _occurrence_at_or_after(scheduled_at, timezone_name, (0, 1, 2, 3, 4))
+
+
+def _allowed_recurrence_weekdays(item: dict[str, Any]) -> tuple[int, ...] | None:
+    specific = _parse_recurrence_weekdays(item.get("recurrence_weekdays"))
+    if specific is None:
+        return None
+    if specific:
+        return specific
+    return (0, 1, 2, 3, 4) if item.get("weekdays_only") else ()
 
 
 class ReminderRepository:
@@ -267,6 +315,7 @@ class ReminderRepository:
                 recurrence_days INTEGER,
                 recurrence_remaining INTEGER,
                 weekdays_only BOOLEAN NOT NULL DEFAULT FALSE,
+                recurrence_weekdays TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
@@ -274,6 +323,7 @@ class ReminderRepository:
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS recurrence_days INTEGER",
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS recurrence_remaining INTEGER",
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS weekdays_only BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS recurrence_weekdays TEXT NOT NULL DEFAULT ''",
             """
             CREATE INDEX IF NOT EXISTS hero_reminders_due_idx
             ON hero_reminders (status, next_attempt_at, scheduled_at)
@@ -313,6 +363,7 @@ class ReminderRepository:
         recurrence_days: int | None = None,
         recurrence_count: int | None = None,
         weekdays_only: bool = False,
+        recurrence_weekdays: tuple[int, ...] | list[int] | set[int] | None = None,
     ) -> dict[str, Any]:
         when = scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=UTC)
         when = when.astimezone(UTC)
@@ -323,14 +374,24 @@ class ReminderRepository:
         repeat_days = int(recurrence_days) if recurrence_days is not None else None
         repeat_count = int(recurrence_count) if recurrence_count is not None else None
         weekday_schedule = bool(weekdays_only)
+        specific_weekdays = (
+            _canonical_recurrence_weekdays(recurrence_weekdays)
+            if recurrence_weekdays is not None else ""
+        )
         if (repeat_days is None) != (repeat_count is None):
             raise ReminderServiceError("invalid_recurrence")
         if repeat_days is not None and (not 1 <= repeat_days <= 365 or not 2 <= repeat_count <= 365):
             raise ReminderServiceError("invalid_recurrence")
         if weekday_schedule and repeat_days != 1:
             raise ReminderServiceError("invalid_recurrence")
-        if weekday_schedule:
-            when = _weekday_occurrence_at_or_after(when, timezone_name)
+        if specific_weekdays and (repeat_days != 1 or weekday_schedule):
+            raise ReminderServiceError("invalid_recurrence")
+        allowed_weekdays = (
+            _parse_recurrence_weekdays(specific_weekdays)
+            if specific_weekdays else ((0, 1, 2, 3, 4) if weekday_schedule else ())
+        )
+        if allowed_weekdays:
+            when = _occurrence_at_or_after(when, timezone_name, allowed_weekdays)
         reminder = {
             "reminder_id": uuid4().hex,
             "dedupe_key": self._dedupe(phone_hash, clean_mission, when, clean_title, repeat_days),
@@ -350,6 +411,7 @@ class ReminderRepository:
             "recurrence_days": repeat_days,
             "recurrence_remaining": repeat_count,
             "weekdays_only": weekday_schedule,
+            "recurrence_weekdays": specific_weekdays,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -360,8 +422,8 @@ class ReminderRepository:
                     INSERT INTO hero_reminders
                         (reminder_id, dedupe_key, phone_hash, recipient_ciphertext, mission_id,
                         title, language, timezone, scheduled_at, next_attempt_at,
-                        recurrence_days, recurrence_remaining, weekdays_only)
-                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s, %s, %s, %s)
+                        recurrence_days, recurrence_remaining, weekdays_only, recurrence_weekdays)
+                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (dedupe_key) DO UPDATE
                     SET updated_at = NOW()
                     RETURNING *
@@ -369,7 +431,8 @@ class ReminderRepository:
                     (
                         reminder["reminder_id"], reminder["dedupe_key"], phone_hash,
                         reminder["recipient_ciphertext"], clean_mission, clean_title, lang,
-                        reminder["timezone"], when, when, repeat_days, repeat_count, weekday_schedule,
+                        reminder["timezone"], when, when, repeat_days, repeat_count,
+                        weekday_schedule, specific_weekdays,
                     ),
                 ).fetchone()
             return self._from_row(row)
@@ -535,12 +598,14 @@ class ReminderRepository:
                 if index >= len(rows):
                     return "not_found", {}
                 selected = dict(rows[index])
-                target_when = (
-                    _weekday_occurrence_at_or_after(
-                        when, str(selected.get("timezone") or DEFAULT_TIMEZONE)
-                    )
-                    if selected.get("weekdays_only") else when
-                )
+                allowed_weekdays = _allowed_recurrence_weekdays(selected)
+                if allowed_weekdays is None:
+                    return "conflict", {}
+                target_when = _occurrence_at_or_after(
+                    when,
+                    str(selected.get("timezone") or DEFAULT_TIMEZONE),
+                    allowed_weekdays,
+                ) if allowed_weekdays else when
                 dedupe = self._dedupe(
                     key,
                     str(selected.get("mission_id") or ""),
@@ -581,12 +646,14 @@ class ReminderRepository:
             if index >= len(candidates):
                 return "not_found", {}
             item = candidates[index]
-            target_when = (
-                _weekday_occurrence_at_or_after(
-                    when, str(item.get("timezone") or DEFAULT_TIMEZONE)
-                )
-                if item.get("weekdays_only") else when
-            )
+            allowed_weekdays = _allowed_recurrence_weekdays(item)
+            if allowed_weekdays is None:
+                return "conflict", {}
+            target_when = _occurrence_at_or_after(
+                when,
+                str(item.get("timezone") or DEFAULT_TIMEZONE),
+                allowed_weekdays,
+            ) if allowed_weekdays else when
             dedupe = self._dedupe(
                 key,
                 str(item.get("mission_id") or ""),
@@ -621,6 +688,7 @@ class ReminderRepository:
         recurrence_days: int | None,
         recurrence_count: int | None,
         weekdays_only: bool = False,
+        recurrence_weekdays: tuple[int, ...] | list[int] | set[int] | None = None,
         position: int | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Change or stop recurrence without guessing between active reminders."""
@@ -633,7 +701,18 @@ class ReminderRepository:
         ):
             return "invalid", {}
         weekday_schedule = bool(weekdays_only)
+        try:
+            specific_weekdays = (
+                _canonical_recurrence_weekdays(recurrence_weekdays)
+                if recurrence_weekdays is not None else ""
+            )
+        except ReminderServiceError:
+            return "invalid", {}
         if weekday_schedule and recurrence_days != 1:
+            return "invalid", {}
+        if specific_weekdays and (recurrence_days != 1 or weekday_schedule):
+            return "invalid", {}
+        if recurrence_days is None and (weekday_schedule or specific_weekdays):
             return "invalid", {}
         key = _phone_hash(phone)
         statuses = ("pending", "failed", "blocked_template")
@@ -642,9 +721,15 @@ class ReminderRepository:
             scheduled = _parse_datetime(item.get("scheduled_at"))
             if scheduled is None:
                 raise ReminderServiceError("invalid_schedule")
-            if weekday_schedule:
-                scheduled = _weekday_occurrence_at_or_after(
-                    scheduled, str(item.get("timezone") or DEFAULT_TIMEZONE)
+            allowed_weekdays = (
+                _parse_recurrence_weekdays(specific_weekdays)
+                if specific_weekdays else ((0, 1, 2, 3, 4) if weekday_schedule else ())
+            )
+            if allowed_weekdays:
+                scheduled = _occurrence_at_or_after(
+                    scheduled,
+                    str(item.get("timezone") or DEFAULT_TIMEZONE),
+                    allowed_weekdays,
                 )
             dedupe = self._dedupe(
                 key,
@@ -684,14 +769,14 @@ class ReminderRepository:
                     """
                     UPDATE hero_reminders
                     SET recurrence_days = %s, recurrence_remaining = %s, weekdays_only = %s,
-                        dedupe_key = %s,
+                        recurrence_weekdays = %s, scheduled_at = %s, dedupe_key = %s,
                         status = 'pending', attempt_count = 0, last_error = '',
                         next_attempt_at = %s, lease_until = NULL, updated_at = NOW()
                     WHERE reminder_id = %s RETURNING *
                     """,
                     (
-                        recurrence_days, recurrence_count, weekday_schedule, dedupe,
-                        scheduled, selected["reminder_id"],
+                        recurrence_days, recurrence_count, weekday_schedule, specific_weekdays,
+                        scheduled, dedupe, scheduled, selected["reminder_id"],
                     ),
                 ).fetchone()
             return "updated", self._from_row(row)
@@ -720,6 +805,8 @@ class ReminderRepository:
                 "recurrence_days": recurrence_days,
                 "recurrence_remaining": recurrence_count,
                 "weekdays_only": weekday_schedule,
+                "recurrence_weekdays": specific_weekdays,
+                "scheduled_at": scheduled.isoformat(),
                 "dedupe_key": dedupe,
                 "status": "pending",
                 "attempt_count": 0,
@@ -816,8 +903,11 @@ class ReminderRepository:
         except (KeyError, ValueError):
             local = scheduled.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
         next_date = local.date() + timedelta(days=days)
-        if item.get("weekdays_only"):
-            while next_date.weekday() >= 5:
+        allowed_weekdays = _allowed_recurrence_weekdays(item)
+        if allowed_weekdays is None:
+            return None
+        if allowed_weekdays:
+            while next_date.weekday() not in allowed_weekdays:
                 next_date += timedelta(days=1)
         return datetime.combine(next_date, local.timetz()).astimezone(UTC)
 
@@ -1047,6 +1137,27 @@ def reminder_needs_date_message(language: str) -> str:
     }.get(language, "Please provide a reminder date.")
 
 
+_WEEKDAY_NAMES = {
+    "ar": ("الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"),
+    "de": ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"),
+    "en": ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+    "uk": ("понеділок", "вівторок", "середа", "четвер", "п’ятниця", "субота", "неділя"),
+    "el": ("Δευτέρα", "Τρίτη", "Τετάρτη", "Πέμπτη", "Παρασκευή", "Σάββατο", "Κυριακή"),
+}
+
+
+def _recurrence_weekday_label(language: str, reminder: dict[str, Any]) -> str:
+    weekdays = _parse_recurrence_weekdays(reminder.get("recurrence_weekdays")) or ()
+    names = _WEEKDAY_NAMES.get(language, _WEEKDAY_NAMES["en"])
+    selected = [names[weekday] for weekday in weekdays]
+    if len(selected) < 2:
+        return selected[0] if selected else ""
+    connector = {"ar": " و", "de": " und ", "en": " and ", "uk": " і ", "el": " και "}.get(
+        language, " and "
+    )
+    return ", ".join(selected[:-1]) + connector + selected[-1]
+
+
 def reminder_created_message(language: str, reminder: dict[str, Any]) -> str:
     when = _parse_datetime(reminder.get("scheduled_at")) or datetime.now(UTC)
     local = when.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
@@ -1055,7 +1166,16 @@ def reminder_created_message(language: str, reminder: dict[str, Any]) -> str:
     remaining = int(reminder.get("recurrence_remaining") or 0)
     days = int(reminder.get("recurrence_days") or 0)
     if remaining > 1 and days > 0:
-        if reminder.get("weekdays_only"):
+        weekday_label = _recurrence_weekday_label(language, reminder)
+        if weekday_label:
+            recurrence = {
+                "ar": f" ويتكرر أيام {weekday_label}، {remaining} مرات.",
+                "de": f" Wiederholung am {weekday_label}, insgesamt {remaining}-mal.",
+                "en": f" It repeats on {weekday_label}, {remaining} times total.",
+                "uk": f" Повторення у дні: {weekday_label}, усього {remaining} разів.",
+                "el": f" Επανάληψη κάθε {weekday_label}, συνολικά {remaining} φορές.",
+            }.get(language, f" Repeats on {weekday_label}, {remaining} times.")
+        elif reminder.get("weekdays_only"):
             recurrence = {
                 "ar": f" ويتكرر في أيام العمل فقط، {remaining} مرات.",
                 "de": f" Wiederholung nur werktags, insgesamt {remaining}-mal.",
@@ -1095,7 +1215,10 @@ def reminder_list_message(language: str, reminders: list[dict[str, Any]]) -> str
         local = when.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
         repeat = ""
         if int(reminder.get("recurrence_remaining") or 0) > 1:
-            if reminder.get("weekdays_only"):
+            weekday_label = _recurrence_weekday_label(language, reminder)
+            if weekday_label:
+                repeat = f" ↻ {reminder.get('recurrence_remaining')}×/{weekday_label}"
+            elif reminder.get("weekdays_only"):
                 label = {
                     "ar": "أيام العمل", "de": "werktags", "en": "weekdays",
                     "uk": "робочі дні", "el": "εργάσιμες",
@@ -1176,6 +1299,15 @@ def reminder_recurrence_updated_message(language: str, reminder: dict[str, Any])
     days = int(reminder.get("recurrence_days") or 0)
     count = int(reminder.get("recurrence_remaining") or 0)
     if days and count:
+        weekday_label = _recurrence_weekday_label(language, reminder)
+        if weekday_label:
+            return {
+                "ar": f"تمام ✅ صار تذكير «{title}» يتكرر أيام {weekday_label}، {count} مرات.",
+                "de": f"Erledigt ✅ „{title}“ wiederholt sich am {weekday_label}, insgesamt {count}-mal.",
+                "en": f"Done ✅ “{title}” now repeats on {weekday_label}, {count} times.",
+                "uk": f"Готово ✅ «{title}» повторюється у дні: {weekday_label}, {count} разів.",
+                "el": f"Έγινε ✅ Το «{title}» επαναλαμβάνεται κάθε {weekday_label}, {count} φορές.",
+            }.get(language, f"Specific weekday recurrence updated for {title}.")
         if reminder.get("weekdays_only"):
             return {
                 "ar": f"تمام ✅ صار تذكير «{title}» يتكرر في أيام العمل فقط، {count} مرات.",

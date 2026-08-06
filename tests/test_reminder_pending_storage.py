@@ -18,6 +18,7 @@ def test_pending_reminder_fields_survive_store_allowlist(tmp_path, monkeypatch) 
         "pending_reminder_recurrence_days": "1",
         "pending_reminder_recurrence_count": "7",
         "pending_reminder_weekdays_only": "1",
+        "pending_reminder_weekdays": "0,3",
     })
 
     profile = store.get_user("49123")
@@ -26,6 +27,7 @@ def test_pending_reminder_fields_survive_store_allowlist(tmp_path, monkeypatch) 
     assert profile["pending_reminder_recurrence_days"] == "1"
     assert profile["pending_reminder_recurrence_count"] == "7"
     assert profile["pending_reminder_weekdays_only"] == "1"
+    assert profile["pending_reminder_weekdays"] == "0,3"
 
 
 def test_pending_reminder_fields_are_session_scoped(tmp_path, monkeypatch) -> None:
@@ -37,6 +39,7 @@ def test_pending_reminder_fields_are_session_scoped(tmp_path, monkeypatch) -> No
         "pending_reminder_recurrence_days": "7",
         "pending_reminder_recurrence_count": "4",
         "pending_reminder_weekdays_only": "0",
+        "pending_reminder_weekdays": "0,3",
         "session_expires_at": (now - timedelta(seconds=1)).isoformat(),
     })
 
@@ -46,3 +49,4 @@ def test_pending_reminder_fields_are_session_scoped(tmp_path, monkeypatch) -> No
     assert "pending_reminder_recurrence_days" not in store.get_user("49123")
     assert "pending_reminder_recurrence_count" not in store.get_user("49123")
     assert "pending_reminder_weekdays_only" not in store.get_user("49123")
+    assert "pending_reminder_weekdays" not in store.get_user("49123")

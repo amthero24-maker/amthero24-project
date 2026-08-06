@@ -145,6 +145,35 @@ def test_multilingual_weekday_recurrence_is_bounded_and_cleans_title(text, count
     assert intent.title == title
 
 
+@pytest.mark.parametrize(("text", "count", "title"), (
+    ("ذكرني كل اثنين وخميس الساعة 8 اتصل بالمكتب لمدة 6 مرات", 6, "اتصل بالمكتب"),
+    ("remind me every Monday and Thursday tomorrow call the office for 5 times", 5, "call the office"),
+    ("erinnere mich jeden Montag und Donnerstag morgen um 9 Unterlagen prüfen für 4 mal", 4, "Unterlagen prüfen"),
+    ("нагадай мені кожного понеділка і четверга завтра пити воду протягом 5 разів", 5, "пити воду"),
+    ("θυμισε μου καθε δευτερα και πεμπτη αυριο ελεγξε τα εγγραφα για 4 φορες", 4, "ελεγξε τα εγγραφα"),
+))
+def test_multilingual_specific_weekdays_are_bounded_and_clean_title(text, count, title) -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        text, now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC"
+    )
+    assert intent is not None
+    assert intent.recurrence_days == 1
+    assert intent.recurrence_count == count
+    assert intent.weekdays_only is False
+    assert intent.recurrence_weekdays == (0, 3)
+    assert intent.title == title
+
+
+def test_weekday_name_without_explicit_recurrence_is_not_repeating() -> None:
+    intent = reminders.detect_conversational_reminder_intent(
+        "ذكرني بعد ساعة اتصل بمكتب الاثنين",
+        now=datetime(2026, 8, 6, 5, tzinfo=UTC), timezone_name="UTC",
+    )
+    assert intent is not None
+    assert intent.recurrence_days is None
+    assert intent.recurrence_weekdays == ()
+
+
 def test_arabic_excluding_weekend_phrase_is_a_weekday_recurrence() -> None:
     intent = reminders.detect_conversational_reminder_intent(
         "ذكرني كل يوم ما عدا السبت والأحد الساعة 8 راجع البريد لمدة 6 مرات",
@@ -403,6 +432,75 @@ async def test_weekday_recurrence_followup_preserves_schedule_type(tmp_path, mon
 
 
 @pytest.mark.anyio
+async def test_specific_weekdays_followup_preserves_selected_days(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    first = reminders.core.IncomingMessage(
+        "specific-1", "49123", "ذكرني بعد ساعة كل اثنين وخميس اشرب الدواء", "text"
+    )
+    store.claim_message(first.message_id, first.sender, first.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(first)
+        assert "لكم مرة" in send.await_args.args[1]
+        profile = store.get_user("49123")
+        assert profile["pending_reminder_weekdays"] == "0,3"
+
+        second = reminders.core.IncomingMessage("specific-2", "49123", "6 مرات", "text")
+        store.claim_message(second.message_id, second.sender, second.text)
+        await reminders.process_incoming(second)
+        assert "الاثنين والخميس، 6 مرات" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["recurrence_weekdays"] == "0,3"
+    assert created[0]["weekdays_only"] is False
+    assert "pending_reminder_weekdays" not in store.get_user("49123")
+
+
+@pytest.mark.anyio
+async def test_specific_weekdays_survive_missing_time_followup(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
+    store = JsonDataStore(tmp_path / "store.json")
+    reminders.core.store = store
+    reminders.core._hero_memory_store = reminders.core.HeroMemory(store)
+    reminders.base._REMINDER_REPOSITORY = None
+    _seed_user(store)
+
+    first = reminders.core.IncomingMessage(
+        "specific-time-1", "49123",
+        "ذكرني كل اثنين وخميس اتصل بالمكتب لمدة 5 مرات", "text",
+    )
+    store.claim_message(first.message_id, first.sender, first.text)
+    with patch.object(reminders.base, "reminder_delivery_ready", return_value=True), patch.object(
+        reminders.core, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await reminders.process_incoming(first)
+        assert "إيمتى أذكّرك" in send.await_args.args[1]
+        profile = store.get_user("49123")
+        assert profile["pending_reminder_recurrence_count"] == "5"
+        assert profile["pending_reminder_weekdays"] == "0,3"
+
+        second = reminders.core.IncomingMessage("specific-time-2", "49123", "بعد ساعة", "text")
+        store.claim_message(second.message_id, second.sender, second.text)
+        await reminders.process_incoming(second)
+        assert "الاثنين والخميس، 5 مرات" in send.await_args.args[1]
+
+    created = reminders.base._repository().list("49123")
+    assert len(created) == 1
+    assert created[0]["recurrence_weekdays"] == "0,3"
+    assert created[0]["recurrence_remaining"] == 5
+
+
+@pytest.mark.anyio
 async def test_weekday_recurrence_survives_missing_time_followup(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", STRONG_REMINDER_KEY)
@@ -469,6 +567,16 @@ def test_recurrence_control_intents_include_target_and_bounds() -> None:
     assert weekdays.weekdays_only is True
     assert weekdays.recurrence_days == 1
     assert weekdays.recurrence_count == 10
+
+    specific = reminders.detect_conversational_reminder_intent(
+        "خلي التذكير 2 كل اثنين وخميس لمدة 8 مرات"
+    )
+    assert specific is not None
+    assert specific.action == "recurrence_update"
+    assert specific.position == 2
+    assert specific.weekdays_only is False
+    assert specific.recurrence_weekdays == (0, 3)
+    assert specific.recurrence_count == 8
 
     stop = reminders.detect_conversational_reminder_intent("وقف تكرار التذكير 2")
     assert stop is not None
