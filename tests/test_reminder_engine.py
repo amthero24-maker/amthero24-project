@@ -9,6 +9,7 @@ import pytest
 from data_store import JsonDataStore
 from reminder_engine import (
     ReminderRepository,
+    ReminderServiceError,
     deliver_due_reminders,
     detect_reminder_intent,
     resolve_reminder_schedule,
@@ -109,6 +110,37 @@ def test_cancel_selected_is_atomic_and_uses_displayed_order(tmp_path, monkeypatc
 
     assert repository.cancel_selected(phone, (2, 1, 2)) == 2
     assert [item["title"] for item in repository.list(phone)] == ["Third"]
+
+
+def test_recurring_reminder_advances_in_local_time_and_finishes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    first = datetime(2026, 10, 24, 6, tzinfo=UTC)  # 08:00 Europe/Berlin before DST ends
+    reminder = repository.create(
+        "491234567", title="Medicine", scheduled_at=first, language="en",
+        recurrence_days=1, recurrence_count=2,
+    )
+
+    repository.mark_sent(reminder["reminder_id"], now=first)
+    active = repository.list("491234567")
+    assert len(active) == 1
+    assert active[0]["scheduled_at"] == datetime(2026, 10, 25, 7, tzinfo=UTC).isoformat()
+    assert active[0]["recurrence_remaining"] == 1
+    assert active[0]["status"] == "pending"
+
+    repository.mark_sent(reminder["reminder_id"], now=datetime(2026, 10, 25, 7, tzinfo=UTC))
+    assert repository.list("491234567") == []
+    assert repository.list("491234567", active_only=False)[0]["status"] == "sent"
+
+
+def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    with pytest.raises(ReminderServiceError, match="invalid_recurrence"):
+        repository.create(
+            "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+            language="en", recurrence_days=1, recurrence_count=500,
+        )
 
 
 def test_service_window_uses_last_inbound_activity() -> None:

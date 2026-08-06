@@ -251,10 +251,14 @@ class ReminderRepository:
                 next_attempt_at TIMESTAMPTZ NOT NULL,
                 lease_until TIMESTAMPTZ,
                 sent_at TIMESTAMPTZ,
+                recurrence_days INTEGER,
+                recurrence_remaining INTEGER,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """,
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS recurrence_days INTEGER",
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS recurrence_remaining INTEGER",
             """
             CREATE INDEX IF NOT EXISTS hero_reminders_due_idx
             ON hero_reminders (status, next_attempt_at, scheduled_at)
@@ -269,8 +273,17 @@ class ReminderRepository:
                 connection.execute(statement)
 
     @staticmethod
-    def _dedupe(phone_hash: str, mission_id: str, scheduled_at: datetime, title: str) -> str:
-        raw = f"{phone_hash}|{mission_id}|{scheduled_at.astimezone(UTC).isoformat()}|{title.casefold()}"
+    def _dedupe(
+        phone_hash: str,
+        mission_id: str,
+        scheduled_at: datetime,
+        title: str,
+        recurrence_days: int | None = None,
+    ) -> str:
+        raw = (
+            f"{phone_hash}|{mission_id}|{scheduled_at.astimezone(UTC).isoformat()}|"
+            f"{title.casefold()}|{recurrence_days or 0}"
+        )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def create(
@@ -282,6 +295,8 @@ class ReminderRepository:
         language: str,
         mission_id: str = "",
         timezone_name: str = DEFAULT_TIMEZONE,
+        recurrence_days: int | None = None,
+        recurrence_count: int | None = None,
     ) -> dict[str, Any]:
         when = scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=UTC)
         when = when.astimezone(UTC)
@@ -289,9 +304,15 @@ class ReminderRepository:
         clean_title = _clean(title, 180) or "Follow-up"
         clean_mission = _clean(mission_id, 64)
         lang = language if language in SUPPORTED_LANGUAGES else "de"
+        repeat_days = int(recurrence_days) if recurrence_days is not None else None
+        repeat_count = int(recurrence_count) if recurrence_count is not None else None
+        if (repeat_days is None) != (repeat_count is None):
+            raise ReminderServiceError("invalid_recurrence")
+        if repeat_days is not None and (not 1 <= repeat_days <= 365 or not 2 <= repeat_count <= 365):
+            raise ReminderServiceError("invalid_recurrence")
         reminder = {
             "reminder_id": uuid4().hex,
-            "dedupe_key": self._dedupe(phone_hash, clean_mission, when, clean_title),
+            "dedupe_key": self._dedupe(phone_hash, clean_mission, when, clean_title, repeat_days),
             "phone_hash": phone_hash,
             "recipient_ciphertext": encrypt_recipient(phone),
             "mission_id": clean_mission,
@@ -305,6 +326,8 @@ class ReminderRepository:
             "next_attempt_at": when.isoformat(),
             "lease_until": None,
             "sent_at": None,
+            "recurrence_days": repeat_days,
+            "recurrence_remaining": repeat_count,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -314,8 +337,9 @@ class ReminderRepository:
                     """
                     INSERT INTO hero_reminders
                         (reminder_id, dedupe_key, phone_hash, recipient_ciphertext, mission_id,
-                         title, language, timezone, scheduled_at, next_attempt_at)
-                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s)
+                        title, language, timezone, scheduled_at, next_attempt_at,
+                        recurrence_days, recurrence_remaining)
+                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (dedupe_key) DO UPDATE
                     SET updated_at = NOW()
                     RETURNING *
@@ -323,7 +347,7 @@ class ReminderRepository:
                     (
                         reminder["reminder_id"], reminder["dedupe_key"], phone_hash,
                         reminder["recipient_ciphertext"], clean_mission, clean_title, lang,
-                        reminder["timezone"], when, when,
+                        reminder["timezone"], when, when, repeat_days, repeat_count,
                     ),
                 ).fetchone()
             return self._from_row(row)
@@ -494,6 +518,7 @@ class ReminderRepository:
                     str(selected.get("mission_id") or ""),
                     when,
                     str(selected.get("title") or "Follow-up"),
+                    int(selected["recurrence_days"]) if selected.get("recurrence_days") else None,
                 )
                 conflict = connection.execute(
                     "SELECT 1 FROM hero_reminders WHERE dedupe_key = %s AND reminder_id <> %s LIMIT 1",
@@ -533,6 +558,7 @@ class ReminderRepository:
                 str(item.get("mission_id") or ""),
                 when,
                 str(item.get("title") or "Follow-up"),
+                int(item["recurrence_days"]) if item.get("recurrence_days") else None,
             )
             if any(
                 existing is not item and isinstance(existing, dict) and existing.get("dedupe_key") == dedupe
@@ -621,7 +647,70 @@ class ReminderRepository:
 
     def mark_sent(self, reminder_id: str, *, now: datetime | None = None) -> None:
         current = (now or datetime.now(UTC)).astimezone(UTC)
+        if self._advance_recurrence(reminder_id, current):
+            return
         self._set_delivery_state(reminder_id, "sent", current, "", None, sent_at=current)
+
+    @staticmethod
+    def _next_occurrence(item: dict[str, Any]) -> datetime | None:
+        days = int(item.get("recurrence_days") or 0)
+        remaining = int(item.get("recurrence_remaining") or 0)
+        scheduled = _parse_datetime(item.get("scheduled_at"))
+        if days < 1 or remaining <= 1 or scheduled is None:
+            return None
+        timezone_name = str(item.get("timezone") or DEFAULT_TIMEZONE)
+        try:
+            local = scheduled.astimezone(ZoneInfo(timezone_name))
+        except (KeyError, ValueError):
+            local = scheduled.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+        next_date = local.date() + timedelta(days=days)
+        return datetime.combine(next_date, local.timetz()).astimezone(UTC)
+
+    def _advance_recurrence(self, reminder_id: str, current: datetime) -> bool:
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                row = connection.execute(
+                    "SELECT * FROM hero_reminders WHERE reminder_id = %s FOR UPDATE",
+                    (reminder_id,),
+                ).fetchone()
+                item = dict(row) if row else {}
+                next_at = self._next_occurrence(item)
+                if next_at is None:
+                    return False
+                connection.execute(
+                    """
+                    UPDATE hero_reminders
+                    SET scheduled_at = %s, next_attempt_at = %s,
+                        recurrence_remaining = recurrence_remaining - 1,
+                        status = 'pending', attempt_count = 0, last_error = '',
+                        lease_until = NULL, sent_at = %s, updated_at = NOW()
+                    WHERE reminder_id = %s
+                    """,
+                    (next_at, next_at, current, reminder_id),
+                )
+            return True
+
+        def advance_json(data: dict[str, Any]) -> bool:
+            item = data.setdefault("reminders", {}).get(reminder_id)
+            if not isinstance(item, dict):
+                return False
+            next_at = self._next_occurrence(item)
+            if next_at is None:
+                return False
+            item.update({
+                "scheduled_at": next_at.isoformat(),
+                "next_attempt_at": next_at.isoformat(),
+                "recurrence_remaining": int(item.get("recurrence_remaining") or 0) - 1,
+                "status": "pending",
+                "attempt_count": 0,
+                "last_error": "",
+                "lease_until": None,
+                "sent_at": current.isoformat(),
+                "updated_at": current.isoformat(),
+            })
+            return True
+
+        return self.store._transaction(advance_json)
 
     def mark_blocked(self, reminder_id: str, *, reason: str = "template_required", now: datetime | None = None) -> None:
         current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -808,12 +897,24 @@ def reminder_created_message(language: str, reminder: dict[str, Any]) -> str:
     local = when.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
     date_text = local.strftime("%d.%m.%Y, %H:%M")
     title = str(reminder.get("title") or "")
+    remaining = int(reminder.get("recurrence_remaining") or 0)
+    days = int(reminder.get("recurrence_days") or 0)
+    if remaining > 1 and days > 0:
+        recurrence = {
+            "ar": f" ويتكرر كل {days} يوم، {remaining} مرات.",
+            "de": f" Wiederholung alle {days} Tag(e), insgesamt {remaining}-mal.",
+            "en": f" It repeats every {days} day(s), {remaining} times total.",
+            "uk": f" Повторення кожні {days} дн., усього {remaining} разів.",
+            "el": f" Επανάληψη κάθε {days} ημέρα/ες, συνολικά {remaining} φορές.",
+        }.get(language, f" Repeats every {days} day(s), {remaining} times.")
+    else:
+        recurrence = ""
     return {
-        "ar": f"تم ✅ رح ذكّرك بخصوص «{title}» بتاريخ {date_text}. ما في رسائل دعائية، والتذكير بتقدر تلغيه بأي وقت.",
-        "de": f"Gespeichert ✅ Ich erinnere dich am {date_text} an „{title}“. Keine Werbung, und du kannst die Erinnerung jederzeit löschen.",
-        "en": f"Saved ✅ I will remind you about “{title}” on {date_text}. No marketing, and you can cancel it anytime.",
-        "uk": f"Збережено ✅ Нагадаю про «{title}» {date_text}. Без реклами; нагадування можна скасувати будь-коли.",
-        "el": f"Αποθηκεύτηκε ✅ Θα σου θυμίσω το «{title}» στις {date_text}. Χωρίς διαφημίσεις και μπορείς να το ακυρώσεις οποτεδήποτε.",
+        "ar": f"تم ✅ رح ذكّرك بخصوص «{title}» بتاريخ {date_text}.{recurrence} ما في رسائل دعائية، والتذكير بتقدر تلغيه بأي وقت.",
+        "de": f"Gespeichert ✅ Ich erinnere dich am {date_text} an „{title}“.{recurrence} Keine Werbung, und du kannst die Erinnerung jederzeit löschen.",
+        "en": f"Saved ✅ I will remind you about “{title}” on {date_text}.{recurrence} No marketing, and you can cancel it anytime.",
+        "uk": f"Збережено ✅ Нагадаю про «{title}» {date_text}.{recurrence} Без реклами; нагадування можна скасувати будь-коли.",
+        "el": f"Αποθηκεύτηκε ✅ Θα σου θυμίσω το «{title}» στις {date_text}.{recurrence} Χωρίς διαφημίσεις και μπορείς να το ακυρώσεις οποτεδήποτε.",
     }.get(language, f"Reminder saved for {date_text}.")
 
 
@@ -828,7 +929,10 @@ def reminder_list_message(language: str, reminders: list[dict[str, Any]]) -> str
     for index, reminder in enumerate(reminders, start=1):
         when = _parse_datetime(reminder.get("scheduled_at")) or datetime.now(UTC)
         local = when.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
-        lines.append(f"{index}. {reminder.get('title')} — {local.strftime('%d.%m.%Y %H:%M')}")
+        repeat = ""
+        if int(reminder.get("recurrence_remaining") or 0) > 1:
+            repeat = f" ↻ {reminder.get('recurrence_remaining')}×/{reminder.get('recurrence_days')}d"
+        lines.append(f"{index}. {reminder.get('title')} — {local.strftime('%d.%m.%Y %H:%M')}{repeat}")
     heading = {
         "ar": "تذكيراتك الفعّالة:", "de": "Deine aktiven Erinnerungen:", "en": "Your active reminders:",
         "uk": "Твої активні нагадування:", "el": "Οι ενεργές υπενθυμίσεις σου:",
