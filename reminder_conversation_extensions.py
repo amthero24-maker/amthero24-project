@@ -38,6 +38,8 @@ class ConversationalReminderIntent:
     exact_time: bool = False
     position: int | None = None
     positions: tuple[int, ...] = ()
+    recurrence_days: int | None = None
+    recurrence_count: int | None = None
 
 
 _RESCHEDULE_MARKERS = (
@@ -199,11 +201,43 @@ def _extract_title(text: str) -> str:
         r"\b(?:الساعة|ساعه)\s*\d{1,2}(?::\d{2})?\s*(?:صباحا|صباح|الصبح|مساء|المسا|ليلا|ليل)?",
         r"\b(?:in\s+\d+\s*(?:minutes?|hours?|days?)|tomorrow|today\s+at\s+\d{1,2}(?::\d{2})?)\b",
         r"\b(?:morgen\s+um\s+\d{1,2}(?::\d{2})?|in\s+\d+\s*(?:minuten?|stunden?|tagen?))\b",
+        r"\b(?:كل\s+(?:يوم|اسبوع|أسبوع)|يوميا|يوميًا|اسبوعيا|أسبوعيًا)\b",
+        r"\bلمدة\s+\d{1,3}\s*(?:يوم|ايام|أيام|اسبوع|أسابيع|اسابيع)\b",
+        r"\b(?:every\s+(?:day|week)|daily|weekly)\b",
+        r"\bfor\s+\d{1,3}\s*(?:days?|weeks?)\b",
+        r"\b(?:jeden\s+tag|jede\s+woche|täglich|wöchentlich)\b",
+        r"\bfür\s+\d{1,3}\s*(?:tage?|wochen?)\b",
+        r"\b(?:щодня|кожного\s+дня|щотижня|кожного\s+тижня)\b",
+        r"\bпротягом\s+\d{1,3}\s*(?:днів|тижнів)\b",
+        r"\bзавтра\b",
+        r"\b(?:καθε\s+μερα|καθε\s+εβδομαδα)\b",
+        r"\bγια\s+\d{1,3}\s*(?:ημερες|εβδομαδες)\b",
+        r"\bαυριο\b",
     )
     for pattern in time_patterns:
         value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
     value = re.sub(r"\s+", " ", value).strip(" -،.")
     return value[:180]
+
+
+def _parse_recurrence(normalized: str) -> tuple[int | None, int | None]:
+    daily = any(token in normalized for token in (
+        "كل يوم", "يوميا", "every day", "daily", "jeden tag", "taglich", "täglich",
+        "щодня", "кожного дня", "καθε μερα",
+    ))
+    weekly = any(token in normalized for token in (
+        "كل اسبوع", "اسبوعيا", "every week", "weekly", "jede woche", "wochentlich", "wöchentlich",
+        "щотижня", "кожного тижня", "καθε εβδομαδα",
+    ))
+    if not daily and not weekly:
+        return None, None
+    days = 1 if daily else 7
+    unit = r"(?:يوم|ايام|اسبوع|اسابيع|days?|weeks?|tage?|wochen?|днів|тижнів|ημερεσ|εβδομαδεσ)"
+    match = re.search(rf"(?:لمدة|for|fur|für|протягом|για)\s+(\d{{1,3}})\s*{unit}\b", normalized)
+    if not match:
+        return days, None
+    count = int(match.group(1))
+    return days, count if 2 <= count <= 365 else None
 
 
 def detect_conversational_reminder_intent(
@@ -240,12 +274,15 @@ def detect_conversational_reminder_intent(
         exact = scheduled is not None
     if scheduled is None:
         scheduled = base_intent.scheduled_at
+    recurrence_days, recurrence_count = _parse_recurrence(normalized)
     return ConversationalReminderIntent(
         "create",
         scheduled_at=scheduled,
         lead_days=base_intent.lead_days,
         title=_extract_title(text),
         exact_time=exact,
+        recurrence_days=recurrence_days,
+        recurrence_count=recurrence_count,
     )
 
 
@@ -275,22 +312,27 @@ def _question(language: str, missing: str) -> str:
         "ar": {
             "title": "تمام. شو بتحب ذكّرك فيه؟ اكتبها بكلمتين مثل: اتصل بالمكتب.",
             "time": "إيمتى أذكّرك؟ فيك تقول: بعد دقيقة، بعد ساعتين، اليوم الساعة 7، أو بكرا الصبح.",
+            "recurrence": "لكم مرة أكرر التذكير؟ مثال: كل يوم الساعة 8 لمدة 7 أيام.",
         },
         "de": {
             "title": "Woran soll ich dich erinnern? Ein kurzer Satz reicht, zum Beispiel: beim Amt anrufen.",
             "time": "Wann soll ich dich erinnern? Zum Beispiel: in einer Minute, in zwei Stunden oder morgen um 9.",
+            "recurrence": "Wie oft soll ich erinnern? Zum Beispiel: jeden Tag um 8 Uhr für 7 Tage.",
         },
         "en": {
             "title": "What should I remind you about? A few words are enough, for example: call the office.",
             "time": "When should I remind you? You can say: in one minute, in two hours, or tomorrow at 9.",
+            "recurrence": "How many times should it repeat? For example: every day at 8 for 7 days.",
         },
         "uk": {
             "title": "Про що нагадати? Достатньо кількох слів, наприклад: зателефонувати до установи.",
             "time": "Коли нагадати? Наприклад: через хвилину, через дві години або завтра о 9.",
+            "recurrence": "Скільки разів повторити? Наприклад: щодня о 8 протягом 7 днів.",
         },
         "el": {
             "title": "Για τι να σου θυμίσω; Αρκούν λίγες λέξεις, π.χ. τηλεφώνησε στην υπηρεσία.",
             "time": "Πότε να σου θυμίσω; Π.χ. σε ένα λεπτό, σε δύο ώρες ή αύριο στις 9.",
+            "recurrence": "Πόσες φορές να επαναληφθεί; Π.χ. κάθε μέρα στις 8 για 7 ημέρες.",
         },
     }
     lang = language if language in messages else "de"
@@ -379,6 +421,10 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         await core._finish(message.message_id, base.reminder_unavailable_message(language), message.sender)
         return
 
+    if intent.recurrence_days is not None and intent.recurrence_count is None:
+        await core._finish(message.message_id, _question(language, "recurrence"), message.sender)
+        return
+
     mission = core._hero_memory().get_latest_mission(message.sender)
     scheduled_at = resolve_conversational_schedule(intent, mission)
     title = intent.title or _real_mission_title(mission)
@@ -413,6 +459,8 @@ async def process_incoming(message: core.IncomingMessage) -> None:
         scheduled_at=scheduled_at,
         language=language,
         mission_id=str((mission or {}).get("mission_id") or ""),
+        recurrence_days=intent.recurrence_days,
+        recurrence_count=intent.recurrence_count,
     )
     await core._finish(message.message_id, base.reminder_created_message(language, reminder), message.sender)
 
