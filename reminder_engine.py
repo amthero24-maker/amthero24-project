@@ -408,6 +408,54 @@ class ReminderRepository:
 
         return self.store._transaction(cancel_json)
 
+    def cancel_selected(self, phone: str, positions: tuple[int, ...]) -> int:
+        """Cancel numbered reminders atomically using the displayed list order."""
+        selected_positions = tuple(sorted(set(int(value) for value in positions)))
+        if not selected_positions or any(value < 1 or value > 30 for value in selected_positions):
+            return 0
+        key = _phone_hash(phone)
+        statuses = ("pending", "failed", "blocked_template", "processing")
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT reminder_id FROM hero_reminders
+                    WHERE phone_hash = %s AND status = ANY(%s)
+                    ORDER BY scheduled_at ASC LIMIT 30 FOR UPDATE
+                    """,
+                    (key, list(statuses)),
+                ).fetchall()
+                if not rows or selected_positions[-1] > len(rows):
+                    return 0
+                reminder_ids = [str(rows[position - 1]["reminder_id"]) for position in selected_positions]
+                cursor = connection.execute(
+                    """
+                    UPDATE hero_reminders
+                    SET status = 'cancelled', updated_at = NOW(), lease_until = NULL
+                    WHERE reminder_id = ANY(%s)
+                    """,
+                    (reminder_ids,),
+                )
+            return max(cursor.rowcount, 0)
+
+        def cancel_json(data: dict[str, Any]) -> int:
+            candidates = [
+                item for item in data.setdefault("reminders", {}).values()
+                if isinstance(item, dict) and item.get("phone_hash") == key and item.get("status") in statuses
+            ]
+            candidates.sort(key=lambda item: str(item.get("scheduled_at") or ""))
+            if not candidates or selected_positions[-1] > len(candidates):
+                return 0
+            current = datetime.now(UTC).isoformat()
+            for position in selected_positions:
+                item = candidates[position - 1]
+                item["status"] = "cancelled"
+                item["updated_at"] = current
+                item["lease_until"] = None
+            return len(selected_positions)
+
+        return self.store._transaction(cancel_json)
+
     def reschedule(
         self,
         phone: str,
@@ -835,3 +883,14 @@ def reminder_reschedule_conflict_message(language: str) -> str:
         "uk": "На цей час уже є таке саме нагадування, тому нічого не змінено.",
         "el": "Υπάρχει ήδη η ίδια υπενθύμιση για τότε, οπότε δεν άλλαξα τίποτα.",
     }.get(language, "The same reminder already exists at that time.")
+
+
+def reminder_cancel_selection_message(language: str, reminders: list[dict[str, Any]]) -> str:
+    prefix = {
+        "ar": "عندك أكثر من تذكير. حدّد الرقم أو الأرقام، مثل: «ألغي التذكير 1 و2».\n",
+        "de": "Du hast mehrere Erinnerungen. Nenne die Nummern, z. B. „Erinnerung 1 und 2 löschen“.\n",
+        "en": "You have several reminders. Include the numbers, for example: “cancel reminders 1 and 2”.\n",
+        "uk": "У вас кілька нагадувань. Вкажіть номери, наприклад: «скасуй нагадування 1 і 2».\n",
+        "el": "Έχεις πολλές υπενθυμίσεις. Βάλε τους αριθμούς, π.χ. «ακύρωσε τις υπενθυμίσεις 1 και 2».\n",
+    }.get(language, "Choose one or more reminder numbers.\n")
+    return prefix + reminder_list_message(language, reminders)
