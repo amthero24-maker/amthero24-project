@@ -46,6 +46,14 @@ _RESCHEDULE_MARKERS = (
     "перенеси нагадування", "μεταφερε την υπενθυμιση",
 )
 
+_ARABIC_QUANTITIES = {
+    "ثلاث": 3, "ثلاثة": 3, "اربع": 4, "اربعة": 4,
+    "خمس": 5, "خمسة": 5, "ست": 6, "ستة": 6,
+    "سبع": 7, "سبعة": 7, "ثمان": 8, "ثمانية": 8,
+    "تسع": 9, "تسعة": 9, "عشر": 10, "عشرة": 10,
+}
+_ARABIC_QUANTITY_PATTERN = "|".join(sorted(_ARABIC_QUANTITIES, key=len, reverse=True))
+
 
 def _normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").casefold().strip()
@@ -85,6 +93,12 @@ def _parse_relative_minutes(normalized: str, current: datetime) -> datetime | No
         minutes = int(match.group(1))
         if 1 <= minutes <= 10080:
             return current + timedelta(minutes=minutes)
+    word_match = re.search(
+        rf"بعد\s+({_ARABIC_QUANTITY_PATTERN})\s*(?:دقيقة|دقائق|دقايق)\b",
+        normalized,
+    )
+    if word_match:
+        return current + timedelta(minutes=_ARABIC_QUANTITIES[word_match.group(1)])
     return None
 
 
@@ -103,6 +117,12 @@ def _parse_relative_hours(normalized: str, current: datetime) -> datetime | None
         hours = int(match.group(1))
         if 1 <= hours <= 720:
             return current + timedelta(hours=hours)
+    word_match = re.search(
+        rf"بعد\s+({_ARABIC_QUANTITY_PATTERN})\s*(?:ساعة|ساعات)\b",
+        normalized,
+    )
+    if word_match:
+        return current + timedelta(hours=_ARABIC_QUANTITIES[word_match.group(1)])
     return None
 
 
@@ -160,7 +180,7 @@ def _extract_title(text: str) -> str:
         "", value, flags=re.IGNORECASE,
     )
     time_patterns = (
-        r"\bبعد\s+(?:دقيقة|دقيقتين|\d+\s*(?:دقيقة|دقائق|دقايق|ساعة|ساعات|ايام|أيام|يوم))\b",
+        rf"\bبعد\s+(?:دقيقة|دقيقتين|ساعة|ساعتين|(?:\d+|{_ARABIC_QUANTITY_PATTERN})\s*(?:دقيقة|دقائق|دقايق|ساعة|ساعات|ايام|أيام|يوم))\b",
         r"\b(?:قبلها|قبل الموعد|قبل المهلة)\s+(?:ب?يومين|ب?يوم|\d+\s*(?:يوم|ايام|أيام))\b",
         r"\b(?:بكرا|غدا|غداً|اليوم)\b",
         r"\b(?:الساعة|ساعه)\s*\d{1,2}(?::\d{2})?\s*(?:صباحا|صباح|الصبح|مساء|المسا|ليلا|ليل)?",
