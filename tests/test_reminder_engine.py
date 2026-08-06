@@ -12,6 +12,9 @@ from reminder_engine import (
     ReminderServiceError,
     deliver_due_reminders,
     detect_reminder_intent,
+    reminder_created_message,
+    reminder_list_message,
+    reminder_recurrence_updated_message,
     resolve_reminder_schedule,
     service_window_open,
 )
@@ -167,6 +170,75 @@ def test_weekday_recurrence_moves_weekend_first_date_and_reschedule(tmp_path, mo
     assert moved["scheduled_at"] == datetime(2026, 11, 2, 9, tzinfo=UTC).isoformat()
 
 
+def test_specific_weekdays_advance_across_dst_and_preserve_local_time(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    thursday = datetime(2026, 10, 22, 6, tzinfo=UTC)  # 08:00 Europe/Berlin
+    reminder = repository.create(
+        "491234567",
+        title="Monday and Thursday follow-up",
+        scheduled_at=thursday,
+        language="en",
+        recurrence_days=1,
+        recurrence_count=4,
+        recurrence_weekdays=(0, 3),
+    )
+
+    repository.mark_sent(reminder["reminder_id"], now=thursday)
+
+    active = repository.list("491234567")
+    assert active[0]["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
+    assert active[0]["recurrence_remaining"] == 3
+    assert active[0]["recurrence_weekdays"] == "0,3"
+    assert active[0]["weekdays_only"] is False
+
+
+def test_specific_weekdays_move_first_date_and_reschedule_to_next_selected_day(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    saturday = datetime(2026, 10, 24, 6, tzinfo=UTC)  # 08:00 Europe/Berlin
+    reminder = repository.create(
+        "491234567",
+        title="Selected weekdays",
+        scheduled_at=saturday,
+        language="en",
+        recurrence_days=1,
+        recurrence_count=4,
+        recurrence_weekdays=(3, 0, 3),
+    )
+    assert reminder["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
+    assert reminder["recurrence_weekdays"] == "0,3"
+
+    status, moved = repository.reschedule(
+        "491234567", scheduled_at=datetime(2026, 10, 31, 9, tzinfo=UTC)
+    )
+    assert status == "updated"
+    assert moved["scheduled_at"] == datetime(2026, 11, 2, 9, tzinfo=UTC).isoformat()
+
+
+@pytest.mark.parametrize(("language", "expected"), (
+    ("ar", "الاثنين والخميس"),
+    ("de", "Montag und Donnerstag"),
+    ("en", "Monday and Thursday"),
+    ("uk", "понеділок і четвер"),
+    ("el", "Δευτέρα και Πέμπτη"),
+))
+def test_specific_weekday_messages_name_selected_days(language, expected) -> None:
+    reminder = {
+        "title": "Office",
+        "scheduled_at": datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat(),
+        "timezone": "Europe/Berlin",
+        "recurrence_days": 1,
+        "recurrence_remaining": 6,
+        "weekdays_only": False,
+        "recurrence_weekdays": "0,3",
+    }
+
+    assert expected in reminder_created_message(language, reminder)
+    assert expected in reminder_list_message(language, [reminder])
+    assert expected in reminder_recurrence_updated_message(language, reminder)
+
+
 def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
     repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
@@ -184,6 +256,25 @@ def test_recurrence_requires_bounded_valid_count(tmp_path, monkeypatch) -> None:
         repository.create(
             "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
             language="en", recurrence_days=7, recurrence_count=4, weekdays_only=True,
+        )
+    for invalid_weekdays in ((), (-1,), (7,), ("monday",)):
+        with pytest.raises(ReminderServiceError, match="invalid_recurrence"):
+            repository.create(
+                "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+                language="en", recurrence_days=1, recurrence_count=4,
+                recurrence_weekdays=invalid_weekdays,
+            )
+    with pytest.raises(ReminderServiceError, match="invalid_recurrence"):
+        repository.create(
+            "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+            language="en", recurrence_days=7, recurrence_count=4,
+            recurrence_weekdays=(0, 3),
+        )
+    with pytest.raises(ReminderServiceError, match="invalid_recurrence"):
+        repository.create(
+            "491234567", title="Unsafe", scheduled_at=datetime.now(UTC) + timedelta(hours=1),
+            language="en", recurrence_days=1, recurrence_count=4,
+            weekdays_only=True, recurrence_weekdays=(0, 3),
         )
 
 
@@ -212,6 +303,14 @@ def test_update_recurrence_never_guesses_and_can_stop(tmp_path, monkeypatch) -> 
     assert status == "updated"
     assert weekdays["weekdays_only"] is True
 
+    status, specific = repository.update_recurrence(
+        phone, recurrence_days=1, recurrence_count=8,
+        recurrence_weekdays=(0, 3), position=2,
+    )
+    assert status == "updated"
+    assert specific["weekdays_only"] is False
+    assert specific["recurrence_weekdays"] == "0,3"
+
     status, stopped = repository.update_recurrence(
         phone, recurrence_days=None, recurrence_count=None, position=2
     )
@@ -219,6 +318,30 @@ def test_update_recurrence_never_guesses_and_can_stop(tmp_path, monkeypatch) -> 
     assert stopped["recurrence_days"] is None
     assert stopped["recurrence_remaining"] is None
     assert stopped["weekdays_only"] is False
+    assert stopped["recurrence_weekdays"] == ""
+
+
+def test_update_to_specific_weekdays_moves_both_schedule_fields(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    saturday = datetime(2026, 10, 24, 6, tzinfo=UTC)
+    repository.create(
+        "491234567", title="Office", scheduled_at=saturday, language="en"
+    )
+
+    status, updated = repository.update_recurrence(
+        "491234567", recurrence_days=1, recurrence_count=6,
+        recurrence_weekdays=(0, 3),
+    )
+
+    monday = datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
+    assert status == "updated"
+    assert updated["scheduled_at"] == monday
+    assert updated["next_attempt_at"] == monday
+    assert repository.update_recurrence(
+        "491234567", recurrence_days=1, recurrence_count=6,
+        recurrence_weekdays=(),
+    )[0] == "invalid"
 
 
 def test_service_window_uses_last_inbound_activity() -> None:

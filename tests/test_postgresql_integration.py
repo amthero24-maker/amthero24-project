@@ -418,6 +418,30 @@ def test_postgres_weekday_reminder_skips_weekend_atomically() -> None:
     assert active[0]["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
 
 
+def test_postgres_specific_weekdays_advance_atomically() -> None:
+    store = _store()
+    phone = "+49163" + uuid4().hex[:8]
+    repository = ReminderRepository(store)
+    thursday = datetime(2026, 10, 22, 6, tzinfo=UTC)
+    reminder = repository.create(
+        phone,
+        title="Specific weekday integration reminder",
+        scheduled_at=thursday,
+        language="de",
+        recurrence_days=1,
+        recurrence_count=4,
+        recurrence_weekdays=(0, 3),
+    )
+
+    repository.mark_sent(reminder["reminder_id"], now=thursday)
+
+    active = repository.list(phone)
+    assert len(active) == 1
+    assert active[0]["recurrence_weekdays"] == "0,3"
+    assert active[0]["recurrence_remaining"] == 3
+    assert active[0]["scheduled_at"] == datetime(2026, 10, 26, 7, tzinfo=UTC).isoformat()
+
+
 def test_reminder_ciphertext_migration_is_atomic_and_idempotent() -> None:
     store = _store()
     database_url = os.environ["DATABASE_URL"]
