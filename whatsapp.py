@@ -1,6 +1,7 @@
 """WhatsApp Cloud API client."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -78,14 +79,23 @@ async def close_http_client() -> None:
 
 
 async def _post_message(payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        response = await _get_http_client().post(_messages_url(), headers=_headers(), json=payload)
-        response.raise_for_status()
-        parsed = response.json()
-    except (httpx.HTTPError, ValueError, RuntimeError) as exc:
-        logger.exception("WhatsApp send failed")
-        raise WhatsAppServiceError("WhatsApp send failed") from exc
-    return parsed if isinstance(parsed, dict) else {}
+    for attempt in range(2):
+        try:
+            response = await _get_http_client().post(_messages_url(), headers=_headers(), json=payload)
+            response.raise_for_status()
+            parsed = response.json()
+            return parsed if isinstance(parsed, dict) else {}
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            if attempt == 0:
+                logger.warning("WhatsApp connection failed; retrying once")
+                await asyncio.sleep(0.25)
+                continue
+            logger.exception("WhatsApp send failed")
+            raise WhatsAppServiceError("WhatsApp send failed") from exc
+        except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+            logger.exception("WhatsApp send failed")
+            raise WhatsAppServiceError("WhatsApp send failed") from exc
+    raise WhatsAppServiceError("WhatsApp send failed")
 
 
 async def send_whatsapp_message(to: str, text: str) -> list[dict]:
