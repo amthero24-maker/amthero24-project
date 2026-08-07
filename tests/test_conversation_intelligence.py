@@ -17,6 +17,12 @@ def test_language_detection_and_explicit_switches() -> None:
     assert explicit_language_request("in English") == "en"
 
 
+def test_short_english_reminder_phrases_override_non_latin_fallback() -> None:
+    assert detect_language("In 2 minute later", "ar") == "en"
+    assert detect_language("For sleeping", "ar") == "en"
+    assert detect_language("For sleeping", "de") == "en"
+
+
 def test_short_language_followup_uses_previous_answer() -> None:
     profile = {"last_assistant_reply": "Dies ist eine Rechnung über 50 Euro."}
     effective = build_effective_user_text("بالعربي", profile)
