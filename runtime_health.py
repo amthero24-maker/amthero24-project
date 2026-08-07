@@ -149,9 +149,12 @@ def readiness_payload(store: Any, *, version: str, model: str) -> tuple[dict[str
 
 import provider_extensions as provider_layer  # noqa: E402
 from reminder_conversation_extensions import app, store  # noqa: E402
+import reminder_language_extensions as reminder_language_layer  # noqa: E402
 import reminder_extensions as reminder_layer  # noqa: E402
 from schema_bootstrap import bootstrap_postgres_schemas  # noqa: E402
 from config import APP_VERSION, GROQ_MODEL  # noqa: E402
+
+reminder_language_layer.install()
 
 _BOOTSTRAPPED_SCHEMAS = tuple(getattr(store, "schema_bootstrapped_components", ())) or bootstrap_postgres_schemas(store)
 
