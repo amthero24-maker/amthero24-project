@@ -12,7 +12,16 @@ from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from config import APP_VERSION, DATA_STORE_PATH, GROQ_MODEL, required_env
-from conversation_intelligence import build_effective_user_text, detect_language, extract_city, infer_topic
+from conversation_intelligence import (
+    build_effective_user_text,
+    detect_language,
+    explicit_language_request,
+    extract_city,
+    infer_topic,
+    is_transient_conversation_topic,
+    persistent_mission_topic,
+    response_detail_request,
+)
 from data_store import JsonDataStore
 from groq_client import generate_reply
 from hero_memory import HeroMemory
@@ -256,11 +265,9 @@ async def process_incoming(message: IncomingMessage) -> None:
             or profile.get("preferred_language")
             or "de"
         )
-        previous_topic = str(
-            profile.get("current_topic") if memory_enabled else profile.get("session_topic")
-            or profile.get("current_topic")
-            or ""
-        )
+        previous_persistent_topic = str(profile.get("current_topic") or "").strip()
+        previous_session_topic = str(profile.get("session_topic") or "").strip()
+        previous_topic = previous_session_topic or previous_persistent_topic
         language = detect_language(message.text, previous_language) if message.text.strip() else previous_language
         lowered = message.text.casefold()
         stage = str(profile.get("onboarding_stage") or "")
@@ -427,7 +434,17 @@ async def process_incoming(message: IncomingMessage) -> None:
 
         profile = store.get_user(message.sender)
         memory_enabled = profile.get("memory_consent") == "granted"
-        previous_topic = str(profile.get("current_topic") if memory_enabled else profile.get("session_topic") or previous_topic)
+        previous_persistent_topic = str(profile.get("current_topic") or previous_persistent_topic).strip()
+        previous_session_topic = str(profile.get("session_topic") or previous_session_topic).strip()
+        previous_topic = previous_session_topic or previous_persistent_topic or previous_topic
+        business_context_topic = persistent_mission_topic(
+            previous_persistent_topic or previous_session_topic,
+        )
+        product_context_topic = (
+            previous_session_topic
+            if is_transient_conversation_topic(previous_session_topic)
+            else (business_context_topic or previous_session_topic)
+        )
 
         mission_intent = detect_mission_intent(message.text) if commands_allowed else None
         if mission_intent:
@@ -442,63 +459,87 @@ async def process_incoming(message: IncomingMessage) -> None:
                 mission = memory_repository.complete_latest_mission(message.sender)
                 await _finish(message.message_id, mission_completed_message(language, mission), message.sender)
                 return
+            mission_context_topic = business_context_topic
             title = mission_title(
                 mission_intent,
-                current_topic=previous_topic,
+                current_topic=mission_context_topic,
                 last_message=str(profile.get("last_message") or ""),
             )
             mission = memory_repository.create_mission(
                 message.sender,
                 title=title,
-                topic=previous_topic,
-                metadata={"source": "whatsapp", "language": language, "category": previous_topic},
+                topic=mission_context_topic,
+                metadata={
+                    "source": "whatsapp",
+                    "language": language,
+                    "category": mission_context_topic,
+                },
             )
             await _finish(message.message_id, mission_created_message(language, mission), message.sender)
             return
 
         authoritative = (
-            product_answer(message.text, language, previous_topic)
+            product_answer(message.text, language, product_context_topic)
             if commands_allowed
             else None
         )
         effective_text = build_effective_user_text(message.text, profile)
         city = extract_city(message.text) if commands_allowed else ""
         inferred_topic = (
-            infer_topic(message.text, previous_topic)
+            infer_topic(message.text, business_context_topic)
             if commands_allowed
             else ""
         )
-        topic = (
+        business_topic = (
             "document"
             if transient_document
             else (
-                authoritative[1]
-                if authoritative
-                else (inferred_topic or ("document" if has_media else previous_topic))
+                inferred_topic
+                or ("document" if has_media else business_context_topic)
             )
         )
-
+        greeting_turn = is_simple_greeting(message.text)
+        authoritative_topic = authoritative[1] if authoritative else ""
+        product_turn = bool(authoritative and is_transient_conversation_topic(authoritative_topic))
+        product_followup_turn = bool(
+            is_transient_conversation_topic(previous_session_topic)
+            and (
+                response_detail_request(message.text) is not None
+                or explicit_language_request(message.text) is not None
+            )
+        )
+        transient_topic_turn = greeting_turn or product_turn or product_followup_turn
+        if greeting_turn:
+            session_topic = "greeting"
+        elif product_turn:
+            session_topic = authoritative_topic
+        elif product_followup_turn:
+            session_topic = previous_session_topic
+        else:
+            session_topic = business_topic
+        persistent_topic = persistent_mission_topic(business_topic, previous_persistent_topic)
         operational_updates: dict[str, Any] = {
             "session_language": language,
-            "session_topic": topic,
+            "session_topic": session_topic,
             "session_expires_at": _session_expiry(),
             "last_seen": _now().isoformat(),
         }
         if memory_enabled:
-            operational_updates.update({
-                "preferred_language": language,
-                "last_message": (
-                    "Document content processed transiently"
-                    if transient_document
-                    else message.text[:200]
-                ),
-                "last_message_type": (
-                    "document"
-                    if transient_document
-                    else message.message_type
-                ),
-                "current_topic": topic,
-            })
+            operational_updates["preferred_language"] = language
+            if not transient_topic_turn:
+                operational_updates.update({
+                    "last_message": (
+                        "Document content processed transiently"
+                        if transient_document
+                        else message.text[:200]
+                    ),
+                    "last_message_type": (
+                        "document"
+                        if transient_document
+                        else message.message_type
+                    ),
+                    "current_topic": persistent_topic,
+                })
             if extracted_name:
                 operational_updates["first_name"] = extracted_name
             if city:
@@ -510,13 +551,13 @@ async def process_incoming(message: IncomingMessage) -> None:
             await send_whatsapp_message(message.sender, reply)
             response_updates: dict[str, Any] = {
                 "session_last_reply": reply,
-                "session_topic": topic,
+                "session_topic": session_topic,
                 "session_expires_at": _session_expiry(),
             }
-            if memory_enabled:
+            if memory_enabled and not transient_topic_turn:
                 response_updates.update({
                     "last_assistant_reply": reply,
-                    "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={topic}; authoritative product answer",
+                    "conversation_summary": f"Language={language}; city={profile.get('city', '')}; topic={persistent_topic}; authoritative product answer",
                 })
             store.update_user(message.sender, response_updates)
             store.update_message_status(message.message_id, "sent")
@@ -532,8 +573,12 @@ async def process_incoming(message: IncomingMessage) -> None:
 
         prompt_profile = dict(profile)
         prompt_profile.setdefault("preferred_language", language)
-        prompt_profile.setdefault("current_topic", topic)
-        prompt_profile.setdefault("last_assistant_reply", str(profile.get("session_last_reply") or ""))
+        prompt_profile["current_topic"] = session_topic if transient_topic_turn else persistent_topic
+        prompt_profile["last_assistant_reply"] = str(
+            profile.get("session_last_reply")
+            or profile.get("last_assistant_reply")
+            or ""
+        )
         prompt = build_system_prompt(
             sender=message.sender,
             text=effective_text,
@@ -551,10 +596,10 @@ async def process_incoming(message: IncomingMessage) -> None:
         await send_whatsapp_message(message.sender, reply)
         response_updates = {
             "session_last_reply": reply,
-            "session_topic": topic,
+            "session_topic": session_topic,
             "session_expires_at": _session_expiry(),
         }
-        if memory_enabled:
+        if memory_enabled and not transient_topic_turn:
             response_updates.update({
                 "last_assistant_reply": reply,
                 "conversation_summary": (
@@ -563,7 +608,7 @@ async def process_incoming(message: IncomingMessage) -> None:
                     if transient_document
                     else (
                         f"Language={language}; city={profile.get('city', '')}; "
-                        f"topic={topic}; latest request={message.text[:180]}"
+                        f"topic={persistent_topic}; latest request={message.text[:180]}"
                     )
                 ),
             })
