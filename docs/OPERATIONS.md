@@ -24,6 +24,14 @@ For a strict Beta gate:
 python production_smoke.py --require-signature --require-launch-ready
 ```
 
+For the one-sender WhatsApp Canary, additionally require proof that the Reminder Worker itself is running:
+
+```bash
+python production_smoke.py --require-signature --require-launch-ready --require-reminder-worker
+```
+
+The equivalent environment switch is `SMOKE_REQUIRE_REMINDER_WORKER=true`. It is false by default so ordinary read-only production monitoring remains backward-compatible. When enabled, `reminder_worker` must be exactly `running`; `/ready=200` by itself is not sufficient evidence that timed deliveries are actively being processed.
+
 The smoke suite requires PostgreSQL, initialized application schemas, fail-closed database behavior, enabled reminder delivery, dedicated reminder encryption, and strong protected-admin access for a production pass.
 
 ### GitHub scheduled checks
@@ -244,3 +252,11 @@ Before controlled Beta, the launch report should confirm:
 - strong unique support encryption/API tokens before enabling human support
 
 Never place real values in GitHub files, issues, screenshots, or chat messages.
+
+## 8. One-sender WhatsApp Canary
+
+The production certification procedure for the controlled one-sender WhatsApp canary is maintained in [`whatsapp-canary-certification-v1.md`](whatsapp-canary-certification-v1.md).
+
+Before any live canary action, run the strict smoke gate with `--require-reminder-worker` and confirm a stable Deployment Certification for the exact deployed `main` SHA. Use only synthetic content and the already approved sender. Do not widen `REMINDER_CANARY_SENDERS`, change Railway variables, or treat a healthy `/ready` response as delivery-worker proof.
+
+Any failure found by the canary follows the normal isolated-fix path: evidence, root cause, smallest fix, tests, Draft PR, CI, merge, Railway verification, and retest. Stop immediately on privacy leakage, wrong-recipient behavior, duplicate delivery, state corruption, or an unexplained worker failure.

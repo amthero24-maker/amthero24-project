@@ -129,6 +129,7 @@ def run_smoke(
     require_postgresql: bool = True,
     require_signature: bool = False,
     require_launch_ready: bool = False,
+    require_reminder_worker: bool = False,
     timeout: float = 15.0,
 ) -> list[SmokeCheck]:
     """Run read-only production checks and return an ordered report."""
@@ -193,6 +194,11 @@ def run_smoke(
         reminders = str(components.get("reminders") or "missing")
         reminder_check_index = len(checks)
         checks.append(SmokeCheck("reminders", "pass" if reminders == "enabled" else "fail", reminders))
+
+        reminder_worker = str(components.get("reminder_worker") or "missing")
+        worker_ok = reminder_worker == "running" or not require_reminder_worker
+        checks.append(SmokeCheck("reminder_worker", "pass" if worker_ok else "fail", reminder_worker))
+
         reminder_encryption = str(components.get("reminder_encryption") or "missing")
         checks.append(SmokeCheck("reminder_encryption", "pass" if reminder_encryption == "configured" else "fail", reminder_encryption))
 
@@ -254,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-json", action="store_true", help="Do not require PostgreSQL. Intended only for non-production environments.")
     parser.add_argument("--require-signature", action="store_true", default=_flag(os.getenv("SMOKE_REQUIRE_SIGNATURE"), False))
     parser.add_argument("--require-launch-ready", action="store_true", default=_flag(os.getenv("SMOKE_REQUIRE_LAUNCH_READY"), False))
+    parser.add_argument("--require-reminder-worker", action="store_true", default=_flag(os.getenv("SMOKE_REQUIRE_REMINDER_WORKER"), False))
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args(argv)
 
@@ -268,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
             require_postgresql=not args.allow_json,
             require_signature=bool(args.require_signature),
             require_launch_ready=bool(args.require_launch_ready),
+            require_reminder_worker=bool(args.require_reminder_worker),
             timeout=args.timeout,
         )
     except ValueError as exc:
