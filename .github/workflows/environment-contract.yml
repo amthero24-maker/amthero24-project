@@ -52,7 +52,7 @@ jobs:
             tests/test_environment_contract.py 2>&1 | tee environment-contract-tests.log
       - name: Upload sanitized contract diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: environment-contract-report
           path: |
