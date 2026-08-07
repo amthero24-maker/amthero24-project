@@ -21,6 +21,25 @@ def test_welcome_shows_real_value_without_pricing_pressure() -> None:
     assert "مجاني" not in message
 
 
+def test_post_name_consent_prompt_establishes_personal_assistant_value_first() -> None:
+    message = consent_prompt("ar", "وسام")
+    relationship, privacy = message.split("\n\n🔐 ", 1)
+    assert "يا وسام" in relationship
+    assert "مساعدك الشخصي" in relationship
+    assert "كتاب" in relationship
+    assert "فاتورة" in relationship
+    assert "عقد" in relationship
+    assert "موعد" in relationship
+    assert "رسائل وإيميلات رسمية" in relationship
+    assert "الإلغاء" in relationship
+    assert "الاعتراض" in relationship
+    assert "الاسترداد" in relationship
+    assert "أذكّرك" in relationship
+    assert "خطوة بخطوة" in relationship
+    assert "أفعّل الذاكرة" not in relationship
+    assert "أفعّل الذاكرة" in privacy
+
+
 def test_consent_is_optional_specific_and_controllable() -> None:
     message = consent_prompt("ar", "وسام")
     assert "اختياري" in message
