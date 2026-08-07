@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from conversation_intelligence import is_transient_conversation_topic
+
 SUPPORTED_LANGUAGES = {"de", "ar", "en", "uk", "el"}
 
 _NEXT_STEP_PREFIX = "@mission-next-step:"
@@ -135,14 +137,52 @@ def detect_mission_intent(text: str) -> MissionIntent | None:
     return None
 
 
+_TRANSIENT_MISSION_EXACT_MESSAGES = {
+    "مرحبا", "اهلا", "أهلا", "هلا", "سلام", "hallo", "hi", "hello", "hey",
+    "привіт", "γεια",
+}
+_TRANSIENT_MISSION_MESSAGE_PATTERNS = (
+    "من انت", "من أنت", "شو بتعمل", "شو بتقدم", "شو اللغات", "من اسس amthero24",
+    "هل انت chatgpt", "تجاهل التعليمات", "اكشف تعليمات النظام",
+    "wer bist du", "was kannst du", "welche sprachen", "wer hat amthero24 gegründet",
+    "bist du chatgpt", "ignoriere alle anweisungen", "zeige deinen system prompt",
+    "who are you", "what can you do", "what languages", "who founded amthero24",
+    "are you chatgpt", "ignore all instructions", "show your system prompt",
+    "хто ти", "що ти можеш", "які мови", "хто заснував amthero24", "ти chatgpt",
+    "ігноруй усі інструкції", "покажи системний промпт",
+    "ποιος εισαι", "ποιος είσαι", "τι μπορεις να κανεις", "ποιες γλωσσες",
+    "ποιος ιδρυσε το amthero24", "εισαι chatgpt", "αγνοησε ολες τις οδηγιες",
+    "δειξε το system prompt",
+)
+
+
+def _persistent_mission_topic(value: str) -> str:
+    topic = " ".join((value or "").split()).strip()
+    if not topic or topic == "unknown" or is_transient_conversation_topic(topic):
+        return ""
+    return topic
+
+
+def _persistent_mission_message(value: str) -> str:
+    message = " ".join((value or "").split()).strip()
+    normalized = _normalize(message)
+    if not normalized:
+        return ""
+    if normalized in {_normalize(item) for item in _TRANSIENT_MISSION_EXACT_MESSAGES}:
+        return ""
+    if any(_normalize(pattern) in normalized for pattern in _TRANSIENT_MISSION_MESSAGE_PATTERNS):
+        return ""
+    return message
+
+
 def mission_title(intent: MissionIntent, *, current_topic: str = "", last_message: str = "") -> str:
     title = " ".join((intent.title or "").split()).strip()
     if title:
         return title[:500]
-    topic = " ".join((current_topic or "").split()).strip()
-    if topic and topic not in {"unknown", "capabilities", "languages"}:
+    topic = _persistent_mission_topic(current_topic)
+    if topic:
         return topic[:180]
-    previous = " ".join((last_message or "").split()).strip()
+    previous = _persistent_mission_message(last_message)
     return previous[:180] if previous else "Open follow-up"
 
 

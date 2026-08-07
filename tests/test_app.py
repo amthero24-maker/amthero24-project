@@ -177,7 +177,8 @@ async def test_product_language_question_is_authoritative_and_skips_groq(tmp_pat
         assert language in reply
     profile = app.store.get_user("49123")
     assert profile["preferred_language"] == "ar"
-    assert profile["current_topic"] == "languages"
+    assert profile["session_topic"] == "languages"
+    assert profile.get("current_topic") != "languages"
     assert app.store.snapshot()["messages"]["languages"]["status"] == "sent"
 
 
@@ -200,3 +201,189 @@ def test_health_does_not_leak_secrets() -> None:
     assert "WHATSAPP_TOKEN" not in body
     assert "GROQ_API_KEY" not in body
     assert "PHONE_NUMBER_ID" not in body
+
+
+_FAST_PATH_CASES = (
+    {
+        "language": "ar",
+        "identity": "من أنت؟",
+        "chatgpt": "هل أنت ChatGPT أو تابع لـ OpenAI؟",
+        "greeting": "مرحبا",
+        "capabilities": "شو بتقدر تعمل؟",
+        "identity_marker": "مساعد رقمي",
+        "chatgpt_marker": "ولست ChatGPT",
+        "greeting_marker": "AmtHero24",
+        "capability_marker": "مستند",
+    },
+    {
+        "language": "de",
+        "identity": "Wer bist du?",
+        "chatgpt": "Bist du ChatGPT oder OpenAI?",
+        "greeting": "Hallo",
+        "capabilities": "Was kannst du?",
+        "identity_marker": "digitaler Assistent",
+        "chatgpt_marker": "nicht ChatGPT",
+        "greeting_marker": "AmtHero24",
+        "capability_marker": "Dokument",
+    },
+    {
+        "language": "en",
+        "identity": "Who are you?",
+        "chatgpt": "Are you ChatGPT or OpenAI?",
+        "greeting": "Hello",
+        "capabilities": "What can you do?",
+        "identity_marker": "digital assistant",
+        "chatgpt_marker": "not ChatGPT",
+        "greeting_marker": "AmtHero24",
+        "capability_marker": "document",
+    },
+    {
+        "language": "uk",
+        "identity": "Хто ти?",
+        "chatgpt": "Ти ChatGPT або OpenAI?",
+        "greeting": "Привіт",
+        "capabilities": "Що ти можеш?",
+        "identity_marker": "цифровий помічник",
+        "chatgpt_marker": "не ChatGPT",
+        "greeting_marker": "AmtHero24",
+        "capability_marker": "документ",
+    },
+    {
+        "language": "el",
+        "identity": "Ποιος είσαι;",
+        "chatgpt": "Είσαι ChatGPT ή OpenAI;",
+        "greeting": "Γεια",
+        "capabilities": "Τι μπορείς να κάνεις;",
+        "identity_marker": "ψηφιακός βοηθός",
+        "chatgpt_marker": "όχι το ChatGPT",
+        "greeting_marker": "AmtHero24",
+        "capability_marker": "εγγράφου",
+    },
+)
+
+
+async def _assert_deterministic_fast_path(
+    tmp_path,
+    *,
+    case: dict[str, str],
+    field: str,
+    expected_topic: str,
+    marker_field: str,
+) -> None:
+    phone = "49123"
+    app.store = JsonDataStore(tmp_path / f"{field}-{case['language']}.json")
+    seed_consented_user(app.store, phone, case["language"])
+    app.store.update_user(phone, {
+        "current_topic": "housing",
+        "session_topic": "housing",
+        "last_message": "Mietvertrag prüfen",
+        "last_assistant_reply": "Business reply",
+    })
+    message_id = f"{field}-{case['language']}"
+    message = app.IncomingMessage(message_id, phone, case[field], "text")
+    app.store.claim_message(message_id, phone, message.text)
+    with patch.object(
+        app, "generate_reply", side_effect=AssertionError("Groq must not be called")
+    ), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
+        await app.process_incoming(message)
+    assert send.await_count == 1
+    reply = send.await_args.args[1]
+    assert case[marker_field].casefold() in reply.casefold()
+    profile = app.store.get_user(phone)
+    assert profile["current_topic"] == "housing"
+    assert profile["session_topic"] == expected_topic
+    assert profile["last_message"] == "Mietvertrag prüfen"
+    assert profile["last_assistant_reply"] == "Business reply"
+    assert profile["session_last_reply"] == reply
+    assert app.store.snapshot()["messages"][message_id]["status"] == "sent"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case", _FAST_PATH_CASES, ids=lambda item: item["language"])
+async def test_identity_fast_path_is_localized_and_preserves_mission_topic(tmp_path, case) -> None:
+    await _assert_deterministic_fast_path(
+        tmp_path,
+        case=case,
+        field="identity",
+        expected_topic="identity",
+        marker_field="identity_marker",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case", _FAST_PATH_CASES, ids=lambda item: item["language"])
+async def test_chatgpt_fast_path_is_localized_and_preserves_mission_topic(tmp_path, case) -> None:
+    await _assert_deterministic_fast_path(
+        tmp_path,
+        case=case,
+        field="chatgpt",
+        expected_topic="identity",
+        marker_field="chatgpt_marker",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case", _FAST_PATH_CASES, ids=lambda item: item["language"])
+async def test_capability_fast_path_is_localized_and_preserves_mission_topic(tmp_path, case) -> None:
+    await _assert_deterministic_fast_path(
+        tmp_path,
+        case=case,
+        field="capabilities",
+        expected_topic="capabilities",
+        marker_field="capability_marker",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("case", _FAST_PATH_CASES, ids=lambda item: item["language"])
+async def test_greeting_fast_path_is_localized_and_preserves_mission_topic(tmp_path, case) -> None:
+    await _assert_deterministic_fast_path(
+        tmp_path,
+        case=case,
+        field="greeting",
+        expected_topic="greeting",
+        marker_field="greeting_marker",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("command", "instruction"),
+    (("اختصر", "more briefly"), ("اشرح أكثر", "Explain the previous answer")),
+)
+async def test_arabic_refinement_commands_use_session_reply_without_polluting_mission_context(
+    tmp_path, command, instruction,
+) -> None:
+    phone = "49123"
+    app.store = JsonDataStore(tmp_path / f"refine-{len(command)}.json")
+    seed_consented_user(app.store, phone, "ar")
+    app.store.update_user(phone, {
+        "current_topic": "housing",
+        "session_topic": "capabilities",
+        "session_last_reply": "هذا هو الجواب السابق عن الخدمة.",
+        "last_message": "Mietvertrag prüfen",
+        "last_assistant_reply": "Business reply",
+    })
+    message_id = f"refine-{len(command)}"
+    message = app.IncomingMessage(message_id, phone, command, "text")
+    app.store.claim_message(message_id, phone, message.text)
+    captured: dict[str, object] = {}
+
+    def fake_generate_reply(**kwargs):
+        captured.update(kwargs)
+        return "صياغة محسّنة"
+
+    with patch.object(app, "generate_reply", side_effect=fake_generate_reply), patch.object(
+        app, "send_whatsapp_message", new=AsyncMock()
+    ) as send:
+        await app.process_incoming(message)
+
+    assert instruction in str(captured["user_text"])
+    assert "هذا هو الجواب السابق" in str(captured["user_text"])
+    send.assert_awaited_once_with(phone, "صياغة محسّنة")
+    profile = app.store.get_user(phone)
+    assert profile["current_topic"] == "housing"
+    assert profile["session_topic"] == "capabilities"
+    assert profile["last_message"] == "Mietvertrag prüfen"
+    assert profile["last_assistant_reply"] == "Business reply"
+    assert profile["session_last_reply"] == "صياغة محسّنة"
