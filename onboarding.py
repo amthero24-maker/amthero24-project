@@ -124,21 +124,46 @@ def welcome_message(language: str, name: str = "") -> str:
 
 def consent_prompt(language: str, name: str = "") -> str:
     lang = _lang(language)
-    prefix = {
-        "ar": f"تشرفت فيك{f' يا {name}' if name else ''} 🌿 ",
-        "de": f"Freut mich{f', {name}' if name else ''} 🌿 ",
-        "en": f"Nice to meet you{f', {name}' if name else ''} 🌿 ",
-        "uk": f"Радий знайомству{f', {name}' if name else ''} 🌿 ",
-        "el": f"Χάρηκα{f', {name}' if name else ''} 🌿 ",
+    relationship = {
+        "ar": (
+            f"تشرفت فيك{f' يا {name}' if name else ''} 🌿 من هلق اعتبرني Sam، مساعدك الشخصي بحياتك اليومية بألمانيا. "
+            "إذا وصلك كتاب، فاتورة، عقد أو موعد وما عرفت من وين تبدأ، ابعته إليّ وأنا بفهمك المهم وبحطلك الخطوة الجاية. "
+            "وبقدر أكتبلك رسائل وإيميلات رسمية بالألماني، أساعدك بالإلغاء والاعتراض والاسترداد، أرتّب معك المواعيد والمهام، وأذكّرك بالشي اللي لازم ما يضيع. "
+            "الفكرة إنك ما تحمل كل هالتفاصيل براسك لحالك — منمشي فيها سوا خطوة بخطوة."
+        ),
+        "de": (
+            f"Freut mich{f', {name}' if name else ''} 🌿 Ab jetzt kannst du mich als Sam, deinen persönlichen Begleiter für den Alltag in Deutschland, nutzen. "
+            "Wenn ein Brief, eine Rechnung, ein Vertrag oder ein Termin auf deinem Tisch landet und du nicht weißt, wo du anfangen sollst, schick ihn mir: Ich ordne das Wichtige und den nächsten Schritt. "
+            "Ich kann außerdem offizielle deutsche E-Mails und Schreiben vorbereiten, bei Kündigungen, Widersprüchen und Rückerstattungen helfen, Termine und Aufgaben strukturieren und dich an Wichtiges erinnern. "
+            "Du musst nicht alles allein im Kopf behalten — wir arbeiten es Schritt für Schritt ab."
+        ),
+        "en": (
+            f"Nice to meet you{f', {name}' if name else ''} 🌿 From here on, think of me as Sam, your personal assistant for everyday life in Germany. "
+            "If a letter, invoice, contract, or appointment lands in front of you and you do not know where to start, send it to me: I’ll sort out what matters and the next step. "
+            "I can also prepare formal German emails and letters, help with cancellations, objections and refunds, organize appointments and tasks, and remind you about things you should not miss. "
+            "You do not have to carry all of that in your head alone — we can work through it step by step."
+        ),
+        "uk": (
+            f"Радий знайомству{f', {name}' if name else ''} 🌿 Відтепер можеш сприймати мене як Сема, твого особистого помічника для повсякденного життя в Німеччині. "
+            "Якщо приходить лист, рахунок, договір чи запис і незрозуміло, з чого почати, надішли мені — я виділю головне та наступний крок. "
+            "Також можу підготувати офіційний лист або email німецькою, допомогти зі скасуванням, запереченням чи поверненням коштів, організувати справи й нагадування. "
+            "Не потрібно тримати все це в голові самостійно — розберемо крок за кроком."
+        ),
+        "el": (
+            f"Χάρηκα{f', {name}' if name else ''} 🌿 Από εδώ και πέρα μπορείς να με βλέπεις ως τον Sam, τον προσωπικό σου βοηθό για την καθημερινότητα στη Γερμανία. "
+            "Αν έρθει ένα γράμμα, τιμολόγιο, συμβόλαιο ή ραντεβού και δεν ξέρεις από πού να αρχίσεις, στείλ’ το μου: θα ξεχωρίσω τι έχει σημασία και ποιο είναι το επόμενο βήμα. "
+            "Μπορώ επίσης να ετοιμάσω επίσημα γερμανικά email και επιστολές, να βοηθήσω με ακυρώσεις, ενστάσεις και επιστροφές, να οργανώσω ραντεβού και υποχρεώσεις και να σου θυμίζω ό,τι δεν πρέπει να χαθεί. "
+            "Δεν χρειάζεται να τα κρατάς όλα μόνος σου στο μυαλό — τα προχωράμε βήμα βήμα."
+        ),
     }[lang]
-    body = {
-        "ar": "إذا بتحب، فيني أتذكّر اسمك، لغتك، مدينتك والمواضيع اللي عم نتابعها حتى نكمل المرة الجاية من محل ما وقفنا. ما بحفظ كلمات سر، بيانات بنكية، أرقام هوية أو صور مستندات. هالشي اختياري، وبتقدر بأي وقت تسأل «شو بتعرف عني؟» أو تقول «امسح بياناتي». أفعّل الذاكرة؟ اكتب نعم أو لا.",
-        "de": "Wenn du möchtest, kann ich mir deinen Namen, deine Sprache, deine Stadt und offene Themen merken, damit wir beim nächsten Mal nicht von vorn anfangen. Passwörter, Bankdaten, Ausweisnummern oder Dokumentbilder speichere ich nicht. Das ist freiwillig; du kannst jederzeit fragen „Was weißt du über mich?“ oder „Lösch meine Daten“. Soll ich die Erinnerung aktivieren? Antworte mit Ja oder Nein.",
-        "en": "With your permission, I can remember your name, language, city, and open topics so we can continue next time without starting over. I do not store passwords, bank details, ID numbers, or document images. This is optional, and you can ask “What do you know about me?” or “Delete my data” at any time. Enable memory? Reply yes or no.",
-        "uk": "За твоєю згодою я можу запам’ятати ім’я, мову, місто та відкриті теми, щоб наступного разу продовжити без початку з нуля. Я не зберігаю паролі, банківські дані, номери документів або зображення документів. Це добровільно; будь-коли можна запитати «Що ти знаєш про мене?» або сказати «Видали мої дані». Увімкнути пам’ять? Відповідай так або ні.",
-        "el": "Με την άδειά σου μπορώ να θυμάμαι το όνομά σου, τη γλώσσα, την πόλη και τα ανοιχτά θέματα, ώστε την επόμενη φορά να συνεχίσουμε χωρίς να ξεκινήσουμε από την αρχή. Δεν αποθηκεύω κωδικούς, τραπεζικά στοιχεία, αριθμούς ταυτότητας ή εικόνες εγγράφων. Είναι προαιρετικό και μπορείς οποτεδήποτε να ρωτήσεις «Τι ξέρεις για μένα;» ή να πεις «Διέγραψε τα δεδομένα μου». Να ενεργοποιήσω τη μνήμη; Απάντησε ναι ή όχι.",
+    privacy = {
+        "ar": "إذا بتحب، فيني كمان أتذكّر اسمك، لغتك، مدينتك والمواضيع اللي عم نتابعها حتى المرة الجاية نكمل من محل ما وقفنا. ما بحفظ كلمات سر، بيانات بنكية، أرقام هوية أو صور مستندات. هالشي اختياري وإنت المتحكم فيه؛ بتقدر بأي وقت تسأل «شو بتعرف عني؟» أو تقول «امسح بياناتي». أفعّل الذاكرة؟ اكتب نعم أو لا.",
+        "de": "Wenn du möchtest, kann ich mir außerdem deinen Namen, deine Sprache, deine Stadt und offene Themen merken, damit wir beim nächsten Mal dort weitermachen, wo wir aufgehört haben. Passwörter, Bankdaten, Ausweisnummern oder Dokumentbilder speichere ich nicht. Das ist freiwillig und bleibt unter deiner Kontrolle; du kannst jederzeit fragen „Was weißt du über mich?“ oder „Lösch meine Daten“. Soll ich die Erinnerung aktivieren? Antworte mit Ja oder Nein.",
+        "en": "If you want, I can also remember your name, language, city, and open topics so next time we continue where we left off. I do not store passwords, bank details, ID numbers, or document images. This is optional and stays under your control; you can ask “What do you know about me?” or say “Delete my data” at any time. Enable memory? Reply yes or no.",
+        "uk": "Якщо хочеш, я також можу пам’ятати твоє ім’я, мову, місто та відкриті теми, щоб наступного разу продовжити з того місця, де ми зупинилися. Я не зберігаю паролі, банківські дані, номери документів або зображення документів. Це добровільно й залишається під твоїм контролем; будь-коли можна запитати «Що ти знаєш про мене?» або сказати «Видали мої дані». Увімкнути пам’ять? Відповідай так або ні.",
+        "el": "Αν θέλεις, μπορώ επίσης να θυμάμαι το όνομά σου, τη γλώσσα, την πόλη και τα ανοιχτά θέματα, ώστε την επόμενη φορά να συνεχίσουμε από εκεί που μείναμε. Δεν αποθηκεύω κωδικούς, τραπεζικά στοιχεία, αριθμούς ταυτότητας ή εικόνες εγγράφων. Είναι προαιρετικό και παραμένει υπό τον έλεγχό σου· μπορείς οποτεδήποτε να ρωτήσεις «Τι ξέρεις για μένα;» ή να πεις «Διέγραψε τα δεδομένα μου». Να ενεργοποιήσω τη μνήμη; Απάντησε ναι ή όχι.",
     }[lang]
-    return prefix + body
+    return relationship + "\n\n🔐 " + privacy
 
 
 def consent_granted_message(language: str, name: str = "") -> str:
