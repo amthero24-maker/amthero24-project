@@ -34,9 +34,10 @@ _DETAIL_COMMANDS = {
 }
 
 _ENGLISH_WORDS = {
-    "a", "an", "are", "can", "could", "do", "does", "founder", "hello", "help", "how",
-    "i", "is", "me", "my", "of", "openai", "please", "the", "this", "what", "where",
-    "who", "why", "you", "your", "chatgpt", "explain", "shorter", "more", "thanks",
+    "a", "after", "an", "are", "can", "could", "do", "does", "for", "founder", "hello", "help", "how",
+    "i", "is", "later", "me", "minute", "minutes", "my", "of", "openai", "please", "remind", "reminder",
+    "sleep", "sleeping", "the", "this", "what", "where", "who", "why", "you", "your", "chatgpt",
+    "explain", "shorter", "more", "thanks",
 }
 _GERMAN_WORDS = {
     "aber", "auf", "bist", "bitte", "das", "dein", "der", "deutsch", "die", "du",
