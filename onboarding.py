@@ -51,6 +51,14 @@ _SIMPLE_GREETINGS = {
     "hello", "hey", "привіт", "добрий день", "γεια", "καλημερα", "καλησπερα",
 }
 
+_LANGUAGE_NAMES = {
+    "ar": {"ar": "العربية", "de": "الألمانية", "en": "الإنجليزية", "uk": "الأوكرانية", "el": "اليونانية"},
+    "de": {"ar": "Arabisch", "de": "Deutsch", "en": "Englisch", "uk": "Ukrainisch", "el": "Griechisch"},
+    "en": {"ar": "Arabic", "de": "German", "en": "English", "uk": "Ukrainian", "el": "Greek"},
+    "uk": {"ar": "арабська", "de": "німецька", "en": "англійська", "uk": "українська", "el": "грецька"},
+    "el": {"ar": "Αραβικά", "de": "Γερμανικά", "en": "Αγγλικά", "uk": "Ουκρανικά", "el": "Ελληνικά"},
+}
+
 
 def consent_decision(text: str) -> bool | None:
     normalized = _normalize(text)
@@ -75,6 +83,11 @@ def is_name_question(text: str) -> bool:
 
 def is_simple_greeting(text: str) -> bool:
     return _normalize(text) in {_normalize(item) for item in _SIMPLE_GREETINGS}
+
+
+def _display_language(value: str, language: str) -> str:
+    safe = _lang(language)
+    return _LANGUAGE_NAMES[safe].get((value or "").strip(), (value or "").strip())
 
 
 def welcome_message(language: str, name: str = "") -> str:
@@ -164,11 +177,11 @@ def ask_name_message(language: str) -> str:
 def saved_name_message(language: str, name: str) -> str:
     lang = _lang(language)
     return {
-        "ar": f"اسمك {name} 🌿",
-        "de": f"Du heißt {name} 🌿",
-        "en": f"Your name is {name} 🌿",
-        "uk": f"Тебе звати {name} 🌿",
-        "el": f"Σε λένε {name} 🌿",
+        "ar": f"إي يا {name}، متذكّرك 🌿 اسمك {name}. ما بدك تعرّفني عن حالك من جديد كل مرة؛ إذا رجعنا لموضوع قديم منكمّل من محل ما وقفنا.",
+        "de": f"Ja, {name} — ich erinnere mich an dich 🌿 Du heißt {name}. Du musst dich hier nicht jedes Mal neu vorstellen; bei einem alten Thema machen wir dort weiter, wo wir aufgehört haben.",
+        "en": f"Yes, {name} — I remember you 🌿 Your name is {name}. You do not need to introduce yourself again each time; when we return to an old topic, we can continue where we left off.",
+        "uk": f"Так, {name}, я тебе пам’ятаю 🌿 Тебе звати {name}. Не потрібно щоразу знайомитися заново; до старої справи можемо повернутися з того місця, де зупинилися.",
+        "el": f"Ναι, {name}, σε θυμάμαι 🌿 Σε λένε {name}. Δεν χρειάζεται να συστηνόμαστε από την αρχή κάθε φορά· σε παλιό θέμα συνεχίζουμε από εκεί που μείναμε.",
     }[lang]
 
 
@@ -196,29 +209,43 @@ def memory_summary_message(language: str, profile: dict[str, Any]) -> str:
 
     facts: list[str] = []
     labels = {
-        "ar": {"first_name": "اسمك", "preferred_language": "لغتك", "city": "مدينتك", "current_topic": "الموضوع الحالي"},
-        "de": {"first_name": "Name", "preferred_language": "Sprache", "city": "Stadt", "current_topic": "aktuelles Thema"},
-        "en": {"first_name": "name", "preferred_language": "language", "city": "city", "current_topic": "current topic"},
-        "uk": {"first_name": "ім’я", "preferred_language": "мова", "city": "місто", "current_topic": "поточна тема"},
-        "el": {"first_name": "όνομα", "preferred_language": "γλώσσα", "city": "πόλη", "current_topic": "τρέχον θέμα"},
+        "ar": {"first_name": "اسمك", "preferred_language": "لغتك", "city": "مدينتك", "current_topic": "آخر موضوع عم نتابعه"},
+        "de": {"first_name": "Name", "preferred_language": "Sprache", "city": "Stadt", "current_topic": "letztes offenes Thema"},
+        "en": {"first_name": "name", "preferred_language": "language", "city": "city", "current_topic": "last open topic"},
+        "uk": {"first_name": "ім’я", "preferred_language": "мова", "city": "місто", "current_topic": "остання відкрита тема"},
+        "el": {"first_name": "όνομα", "preferred_language": "γλώσσα", "city": "πόλη", "current_topic": "τελευταίο ανοιχτό θέμα"},
     }[lang]
     for key in ("first_name", "preferred_language", "city", "current_topic"):
         value = str(profile.get(key) or "").strip()
-        if value:
-            facts.append(f"{labels[key]}: {value}")
+        if not value:
+            continue
+        if key == "preferred_language":
+            value = _display_language(value, lang)
+        facts.append(f"{labels[key]}: {value}")
+
     if not facts:
         return {
-            "ar": "الذاكرة مفعّلة، بس ما عندي عنك معلومات شخصية مفيدة محفوظة لسا.",
-            "de": "Die Erinnerung ist aktiviert, aber bisher sind keine hilfreichen persönlichen Angaben gespeichert.",
-            "en": "Memory is enabled, but no useful personal details have been saved yet.",
-            "uk": "Пам’ять увімкнено, але корисних персональних даних поки не збережено.",
-            "el": "Η μνήμη είναι ενεργή, αλλά δεν έχουν αποθηκευτεί ακόμη χρήσιμα προσωπικά στοιχεία.",
+            "ar": "الذاكرة مفعّلة 🌿 بس لسا ما صار بيناتنا شي مفيد لازم أتذكّره. أول ما يكون في اسم، مدينة أو موضوع عم نتابعه، بخليه معي حتى ما نرجع من الصفر.",
+            "de": "Die Erinnerung ist aktiv 🌿, aber bisher gibt es noch nichts Nützliches, das ich für unsere Fortsetzung behalten muss. Sobald Name, Stadt oder ein offenes Thema relevant sind, kann ich daran anknüpfen.",
+            "en": "Memory is on 🌿, but there is nothing useful I need to carry forward yet. Once a name, city, or open topic matters, I can use it so we do not start from zero again.",
+            "uk": "Пам’ять увімкнена 🌿, але поки немає корисного контексту, який треба перенести далі. Коли з’явиться ім’я, місто чи відкрита справа, я зможу продовжити без початку з нуля.",
+            "el": "Η μνήμη είναι ενεργή 🌿, αλλά ακόμη δεν υπάρχει χρήσιμο πλαίσιο που χρειάζεται να κρατήσω για συνέχεια. Όταν υπάρξει όνομα, πόλη ή ανοιχτό θέμα, θα μπορούμε να συνεχίζουμε χωρίς να ξεκινάμε από το μηδέν.",
         }[lang]
+
+    first_name = str(profile.get("first_name") or "").strip()
+    current_topic = str(profile.get("current_topic") or "").strip()
     intro = {
-        "ar": "المعلومات المفيدة المحفوظة عندي:",
-        "de": "Diese hilfreichen Angaben sind gespeichert:",
-        "en": "Here is the useful information I have saved:",
-        "uk": "Ось корисні дані, які збережено:",
-        "el": "Αυτές είναι οι χρήσιμες πληροφορίες που έχω αποθηκεύσει:",
+        "ar": f"إي{f' يا {first_name}' if first_name else ''}، متذكّر عنك هالأشياء اللي بتفيدنا حتى ما نرجع من الصفر كل مرة 🌿:",
+        "de": f"Ja{f', {first_name}' if first_name else ''} — diese Dinge merke ich mir, damit wir nicht jedes Mal von vorn anfangen 🌿:",
+        "en": f"Yes{f', {first_name}' if first_name else ''} — these are the useful details I remember so we do not have to start from zero each time 🌿:",
+        "uk": f"Так{f', {first_name}' if first_name else ''} — ось корисні речі, які я пам’ятаю, щоб нам не починати щоразу з нуля 🌿:",
+        "el": f"Ναι{f', {first_name}' if first_name else ''} — αυτά είναι τα χρήσιμα στοιχεία που θυμάμαι ώστε να μη ξεκινάμε κάθε φορά από το μηδέν 🌿:",
     }[lang]
-    return intro + "\n- " + "\n- ".join(facts)
+    continuation = {
+        "ar": f"إذا رجعنا لـ«{current_topic}»، ما تعيدلي القصة من أولها؛ قلّي «نكمل» ومنمشي من محل ما وقفنا." if current_topic else "ولما يصير في موضوع عم نتابعه، بخليه مربوط بالسياق حتى ما تضطر تعيد نفس الشرح.",
+        "de": f"Wenn wir zu „{current_topic}“ zurückkehren, musst du nicht alles neu erzählen — schreib einfach „weiter“, und wir knüpfen dort an." if current_topic else "Sobald wir ein Thema gemeinsam verfolgen, halte ich den nützlichen Kontext zusammen, damit du dich nicht wiederholen musst.",
+        "en": f"If we return to “{current_topic}”, you do not need to tell the whole story again — just say “continue” and we will pick it up from there." if current_topic else "Once we are following a topic together, I keep the useful context connected so you do not have to repeat yourself.",
+        "uk": f"Якщо повернемося до «{current_topic}», не потрібно розповідати все заново — напиши «продовжуємо», і підхопимо з того місця." if current_topic else "Коли ми ведемо справу разом, я тримаю корисний контекст пов’язаним, щоб тобі не доводилося повторюватися.",
+        "el": f"Αν επιστρέψουμε στο «{current_topic}», δεν χρειάζεται να τα πεις όλα από την αρχή — γράψε «συνεχίζουμε» και πιάνουμε το νήμα από εκεί." if current_topic else "Όταν παρακολουθούμε ένα θέμα μαζί, κρατώ συνδεδεμένο το χρήσιμο πλαίσιο ώστε να μη χρειάζεται να επαναλαμβάνεσαι.",
+    }[lang]
+    return intro + "\n• " + "\n• ".join(facts) + "\n\n" + continuation
