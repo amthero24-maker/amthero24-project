@@ -90,3 +90,11 @@ uvicorn webhook_security:app --host 0.0.0.0 --port $PORT
 ```
 
 Production checks, backups, restore drills, incidents, and rollback procedures are documented in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+Before Closed Beta, use the one-sender WhatsApp certification in [`docs/whatsapp-canary-certification-v1.md`](docs/whatsapp-canary-certification-v1.md). For canary certification, production smoke checks can additionally require the reminder worker itself to be running:
+
+```bash
+python production_smoke.py --require-signature --require-launch-ready --require-reminder-worker
+```
+
+`/ready=200` alone is not considered proof that reminder delivery is actively running when this strict canary gate is required.
