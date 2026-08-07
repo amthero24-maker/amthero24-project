@@ -161,7 +161,7 @@ jobs:
 
       - name: Record sanitized certification result
         if: always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           REPORT_PATH: deployment-stability.json
           LAUNCH_CODES_PATH: launch-readiness-codes.json
