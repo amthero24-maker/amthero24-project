@@ -77,6 +77,7 @@ def test_smoke_passes_for_healthy_production() -> None:
         "durable_inbound_queue",
         "outbound_delivery_receipts",
         "reminders",
+        "reminder_worker",
         "reminder_encryption",
         "admin_secret",
         "launch_decision",
@@ -104,6 +105,7 @@ def test_smoke_fails_on_storage_schema_signature_delivery_and_lifecycle_misconfi
                 "durable_inbound_queue": "misconfigured",
                 "outbound_delivery_receipts": "missing",
                 "reminders": "misconfigured",
+                "reminder_worker": "stopped",
                 "reminder_encryption": "weak",
                 "privacy_retention": "enabled",
                 "provider_telemetry": "enabled",
@@ -129,6 +131,51 @@ def test_smoke_fails_on_storage_schema_signature_delivery_and_lifecycle_misconfi
         "reminders",
         "reminder_encryption",
     }
+
+
+def test_reminder_worker_gate_is_optional_by_default() -> None:
+    def response(base: str, path: str, **kwargs):
+        status, payload = _healthy(path)
+        if path == "/ready":
+            payload["components"]["reminder_worker"] = "stopped"
+        return status, payload
+
+    with patch("production_smoke.fetch_json", side_effect=response):
+        checks = production_smoke.run_smoke("https://example.test")
+
+    worker = next(item for item in checks if item.name == "reminder_worker")
+    assert worker.passed is True
+    assert worker.detail == "stopped"
+
+
+def test_reminder_worker_gate_fails_when_required_and_not_running() -> None:
+    def response(base: str, path: str, **kwargs):
+        status, payload = _healthy(path)
+        if path == "/ready":
+            payload["components"]["reminder_worker"] = "stopped"
+        return status, payload
+
+    with patch("production_smoke.fetch_json", side_effect=response):
+        checks = production_smoke.run_smoke(
+            "https://example.test",
+            require_reminder_worker=True,
+        )
+
+    worker = next(item for item in checks if item.name == "reminder_worker")
+    assert worker.passed is False
+    assert worker.detail == "stopped"
+
+
+def test_reminder_worker_gate_passes_only_for_running_worker_when_required() -> None:
+    with patch("production_smoke.fetch_json", side_effect=lambda base, path, **kwargs: _healthy(path)):
+        checks = production_smoke.run_smoke(
+            "https://example.test",
+            require_reminder_worker=True,
+        )
+
+    worker = next(item for item in checks if item.name == "reminder_worker")
+    assert worker.passed is True
+    assert worker.detail == "running"
 
 
 def test_disabled_durable_queue_is_allowed_during_safe_rollout() -> None:
