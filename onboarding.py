@@ -51,6 +51,14 @@ _SIMPLE_GREETINGS = {
     "hello", "hey", "привіт", "добрий день", "γεια", "καλημερα", "καλησπερα",
 }
 
+_LANGUAGE_NAMES = {
+    "ar": {"ar": "العربية", "de": "الألمانية", "en": "الإنجليزية", "uk": "الأوكرانية", "el": "اليونانية"},
+    "de": {"ar": "Arabisch", "de": "Deutsch", "en": "Englisch", "uk": "Ukrainisch", "el": "Griechisch"},
+    "en": {"ar": "Arabic", "de": "German", "en": "English", "uk": "Ukrainian", "el": "Greek"},
+    "uk": {"ar": "арабська", "de": "німецька", "en": "англійська", "uk": "українська", "el": "грецька"},
+    "el": {"ar": "Αραβικά", "de": "Γερμανικά", "en": "Αγγλικά", "uk": "Ουκρανικά", "el": "Ελληνικά"},
+}
+
 
 def consent_decision(text: str) -> bool | None:
     normalized = _normalize(text)
@@ -75,6 +83,11 @@ def is_name_question(text: str) -> bool:
 
 def is_simple_greeting(text: str) -> bool:
     return _normalize(text) in {_normalize(item) for item in _SIMPLE_GREETINGS}
+
+
+def _display_language(value: str, language: str) -> str:
+    safe = _lang(language)
+    return _LANGUAGE_NAMES[safe].get((value or "").strip(), (value or "").strip())
 
 
 def welcome_message(language: str, name: str = "") -> str:
@@ -111,21 +124,46 @@ def welcome_message(language: str, name: str = "") -> str:
 
 def consent_prompt(language: str, name: str = "") -> str:
     lang = _lang(language)
-    prefix = {
-        "ar": f"تشرفت فيك{f' يا {name}' if name else ''} 🌿 ",
-        "de": f"Freut mich{f', {name}' if name else ''} 🌿 ",
-        "en": f"Nice to meet you{f', {name}' if name else ''} 🌿 ",
-        "uk": f"Радий знайомству{f', {name}' if name else ''} 🌿 ",
-        "el": f"Χάρηκα{f', {name}' if name else ''} 🌿 ",
+    relationship = {
+        "ar": (
+            f"تشرفت فيك{f' يا {name}' if name else ''} 🌿 من هلق اعتبرني Sam، مساعدك الشخصي بحياتك اليومية بألمانيا. "
+            "إذا وصلك كتاب، فاتورة، عقد أو موعد وما عرفت من وين تبدأ، ابعته إليّ وأنا بفهمك المهم وبحطلك الخطوة الجاية. "
+            "وبقدر أكتبلك رسائل وإيميلات رسمية بالألماني، أساعدك بالإلغاء والاعتراض والاسترداد، أرتّب معك المواعيد والمهام، وأذكّرك بالشي اللي لازم ما يضيع. "
+            "الفكرة إنك ما تحمل كل هالتفاصيل براسك لحالك — منمشي فيها سوا خطوة بخطوة."
+        ),
+        "de": (
+            f"Freut mich{f', {name}' if name else ''} 🌿 Ab jetzt kannst du mich als Sam, deinen persönlichen Begleiter für den Alltag in Deutschland, nutzen. "
+            "Wenn ein Brief, eine Rechnung, ein Vertrag oder ein Termin auf deinem Tisch landet und du nicht weißt, wo du anfangen sollst, schick ihn mir: Ich ordne das Wichtige und den nächsten Schritt. "
+            "Ich kann außerdem offizielle deutsche E-Mails und Schreiben vorbereiten, bei Kündigungen, Widersprüchen und Rückerstattungen helfen, Termine und Aufgaben strukturieren und dich an Wichtiges erinnern. "
+            "Du musst nicht alles allein im Kopf behalten — wir arbeiten es Schritt für Schritt ab."
+        ),
+        "en": (
+            f"Nice to meet you{f', {name}' if name else ''} 🌿 From here on, think of me as Sam, your personal assistant for everyday life in Germany. "
+            "If a letter, invoice, contract, or appointment lands in front of you and you do not know where to start, send it to me: I’ll sort out what matters and the next step. "
+            "I can also prepare formal German emails and letters, help with cancellations, objections and refunds, organize appointments and tasks, and remind you about things you should not miss. "
+            "You do not have to carry all of that in your head alone — we can work through it step by step."
+        ),
+        "uk": (
+            f"Радий знайомству{f', {name}' if name else ''} 🌿 Відтепер можеш сприймати мене як Сема, твого особистого помічника для повсякденного життя в Німеччині. "
+            "Якщо приходить лист, рахунок, договір чи запис і незрозуміло, з чого почати, надішли мені — я виділю головне та наступний крок. "
+            "Також можу підготувати офіційний лист або email німецькою, допомогти зі скасуванням, запереченням чи поверненням коштів, організувати справи й нагадування. "
+            "Не потрібно тримати все це в голові самостійно — розберемо крок за кроком."
+        ),
+        "el": (
+            f"Χάρηκα{f', {name}' if name else ''} 🌿 Από εδώ και πέρα μπορείς να με βλέπεις ως τον Sam, τον προσωπικό σου βοηθό για την καθημερινότητα στη Γερμανία. "
+            "Αν έρθει ένα γράμμα, τιμολόγιο, συμβόλαιο ή ραντεβού και δεν ξέρεις από πού να αρχίσεις, στείλ’ το μου: θα ξεχωρίσω τι έχει σημασία και ποιο είναι το επόμενο βήμα. "
+            "Μπορώ επίσης να ετοιμάσω επίσημα γερμανικά email και επιστολές, να βοηθήσω με ακυρώσεις, ενστάσεις και επιστροφές, να οργανώσω ραντεβού και υποχρεώσεις και να σου θυμίζω ό,τι δεν πρέπει να χαθεί. "
+            "Δεν χρειάζεται να τα κρατάς όλα μόνος σου στο μυαλό — τα προχωράμε βήμα βήμα."
+        ),
     }[lang]
-    body = {
-        "ar": "إذا بتحب، فيني أتذكّر اسمك، لغتك، مدينتك والمواضيع اللي عم نتابعها حتى نكمل المرة الجاية من محل ما وقفنا. ما بحفظ كلمات سر، بيانات بنكية، أرقام هوية أو صور مستندات. هالشي اختياري، وبتقدر بأي وقت تسأل «شو بتعرف عني؟» أو تقول «امسح بياناتي». أفعّل الذاكرة؟ اكتب نعم أو لا.",
-        "de": "Wenn du möchtest, kann ich mir deinen Namen, deine Sprache, deine Stadt und offene Themen merken, damit wir beim nächsten Mal nicht von vorn anfangen. Passwörter, Bankdaten, Ausweisnummern oder Dokumentbilder speichere ich nicht. Das ist freiwillig; du kannst jederzeit fragen „Was weißt du über mich?“ oder „Lösch meine Daten“. Soll ich die Erinnerung aktivieren? Antworte mit Ja oder Nein.",
-        "en": "With your permission, I can remember your name, language, city, and open topics so we can continue next time without starting over. I do not store passwords, bank details, ID numbers, or document images. This is optional, and you can ask “What do you know about me?” or “Delete my data” at any time. Enable memory? Reply yes or no.",
-        "uk": "За твоєю згодою я можу запам’ятати ім’я, мову, місто та відкриті теми, щоб наступного разу продовжити без початку з нуля. Я не зберігаю паролі, банківські дані, номери документів або зображення документів. Це добровільно; будь-коли можна запитати «Що ти знаєш про мене?» або сказати «Видали мої дані». Увімкнути пам’ять? Відповідай так або ні.",
-        "el": "Με την άδειά σου μπορώ να θυμάμαι το όνομά σου, τη γλώσσα, την πόλη και τα ανοιχτά θέματα, ώστε την επόμενη φορά να συνεχίσουμε χωρίς να ξεκινήσουμε από την αρχή. Δεν αποθηκεύω κωδικούς, τραπεζικά στοιχεία, αριθμούς ταυτότητας ή εικόνες εγγράφων. Είναι προαιρετικό και μπορείς οποτεδήποτε να ρωτήσεις «Τι ξέρεις για μένα;» ή να πεις «Διέγραψε τα δεδομένα μου». Να ενεργοποιήσω τη μνήμη; Απάντησε ναι ή όχι.",
+    privacy = {
+        "ar": "إذا بتحب، فيني كمان أتذكّر اسمك، لغتك، مدينتك والمواضيع اللي عم نتابعها حتى المرة الجاية نكمل من محل ما وقفنا. ما بحفظ كلمات سر، بيانات بنكية، أرقام هوية أو صور مستندات. هالشي اختياري وإنت المتحكم فيه؛ بتقدر بأي وقت تسأل «شو بتعرف عني؟» أو تقول «امسح بياناتي». أفعّل الذاكرة؟ اكتب نعم أو لا.",
+        "de": "Wenn du möchtest, kann ich mir außerdem deinen Namen, deine Sprache, deine Stadt und offene Themen merken, damit wir beim nächsten Mal dort weitermachen, wo wir aufgehört haben. Passwörter, Bankdaten, Ausweisnummern oder Dokumentbilder speichere ich nicht. Das ist freiwillig und bleibt unter deiner Kontrolle; du kannst jederzeit fragen „Was weißt du über mich?“ oder „Lösch meine Daten“. Soll ich die Erinnerung aktivieren? Antworte mit Ja oder Nein.",
+        "en": "If you want, I can also remember your name, language, city, and open topics so next time we continue where we left off. I do not store passwords, bank details, ID numbers, or document images. This is optional and stays under your control; you can ask “What do you know about me?” or say “Delete my data” at any time. Enable memory? Reply yes or no.",
+        "uk": "Якщо хочеш, я також можу пам’ятати твоє ім’я, мову, місто та відкриті теми, щоб наступного разу продовжити з того місця, де ми зупинилися. Я не зберігаю паролі, банківські дані, номери документів або зображення документів. Це добровільно й залишається під твоїм контролем; будь-коли можна запитати «Що ти знаєш про мене?» або сказати «Видали мої дані». Увімкнути пам’ять? Відповідай так або ні.",
+        "el": "Αν θέλεις, μπορώ επίσης να θυμάμαι το όνομά σου, τη γλώσσα, την πόλη και τα ανοιχτά θέματα, ώστε την επόμενη φορά να συνεχίσουμε από εκεί που μείναμε. Δεν αποθηκεύω κωδικούς, τραπεζικά στοιχεία, αριθμούς ταυτότητας ή εικόνες εγγράφων. Είναι προαιρετικό και παραμένει υπό τον έλεγχό σου· μπορείς οποτεδήποτε να ρωτήσεις «Τι ξέρεις για μένα;» ή να πεις «Διέγραψε τα δεδομένα μου». Να ενεργοποιήσω τη μνήμη; Απάντησε ναι ή όχι.",
     }[lang]
-    return prefix + body
+    return relationship + "\n\n🔐 " + privacy
 
 
 def consent_granted_message(language: str, name: str = "") -> str:
@@ -164,11 +202,11 @@ def ask_name_message(language: str) -> str:
 def saved_name_message(language: str, name: str) -> str:
     lang = _lang(language)
     return {
-        "ar": f"اسمك {name} 🌿",
-        "de": f"Du heißt {name} 🌿",
-        "en": f"Your name is {name} 🌿",
-        "uk": f"Тебе звати {name} 🌿",
-        "el": f"Σε λένε {name} 🌿",
+        "ar": f"إي يا {name}، متذكّرك 🌿 اسمك {name}. ما بدك تعرّفني عن حالك من جديد كل مرة؛ إذا رجعنا لموضوع قديم منكمّل من محل ما وقفنا.",
+        "de": f"Ja, {name} — ich erinnere mich an dich 🌿 Du heißt {name}. Du musst dich hier nicht jedes Mal neu vorstellen; bei einem alten Thema machen wir dort weiter, wo wir aufgehört haben.",
+        "en": f"Yes, {name} — I remember you 🌿 Your name is {name}. You do not need to introduce yourself again each time; when we return to an old topic, we can continue where we left off.",
+        "uk": f"Так, {name}, я тебе пам’ятаю 🌿 Тебе звати {name}. Не потрібно щоразу знайомитися заново; до старої справи можемо повернутися з того місця, де зупинилися.",
+        "el": f"Ναι, {name}, σε θυμάμαι 🌿 Σε λένε {name}. Δεν χρειάζεται να συστηνόμαστε από την αρχή κάθε φορά· σε παλιό θέμα συνεχίζουμε από εκεί που μείναμε.",
     }[lang]
 
 
@@ -196,29 +234,43 @@ def memory_summary_message(language: str, profile: dict[str, Any]) -> str:
 
     facts: list[str] = []
     labels = {
-        "ar": {"first_name": "اسمك", "preferred_language": "لغتك", "city": "مدينتك", "current_topic": "الموضوع الحالي"},
-        "de": {"first_name": "Name", "preferred_language": "Sprache", "city": "Stadt", "current_topic": "aktuelles Thema"},
-        "en": {"first_name": "name", "preferred_language": "language", "city": "city", "current_topic": "current topic"},
-        "uk": {"first_name": "ім’я", "preferred_language": "мова", "city": "місто", "current_topic": "поточна тема"},
-        "el": {"first_name": "όνομα", "preferred_language": "γλώσσα", "city": "πόλη", "current_topic": "τρέχον θέμα"},
+        "ar": {"first_name": "اسمك", "preferred_language": "لغتك", "city": "مدينتك", "current_topic": "آخر موضوع عم نتابعه"},
+        "de": {"first_name": "Name", "preferred_language": "Sprache", "city": "Stadt", "current_topic": "letztes offenes Thema"},
+        "en": {"first_name": "name", "preferred_language": "language", "city": "city", "current_topic": "last open topic"},
+        "uk": {"first_name": "ім’я", "preferred_language": "мова", "city": "місто", "current_topic": "остання відкрита тема"},
+        "el": {"first_name": "όνομα", "preferred_language": "γλώσσα", "city": "πόλη", "current_topic": "τελευταίο ανοιχτό θέμα"},
     }[lang]
     for key in ("first_name", "preferred_language", "city", "current_topic"):
         value = str(profile.get(key) or "").strip()
-        if value:
-            facts.append(f"{labels[key]}: {value}")
+        if not value:
+            continue
+        if key == "preferred_language":
+            value = _display_language(value, lang)
+        facts.append(f"{labels[key]}: {value}")
+
     if not facts:
         return {
-            "ar": "الذاكرة مفعّلة، بس ما عندي عنك معلومات شخصية مفيدة محفوظة لسا.",
-            "de": "Die Erinnerung ist aktiviert, aber bisher sind keine hilfreichen persönlichen Angaben gespeichert.",
-            "en": "Memory is enabled, but no useful personal details have been saved yet.",
-            "uk": "Пам’ять увімкнено, але корисних персональних даних поки не збережено.",
-            "el": "Η μνήμη είναι ενεργή, αλλά δεν έχουν αποθηκευτεί ακόμη χρήσιμα προσωπικά στοιχεία.",
+            "ar": "الذاكرة مفعّلة 🌿 بس لسا ما صار بيناتنا شي مفيد لازم أتذكّره. أول ما يكون في اسم، مدينة أو موضوع عم نتابعه، بخليه معي حتى ما نرجع من الصفر.",
+            "de": "Die Erinnerung ist aktiv 🌿, aber bisher gibt es noch nichts Nützliches, das ich für unsere Fortsetzung behalten muss. Sobald Name, Stadt oder ein offenes Thema relevant sind, kann ich daran anknüpfen.",
+            "en": "Memory is on 🌿, but there is nothing useful I need to carry forward yet. Once a name, city, or open topic matters, I can use it so we do not start from zero again.",
+            "uk": "Пам’ять увімкнена 🌿, але поки немає корисного контексту, який треба перенести далі. Коли з’явиться ім’я, місто чи відкрита справа, я зможу продовжити без початку з нуля.",
+            "el": "Η μνήμη είναι ενεργή 🌿, αλλά ακόμη δεν υπάρχει χρήσιμο πλαίσιο που χρειάζεται να κρατήσω για συνέχεια. Όταν υπάρξει όνομα, πόλη ή ανοιχτό θέμα, θα μπορούμε να συνεχίζουμε χωρίς να ξεκινάμε από το μηδέν.",
         }[lang]
+
+    first_name = str(profile.get("first_name") or "").strip()
+    current_topic = str(profile.get("current_topic") or "").strip()
     intro = {
-        "ar": "المعلومات المفيدة المحفوظة عندي:",
-        "de": "Diese hilfreichen Angaben sind gespeichert:",
-        "en": "Here is the useful information I have saved:",
-        "uk": "Ось корисні дані, які збережено:",
-        "el": "Αυτές είναι οι χρήσιμες πληροφορίες που έχω αποθηκεύσει:",
+        "ar": f"إي{f' يا {first_name}' if first_name else ''}، متذكّر عنك هالأشياء اللي بتفيدنا حتى ما نرجع من الصفر كل مرة 🌿:",
+        "de": f"Ja{f', {first_name}' if first_name else ''} — diese Dinge merke ich mir, damit wir nicht jedes Mal von vorn anfangen 🌿:",
+        "en": f"Yes{f', {first_name}' if first_name else ''} — these are the useful details I remember so we do not have to start from zero each time 🌿:",
+        "uk": f"Так{f', {first_name}' if first_name else ''} — ось корисні речі, які я пам’ятаю, щоб нам не починати щоразу з нуля 🌿:",
+        "el": f"Ναι{f', {first_name}' if first_name else ''} — αυτά είναι τα χρήσιμα στοιχεία που θυμάμαι ώστε να μη ξεκινάμε κάθε φορά από το μηδέν 🌿:",
     }[lang]
-    return intro + "\n- " + "\n- ".join(facts)
+    continuation = {
+        "ar": f"إذا رجعنا لـ«{current_topic}»، ما تعيدلي القصة من أولها؛ قلّي «نكمل» ومنمشي من محل ما وقفنا." if current_topic else "ولما يصير في موضوع عم نتابعه، بخليه مربوط بالسياق حتى ما تضطر تعيد نفس الشرح.",
+        "de": f"Wenn wir zu „{current_topic}“ zurückkehren, musst du nicht alles neu erzählen — schreib einfach „weiter“, und wir knüpfen dort an." if current_topic else "Sobald wir ein Thema gemeinsam verfolgen, halte ich den nützlichen Kontext zusammen, damit du dich nicht wiederholen musst.",
+        "en": f"If we return to “{current_topic}”, you do not need to tell the whole story again — just say “continue” and we will pick it up from there." if current_topic else "Once we are following a topic together, I keep the useful context connected so you do not have to repeat yourself.",
+        "uk": f"Якщо повернемося до «{current_topic}», не потрібно розповідати все заново — напиши «продовжуємо», і підхопимо з того місця." if current_topic else "Коли ми ведемо справу разом, я тримаю корисний контекст пов’язаним, щоб тобі не доводилося повторюватися.",
+        "el": f"Αν επιστρέψουμε στο «{current_topic}», δεν χρειάζεται να τα πεις όλα από την αρχή — γράψε «συνεχίζουμε» και πιάνουμε το νήμα από εκεί." if current_topic else "Όταν παρακολουθούμε ένα θέμα μαζί, κρατώ συνδεδεμένο το χρήσιμο πλαίσιο ώστε να μη χρειάζεται να επαναλαμβάνεσαι.",
+    }[lang]
+    return intro + "\n• " + "\n• ".join(facts) + "\n\n" + continuation

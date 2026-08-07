@@ -75,7 +75,10 @@ async def test_saved_name_question_is_deterministic_and_skips_groq(tmp_path) -> 
     app.store.claim_message(message.message_id, message.sender, message.text)
     with patch.object(app, "generate_reply", side_effect=AssertionError("Groq must not be called")), patch.object(app, "send_whatsapp_message", new=AsyncMock()) as send:
         await app.process_incoming(message)
-    assert send.await_args.args[1] == "اسمك وسام 🌿"
+    reply = send.await_args.args[1]
+    assert "وسام" in reply
+    assert "متذكّرك" in reply
+    assert "من محل ما وقفنا" in reply
 
 
 @pytest.mark.anyio
