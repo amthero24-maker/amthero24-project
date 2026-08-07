@@ -434,6 +434,76 @@ def test_postgres_reminder_acknowledgement_is_atomic_and_recipient_scoped() -> N
     assert row["acknowledged_sent_at"] == delivered_at
 
 
+def test_postgres_snooze_is_atomic_and_preserves_recurring_source() -> None:
+    store = _store()
+    phone = "+49167" + uuid4().hex[:8]
+    other_phone = "+49168" + uuid4().hex[:8]
+    repository = ReminderRepository(store)
+    delivered_at = datetime.now(UTC)
+    source = repository.create(
+        phone,
+        title="Snooze integration reminder",
+        scheduled_at=delivered_at,
+        language="de",
+        recurrence_days=1,
+        recurrence_count=3,
+    )
+    repository.mark_sent(source["reminder_id"], now=delivered_at)
+    source_before = next(
+        item
+        for item in repository.list(phone, active_only=False, limit=10)
+        if item["reminder_id"] == source["reminder_id"]
+    )
+    target = delivered_at + timedelta(minutes=15)
+
+    status, snooze = repository.snooze_recent(
+        phone,
+        scheduled_at=target,
+        now=delivered_at + timedelta(minutes=1),
+    )
+
+    assert status == "snoozed"
+    assert snooze["snooze_origin_id"] == source["reminder_id"]
+    assert snooze["snooze_count"] == 1
+    assert snooze["recurrence_days"] is None
+    assert snooze["snooze_preserved_recurrence"] is True
+    assert repository.snooze_recent(
+        phone,
+        scheduled_at=target,
+        now=delivered_at + timedelta(minutes=2),
+    )[0] == "existing"
+    assert repository.snooze_recent(
+        other_phone,
+        scheduled_at=target,
+        now=delivered_at + timedelta(minutes=1),
+    )[0] == "not_found"
+    with store.pool.connection() as connection:
+        source_row = connection.execute(
+            """
+            SELECT status, scheduled_at, recurrence_remaining
+            FROM hero_reminders WHERE reminder_id = %s
+            """,
+            (source["reminder_id"],),
+        ).fetchone()
+        snooze_row = connection.execute(
+            """
+            SELECT status, scheduled_at, recurrence_days, recurrence_remaining,
+                   snooze_origin_id, snooze_count
+            FROM hero_reminders WHERE reminder_id = %s
+            """,
+            (snooze["reminder_id"],),
+        ).fetchone()
+    assert source_row["status"] == "pending"
+    assert source_row["scheduled_at"].isoformat() == source_before["scheduled_at"]
+    assert source_row["recurrence_remaining"] == source_before["recurrence_remaining"]
+    assert snooze_row["status"] == "pending"
+    assert snooze_row["scheduled_at"] == target
+    assert snooze_row["recurrence_days"] is None
+    assert snooze_row["recurrence_remaining"] is None
+    assert snooze_row["snooze_origin_id"] == source["reminder_id"]
+    assert snooze_row["snooze_count"] == 1
+
+
 def test_postgres_weekday_reminder_skips_weekend_atomically() -> None:
     store = _store()
     phone = "+49162" + uuid4().hex[:8]

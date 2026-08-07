@@ -144,6 +144,12 @@ def _seed_source(database_url: str) -> dict[str, str]:
             PHONE, now=now + timedelta(minutes=1),
         )
         assert acknowledgement_status == "acknowledged"
+        snooze_status, snooze = reminders.snooze_recent(
+            PHONE,
+            scheduled_at=now + timedelta(minutes=30),
+            now=now + timedelta(minutes=2),
+        )
+        assert snooze_status == "snoozed"
         pending.put(
             PHONE,
             {
@@ -165,6 +171,7 @@ def _seed_source(database_url: str) -> dict[str, str]:
         return {
             "mission_id": str(mission["mission_id"]),
             "reminder_id": str(reminder["reminder_id"]),
+            "snooze_id": str(snooze["reminder_id"]),
             "ticket_id": str(ticket["ticket_id"]),
         }
     finally:
@@ -264,12 +271,27 @@ def test_encrypted_backup_restores_complete_schema_compatible_application_state(
         assert outbound["status"] == "delivered"
         assert outbound["message_kind"] == "template"
 
-        reminder = ReminderRepository(target_store).list(PHONE, active_only=False, limit=10)[0]
+        restored_reminders = ReminderRepository(target_store).list(
+            PHONE, active_only=False, limit=10,
+        )
+        reminder = next(
+            item for item in restored_reminders
+            if item["reminder_id"] == identifiers["reminder_id"]
+        )
         assert reminder["reminder_id"] == identifiers["reminder_id"]
         assert decrypt_recipient(str(reminder["recipient_ciphertext"])) == PHONE
         assert reminder["status"] == "acknowledged"
         assert reminder["acknowledged_at"] is not None
         assert reminder["acknowledged_sent_at"] is not None
+        snooze = next(
+            item for item in restored_reminders
+            if item["reminder_id"] == identifiers["snooze_id"]
+        )
+        assert decrypt_recipient(str(snooze["recipient_ciphertext"])) == PHONE
+        assert snooze["status"] == "pending"
+        assert snooze["snooze_origin_id"] == identifiers["reminder_id"]
+        assert snooze["snooze_count"] == 1
+        assert snooze["recurrence_days"] is None
 
         mission = HeroMemory(target_store).get_latest_mission(PHONE)
         assert mission is not None

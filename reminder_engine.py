@@ -35,6 +35,9 @@ SUPPORTED_LANGUAGES = {"de", "ar", "en", "uk", "el"}
 DEFAULT_TIMEZONE = "Europe/Berlin"
 SERVICE_WINDOW = timedelta(hours=24)
 ACKNOWLEDGEMENT_WINDOW_HOURS = 24
+SNOOZE_WINDOW_HOURS = 24
+SNOOZE_MAX_DELAY = timedelta(days=7)
+SNOOZE_MAX_COUNT = 5
 
 
 class ReminderServiceError(RuntimeError):
@@ -361,6 +364,8 @@ class ReminderRepository:
                 holiday_region TEXT NOT NULL DEFAULT '',
                 acknowledged_at TIMESTAMPTZ,
                 acknowledged_sent_at TIMESTAMPTZ,
+                snooze_origin_id TEXT NOT NULL DEFAULT '',
+                snooze_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
@@ -372,6 +377,8 @@ class ReminderRepository:
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS holiday_region TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ",
             "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS acknowledged_sent_at TIMESTAMPTZ",
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS snooze_origin_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE hero_reminders ADD COLUMN IF NOT EXISTS snooze_count INTEGER NOT NULL DEFAULT 0",
             """
             CREATE INDEX IF NOT EXISTS hero_reminders_due_idx
             ON hero_reminders (status, next_attempt_at, scheduled_at)
@@ -383,6 +390,11 @@ class ReminderRepository:
             """
             CREATE INDEX IF NOT EXISTS hero_reminders_ack_idx
             ON hero_reminders (phone_hash, sent_at DESC)
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS hero_reminders_snooze_sequence_idx
+            ON hero_reminders (phone_hash, snooze_origin_id, snooze_count)
+            WHERE snooze_origin_id <> ''
             """,
         )
         with self.store.pool.connection() as connection:
@@ -397,6 +409,7 @@ class ReminderRepository:
         title: str,
         recurrence_days: int | None = None,
         holiday_region: str = "",
+        snooze_origin_id: str = "",
     ) -> str:
         raw = (
             f"{phone_hash}|{mission_id}|{scheduled_at.astimezone(UTC).isoformat()}|"
@@ -404,6 +417,8 @@ class ReminderRepository:
         )
         if holiday_region:
             raw += f"|holiday:{holiday_region}"
+        if snooze_origin_id:
+            raw += f"|snooze:{snooze_origin_id}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def create(
@@ -480,6 +495,8 @@ class ReminderRepository:
             "holiday_region": region,
             "acknowledged_at": None,
             "acknowledged_sent_at": None,
+            "snooze_origin_id": "",
+            "snooze_count": 0,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -491,8 +508,8 @@ class ReminderRepository:
                         (reminder_id, dedupe_key, phone_hash, recipient_ciphertext, mission_id,
                         title, language, timezone, scheduled_at, next_attempt_at,
                         recurrence_days, recurrence_remaining, weekdays_only, recurrence_weekdays,
-                        holiday_region)
-                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        holiday_region, snooze_origin_id, snooze_count)
+                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (dedupe_key) DO UPDATE
                     SET updated_at = NOW()
                     RETURNING *
@@ -501,7 +518,7 @@ class ReminderRepository:
                         reminder["reminder_id"], reminder["dedupe_key"], phone_hash,
                         reminder["recipient_ciphertext"], clean_mission, clean_title, lang,
                         reminder["timezone"], when, when, repeat_days, repeat_count,
-                        weekday_schedule, specific_weekdays, region,
+                        weekday_schedule, specific_weekdays, region, "", 0,
                     ),
                 ).fetchone()
             return self._from_row(row)
@@ -687,6 +704,7 @@ class ReminderRepository:
                     str(selected.get("title") or "Follow-up"),
                     int(selected["recurrence_days"]) if selected.get("recurrence_days") else None,
                     region,
+                    _clean(selected.get("snooze_origin_id"), 64),
                 )
                 conflict = connection.execute(
                     "SELECT 1 FROM hero_reminders WHERE dedupe_key = %s AND reminder_id <> %s LIMIT 1",
@@ -741,6 +759,7 @@ class ReminderRepository:
                 str(item.get("title") or "Follow-up"),
                 int(item["recurrence_days"]) if item.get("recurrence_days") else None,
                 region,
+                _clean(item.get("snooze_origin_id"), 64),
             )
             if any(
                 existing is not item and isinstance(existing, dict) and existing.get("dedupe_key") == dedupe
@@ -834,6 +853,7 @@ class ReminderRepository:
                 str(item.get("title") or "Follow-up"),
                 recurrence_days,
                 region,
+                _clean(item.get("snooze_origin_id"), 64),
             )
             return dedupe, scheduled, region
 
@@ -989,6 +1009,12 @@ class ReminderRepository:
         acknowledged_sent_at = _parse_datetime(item.get("acknowledged_sent_at"))
         return bool(sent_at and acknowledged_sent_at and sent_at == acknowledged_sent_at)
 
+    @staticmethod
+    def _sort_recent_delivery_records(records: list[dict[str, Any]]) -> None:
+        """Match PostgreSQL's newest-first order with a stable ID tie-break."""
+        records.sort(key=lambda item: str(item.get("reminder_id") or ""))
+        records.sort(key=lambda item: str(item.get("sent_at") or ""), reverse=True)
+
     def recent_deliveries(
         self,
         phone: str,
@@ -1026,7 +1052,7 @@ class ReminderRepository:
                 sent_at = _parse_datetime(item.get("sent_at"))
                 if sent_at is not None and sent_at >= cutoff:
                     records.append(deepcopy(item))
-            records.sort(key=lambda item: str(item.get("sent_at") or ""), reverse=True)
+            self._sort_recent_delivery_records(records)
             records = records[:safe_limit]
         if unacknowledged_only:
             records = [item for item in records if not self._delivery_is_acknowledged(item)]
@@ -1101,7 +1127,7 @@ class ReminderRepository:
                 sent_at = _parse_datetime(item.get("sent_at"))
                 if sent_at is not None and sent_at >= cutoff:
                     records.append(item)
-            records.sort(key=lambda item: str(item.get("sent_at") or ""), reverse=True)
+            self._sort_recent_delivery_records(records)
             status, selected = select(records[:30])
             if status != "selected":
                 return status, deepcopy(selected)
@@ -1113,6 +1139,203 @@ class ReminderRepository:
             return "acknowledged", deepcopy(selected)
 
         return self.store._transaction(acknowledge_json)
+
+    def snooze_recent(
+        self,
+        phone: str,
+        *,
+        scheduled_at: datetime,
+        position: int | None = None,
+        now: datetime | None = None,
+        within_hours: int = SNOOZE_WINDOW_HOURS,
+    ) -> tuple[str, dict[str, Any]]:
+        """Create one bounded, one-time child without moving the delivered reminder."""
+        if position is not None and not 1 <= int(position) <= 30:
+            return "not_found", {}
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        when = scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=UTC)
+        when = when.astimezone(UTC)
+        if when <= current or when - current > SNOOZE_MAX_DELAY:
+            return "invalid", {}
+        key = _phone_hash(phone)
+        cutoff = current - timedelta(hours=max(1, min(int(within_hours), 168)))
+        statuses = ("sent", "pending", "acknowledged")
+
+        def select(records: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+            if not records:
+                return "not_found", {}
+            if position is None and len(records) != 1:
+                return "ambiguous", {}
+            index = (int(position) - 1) if position is not None else 0
+            if index >= len(records):
+                return "not_found", {}
+            return "selected", records[index]
+
+        def decorate(record: dict[str, Any], origin: dict[str, Any]) -> dict[str, Any]:
+            result = self._from_row(record)
+            result["snooze_preserved_recurrence"] = bool(
+                origin.get("status") == "pending" and origin.get("recurrence_days")
+            )
+            return result
+
+        if self.backend_name == "postgresql":
+            with self.store.pool.connection() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM hero_reminders
+                    WHERE phone_hash = %s AND sent_at IS NOT NULL AND sent_at >= %s
+                      AND status = ANY(%s)
+                    ORDER BY sent_at DESC, reminder_id ASC LIMIT 30 FOR UPDATE
+                    """,
+                    (key, cutoff, list(statuses)),
+                ).fetchall()
+                records = [dict(row) for row in rows]
+                selection, selected = select(records)
+                if selection != "selected":
+                    return selection, {}
+                origin_id = _clean(
+                    selected.get("snooze_origin_id") or selected.get("reminder_id"), 64,
+                )
+                origin_row = connection.execute(
+                    """
+                    SELECT * FROM hero_reminders
+                    WHERE reminder_id = %s AND phone_hash = %s FOR UPDATE
+                    """,
+                    (origin_id, key),
+                ).fetchone()
+                origin = dict(origin_row) if origin_row else selected
+                title = _clean(selected.get("title"), 180) or "Follow-up"
+                mission_id = _clean(selected.get("mission_id"), 64)
+                language = str(selected.get("language") or "de")
+                if language not in SUPPORTED_LANGUAGES:
+                    language = "de"
+                timezone_name = _clean(selected.get("timezone"), 80) or DEFAULT_TIMEZONE
+                dedupe = self._dedupe(
+                    key, mission_id, when, title, snooze_origin_id=origin_id,
+                )
+                existing_row = connection.execute(
+                    "SELECT * FROM hero_reminders WHERE dedupe_key = %s FOR UPDATE",
+                    (dedupe,),
+                ).fetchone()
+                if existing_row:
+                    existing = dict(existing_row)
+                    status = "conflict" if existing.get("status") == "cancelled" else "existing"
+                    return status, decorate(existing, origin)
+                sequence_rows = connection.execute(
+                    """
+                    SELECT snooze_count FROM hero_reminders
+                    WHERE phone_hash = %s AND snooze_origin_id = %s FOR UPDATE
+                    """,
+                    (key, origin_id),
+                ).fetchall()
+                sequence = max(
+                    (int(row.get("snooze_count") or 0) for row in sequence_rows),
+                    default=0,
+                )
+                if sequence >= SNOOZE_MAX_COUNT:
+                    return "limit", decorate(selected, origin)
+                reminder_id = uuid4().hex
+                row = connection.execute(
+                    """
+                    INSERT INTO hero_reminders
+                        (reminder_id, dedupe_key, phone_hash, recipient_ciphertext, mission_id,
+                         title, language, timezone, scheduled_at, next_attempt_at,
+                         snooze_origin_id, snooze_count)
+                    VALUES (%s, %s, %s, %s, NULLIF(%s, ''), %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (
+                        reminder_id, dedupe, key, encrypt_recipient(phone), mission_id,
+                        title, language, timezone_name, when, when, origin_id, sequence + 1,
+                    ),
+                ).fetchone()
+            return "snoozed", decorate(dict(row), origin)
+
+        def snooze_json(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            reminders = data.setdefault("reminders", {})
+            records = []
+            for item in reminders.values():
+                if not isinstance(item, dict) or item.get("phone_hash") != key:
+                    continue
+                if item.get("status") not in statuses:
+                    continue
+                sent_at = _parse_datetime(item.get("sent_at"))
+                if sent_at is not None and sent_at >= cutoff:
+                    records.append(item)
+            self._sort_recent_delivery_records(records)
+            selection, selected = select(records[:30])
+            if selection != "selected":
+                return selection, {}
+            origin_id = _clean(
+                selected.get("snooze_origin_id") or selected.get("reminder_id"), 64,
+            )
+            origin = reminders.get(origin_id)
+            if not isinstance(origin, dict) or origin.get("phone_hash") != key:
+                origin = selected
+            title = _clean(selected.get("title"), 180) or "Follow-up"
+            mission_id = _clean(selected.get("mission_id"), 64)
+            language = str(selected.get("language") or "de")
+            if language not in SUPPORTED_LANGUAGES:
+                language = "de"
+            timezone_name = _clean(selected.get("timezone"), 80) or DEFAULT_TIMEZONE
+            dedupe = self._dedupe(
+                key, mission_id, when, title, snooze_origin_id=origin_id,
+            )
+            existing = next(
+                (
+                    item for item in reminders.values()
+                    if isinstance(item, dict) and item.get("dedupe_key") == dedupe
+                ),
+                None,
+            )
+            if existing is not None:
+                status = "conflict" if existing.get("status") == "cancelled" else "existing"
+                return status, decorate(existing, origin)
+            sequence = max(
+                (
+                    int(item.get("snooze_count") or 0)
+                    for item in reminders.values()
+                    if isinstance(item, dict)
+                    and item.get("phone_hash") == key
+                    and item.get("snooze_origin_id") == origin_id
+                ),
+                default=0,
+            )
+            if sequence >= SNOOZE_MAX_COUNT:
+                return "limit", decorate(selected, origin)
+            current_text = current.isoformat()
+            reminder = {
+                "reminder_id": uuid4().hex,
+                "dedupe_key": dedupe,
+                "phone_hash": key,
+                "recipient_ciphertext": encrypt_recipient(phone),
+                "mission_id": mission_id,
+                "title": title,
+                "language": language,
+                "timezone": timezone_name,
+                "scheduled_at": when.isoformat(),
+                "status": "pending",
+                "attempt_count": 0,
+                "last_error": "",
+                "next_attempt_at": when.isoformat(),
+                "lease_until": None,
+                "sent_at": None,
+                "recurrence_days": None,
+                "recurrence_remaining": None,
+                "weekdays_only": False,
+                "recurrence_weekdays": "",
+                "holiday_region": "",
+                "acknowledged_at": None,
+                "acknowledged_sent_at": None,
+                "snooze_origin_id": origin_id,
+                "snooze_count": sequence + 1,
+                "created_at": current_text,
+                "updated_at": current_text,
+            }
+            reminders[reminder["reminder_id"]] = reminder
+            return "snoozed", decorate(reminder, origin)
+
+        return self.store._transaction(snooze_json)
 
     def mark_sent(self, reminder_id: str, *, now: datetime | None = None) -> None:
         current = (now or datetime.now(UTC)).astimezone(UTC)
@@ -1278,11 +1501,11 @@ def render_reminder(language: str, title: str) -> str:
     lang = language if language in SUPPORTED_LANGUAGES else "de"
     clean_title = _clean(title, 180)
     return {
-        "ar": f"تذكير لطيف 📅 عندك متابعة بخصوص «{clean_title}». لما تخلص اكتب «تم التذكير»، أو اكتبلي شو صار ومنكمل من آخر خطوة.",
-        "de": f"Kleine Erinnerung 📅 Du hast eine offene Aufgabe zu „{clean_title}“. Wenn du fertig bist, antworte mit „Erinnerung erledigt“, oder schreib kurz, was passiert ist.",
-        "en": f"A quick reminder 📅 You have a follow-up for “{clean_title}”. Reply “reminder done” when finished, or tell me what happened.",
-        "uk": f"Нагадування 📅 У тебе є подальша дія щодо «{clean_title}». Коли завершиш, напиши «нагадування виконано», або розкажи, що сталося.",
-        "el": f"Μικρή υπενθύμιση 📅 Έχεις συνέχεια για «{clean_title}». Όταν τελειώσεις, γράψε «η υπενθύμιση ολοκληρώθηκε» ή πες μου τι έγινε.",
+        "ar": f"تذكير لطيف 📅 عندك متابعة بخصوص «{clean_title}». لما تخلص اكتب «تم التذكير»، أو اكتب «ذكرني بعد 10 دقائق» لغفوة قصيرة، أو خبرني شو صار.",
+        "de": f"Kleine Erinnerung 📅 Du hast eine offene Aufgabe zu „{clean_title}“. Antworte mit „Erinnerung erledigt“ oder „Erinnere mich nochmal in 10 Minuten“ für eine kurze Schlummerzeit.",
+        "en": f"A quick reminder 📅 You have a follow-up for “{clean_title}”. Reply “reminder done” or “remind me again in 10 minutes” for a short snooze.",
+        "uk": f"Нагадування 📅 У тебе є подальша дія щодо «{clean_title}». Напиши «нагадування виконано» або «нагадай мені ще раз через 10 хвилин» для короткого відкладення.",
+        "el": f"Μικρή υπενθύμιση 📅 Έχεις συνέχεια για «{clean_title}». Γράψε «η υπενθύμιση ολοκληρώθηκε» ή «θύμισέ μου ξανά σε 10 λεπτά» για σύντομη αναβολή.",
     }[lang]
 
 
@@ -1552,6 +1775,105 @@ def reminder_acknowledgement_not_found_message(language: str) -> str:
         "uk": "Не знайдено надісланого нагадування за останні 24 години для підтвердження.",
         "el": "Δεν βρήκα απεσταλμένη υπενθύμιση των τελευταίων 24 ωρών για επιβεβαίωση.",
     }.get(language, "No recent delivered reminder found.")
+
+
+def reminder_snoozed_message(
+    language: str,
+    reminder: dict[str, Any],
+    *,
+    existing: bool = False,
+) -> str:
+    when = _parse_datetime(reminder.get("scheduled_at")) or datetime.now(UTC)
+    try:
+        local = when.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
+    except (KeyError, ValueError):
+        local = when.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+    date_text = local.strftime("%d.%m.%Y, %H:%M")
+    title = str(reminder.get("title") or "")
+    recurring = bool(reminder.get("snooze_preserved_recurrence"))
+    if existing:
+        return {
+            "ar": f"الغفوة موجودة أصلًا ✅ تذكير «{title}» مضبوط على {date_text}، وما غيّرت شي.",
+            "de": f"Die Schlummer-Erinnerung besteht schon ✅ „{title}“ ist für {date_text} geplant; nichts wurde geändert.",
+            "en": f"That snooze already exists ✅ “{title}” is scheduled for {date_text}; nothing changed.",
+            "uk": f"Це відкладене нагадування вже існує ✅ «{title}» заплановано на {date_text}; нічого не змінено.",
+            "el": f"Αυτή η αναβολή υπάρχει ήδη ✅ Το «{title}» έχει οριστεί για {date_text}· δεν άλλαξε τίποτα.",
+        }.get(language, f"That snooze already exists for {date_text}.")
+    recurrence_note = {
+        "ar": " وجدول التكرار الأصلي بقي كما هو.",
+        "de": " Der ursprüngliche Wiederholungsplan bleibt unverändert.",
+        "en": " The original recurrence schedule remains unchanged.",
+        "uk": " Початковий розклад повторень не змінено.",
+        "el": " Το αρχικό πρόγραμμα επανάληψης παραμένει αμετάβλητο.",
+    }.get(language, " The original recurrence schedule remains unchanged.") if recurring else ""
+    return {
+        "ar": f"تمام ⏰ أنشأت غفوة مستقلة لتذكير «{title}» بتاريخ {date_text}.{recurrence_note}",
+        "de": f"Erledigt ⏰ Für „{title}“ wurde eine separate Schlummer-Erinnerung am {date_text} erstellt.{recurrence_note}",
+        "en": f"Done ⏰ A separate snooze for “{title}” was created for {date_text}.{recurrence_note}",
+        "uk": f"Готово ⏰ Окреме відкладене нагадування «{title}» створено на {date_text}.{recurrence_note}",
+        "el": f"Έγινε ⏰ Δημιουργήθηκε ξεχωριστή αναβολή για το «{title}» στις {date_text}.{recurrence_note}",
+    }.get(language, f"A separate snooze was created for {date_text}.{recurrence_note}")
+
+
+def reminder_snooze_selection_message(
+    language: str, reminders: list[dict[str, Any]],
+) -> str:
+    prefix = {
+        "ar": "وصلتك عدة تذكيرات مؤخرًا. أعد الطلب مع الرقم، مثل: «ذكرني مرة ثانية بعد 10 دقائق للتذكير 2».\n",
+        "de": "Du hast mehrere Erinnerungen erhalten. Wiederhole den Wunsch mit Nummer, z. B. „Erinnere mich nochmal in 10 Minuten für Erinnerung 2“.\n",
+        "en": "You received several reminders. Repeat the request with a number, for example: “remind me again in 10 minutes for reminder 2”.\n",
+        "uk": "Ти отримав кілька нагадувань. Повтори запит із номером, наприклад: «нагадай мені ще раз через 10 хвилин для нагадування 2».\n",
+        "el": "Έλαβες πολλές υπενθυμίσεις. Επανάλαβε το αίτημα με αριθμό, π.χ. «θύμισέ μου ξανά σε 10 λεπτά για την υπενθύμιση 2».\n",
+    }.get(language, "Choose a recent reminder number.\n")
+    lines = []
+    for index, reminder in enumerate(reminders, start=1):
+        sent_at = _parse_datetime(reminder.get("sent_at")) or datetime.now(UTC)
+        try:
+            local = sent_at.astimezone(ZoneInfo(str(reminder.get("timezone") or DEFAULT_TIMEZONE)))
+        except (KeyError, ValueError):
+            local = sent_at.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+        lines.append(f"{index}. {reminder.get('title')} — {local.strftime('%d.%m.%Y %H:%M')}")
+    return prefix + "\n".join(lines)
+
+
+def reminder_snooze_not_found_message(language: str) -> str:
+    return {
+        "ar": "ما لقيت تذكيرًا مُرسلًا خلال آخر 24 ساعة حتى أنشئ له غفوة.",
+        "de": "Ich habe in den letzten 24 Stunden keine gesendete Erinnerung zum Schlummern gefunden.",
+        "en": "I found no delivered reminder from the last 24 hours to snooze.",
+        "uk": "Не знайдено надісланого нагадування за останні 24 години для відкладення.",
+        "el": "Δεν βρήκα απεσταλμένη υπενθύμιση των τελευταίων 24 ωρών για αναβολή.",
+    }.get(language, "No recent delivered reminder found to snooze.")
+
+
+def reminder_snooze_limit_message(language: str) -> str:
+    return {
+        "ar": f"وصلت هالسلسلة للحد الآمن: {SNOOZE_MAX_COUNT} غفوات. أنجز التذكير أو أنشئ تذكيرًا جديدًا بموعد واضح.",
+        "de": f"Diese Folge hat das sichere Limit von {SNOOZE_MAX_COUNT} Schlummer-Erinnerungen erreicht. Schließe sie ab oder erstelle eine neue Erinnerung.",
+        "en": f"This chain reached the safe limit of {SNOOZE_MAX_COUNT} snoozes. Complete it or create a new reminder with a clear time.",
+        "uk": f"Цей ланцюжок досяг безпечного ліміту: {SNOOZE_MAX_COUNT} відкладень. Заверши його або створи нове нагадування.",
+        "el": f"Αυτή η ακολουθία έφτασε το ασφαλές όριο των {SNOOZE_MAX_COUNT} αναβολών. Ολοκλήρωσέ την ή δημιούργησε νέα υπενθύμιση.",
+    }.get(language, f"This reminder reached the limit of {SNOOZE_MAX_COUNT} snoozes.")
+
+
+def reminder_snooze_invalid_message(language: str) -> str:
+    return {
+        "ar": "موعد الغفوة لازم يكون بالمستقبل وخلال 7 أيام، مثل: «ذكرني مرة ثانية بعد 10 دقائق».",
+        "de": "Die Schlummerzeit muss in der Zukunft und innerhalb von 7 Tagen liegen, z. B. „Erinnere mich nochmal in 10 Minuten“.",
+        "en": "The snooze must be in the future and within 7 days, for example: “remind me again in 10 minutes”.",
+        "uk": "Час відкладення має бути в майбутньому й у межах 7 днів, наприклад: «нагадай мені ще раз через 10 хвилин».",
+        "el": "Η αναβολή πρέπει να είναι στο μέλλον και εντός 7 ημερών, π.χ. «θύμισέ μου ξανά σε 10 λεπτά».",
+    }.get(language, "Choose a snooze time within the next 7 days.")
+
+
+def reminder_snooze_conflict_message(language: str) -> str:
+    return {
+        "ar": "كانت الغفوة المطابقة ملغاة من قبل، لذلك ما أعدت تفعيلها تلقائيًا. اختر وقتًا جديدًا.",
+        "de": "Die passende Schlummer-Erinnerung wurde bereits gelöscht und nicht automatisch reaktiviert. Wähle eine neue Zeit.",
+        "en": "The matching snooze was previously cancelled, so I did not reactivate it automatically. Choose a new time.",
+        "uk": "Відповідне відкладення раніше скасовано, тому його не активовано автоматично. Обери інший час.",
+        "el": "Η αντίστοιχη αναβολή είχε ακυρωθεί, γι’ αυτό δεν ενεργοποιήθηκε αυτόματα. Διάλεξε νέα ώρα.",
+    }.get(language, "That snooze was cancelled; choose a new time.")
 
 
 def reminder_cancelled_message(language: str, count: int) -> str:

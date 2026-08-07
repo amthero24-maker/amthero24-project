@@ -72,7 +72,9 @@ def test_export_includes_safe_reminders_without_delivery_secrets(tmp_path, monke
     assert payload["reminders"][0]["title"] == "WKK"
     assert payload["reminders"][0]["status"] == "acknowledged"
     assert "acknowledged_at" in payload["reminders"][0]
+    assert payload["reminders"][0]["snooze_count"] == 0
     assert "acknowledged_sent_at" not in payload["reminders"][0]
+    assert "snooze_origin_id" not in payload["reminders"][0]
     assert "recipient_ciphertext" not in payload["reminders"][0]
     assert "phone_hash" not in payload["reminders"][0]
     assert "last_error" not in payload["reminders"][0]

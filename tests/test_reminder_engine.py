@@ -10,6 +10,7 @@ from data_store import JsonDataStore
 from reminder_engine import (
     ReminderRepository,
     ReminderServiceError,
+    SNOOZE_MAX_COUNT,
     deliver_due_reminders,
     detect_reminder_intent,
     reminder_acknowledged_message,
@@ -220,6 +221,113 @@ def test_acknowledgement_never_guesses_between_recent_deliveries(tmp_path, monke
     )[0] == "not_found"
 
 
+def test_snooze_creates_one_time_child_and_preserves_recurring_schedule(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    delivered_at = datetime(2026, 8, 6, 10, tzinfo=UTC)
+    source = repository.create(
+        phone,
+        title="Drink water",
+        scheduled_at=delivered_at,
+        language="en",
+        recurrence_days=1,
+        recurrence_count=3,
+    )
+    repository.mark_sent(source["reminder_id"], now=delivered_at)
+    recurring_before = next(
+        item for item in repository.list(phone) if item["reminder_id"] == source["reminder_id"]
+    )
+
+    target = delivered_at + timedelta(minutes=10)
+    status, snooze = repository.snooze_recent(
+        phone, scheduled_at=target, now=delivered_at + timedelta(minutes=1),
+    )
+
+    assert status == "snoozed"
+    assert snooze["snooze_origin_id"] == source["reminder_id"]
+    assert snooze["snooze_count"] == 1
+    assert snooze["recurrence_days"] is None
+    assert snooze["scheduled_at"] == target.isoformat()
+    assert snooze["snooze_preserved_recurrence"] is True
+    recurring_after = next(
+        item for item in repository.list(phone) if item["reminder_id"] == source["reminder_id"]
+    )
+    assert recurring_after["scheduled_at"] == recurring_before["scheduled_at"]
+    assert recurring_after["recurrence_remaining"] == recurring_before["recurrence_remaining"]
+    assert recurring_after["status"] == "pending"
+    replay_status, replay = repository.snooze_recent(
+        phone, scheduled_at=target, now=delivered_at + timedelta(minutes=2),
+    )
+    assert replay_status == "existing"
+    assert replay["reminder_id"] == snooze["reminder_id"]
+    assert repository.snooze_recent(
+        "491999999", scheduled_at=target, now=delivered_at + timedelta(minutes=1),
+    )[0] == "not_found"
+
+
+def test_snooze_never_guesses_between_recent_deliveries(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    now = datetime(2026, 8, 6, 12, tzinfo=UTC)
+    first = repository.create(
+        phone, title="First", scheduled_at=now - timedelta(minutes=10), language="en",
+    )
+    second = repository.create(
+        phone, title="Second", scheduled_at=now - timedelta(minutes=5), language="en",
+    )
+    repository.mark_sent(first["reminder_id"], now=now - timedelta(minutes=10))
+    repository.mark_sent(second["reminder_id"], now=now - timedelta(minutes=5))
+
+    target = now + timedelta(minutes=15)
+    assert repository.snooze_recent(phone, scheduled_at=target, now=now)[0] == "ambiguous"
+    status, snooze = repository.snooze_recent(
+        phone, scheduled_at=target, position=2, now=now,
+    )
+    assert status == "snoozed"
+    assert snooze["title"] == "First"
+    sources = {
+        item["reminder_id"]: item
+        for item in repository.list(phone, active_only=False, limit=10)
+    }
+    assert sources[first["reminder_id"]]["status"] == "sent"
+    assert sources[second["reminder_id"]]["status"] == "sent"
+
+
+def test_snooze_chain_is_bounded_and_rejects_distant_target(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("REMINDER_ENCRYPTION_KEY", "reminder-key-2026-unique-7fA9xQ2mLp8V")
+    repository = ReminderRepository(JsonDataStore(tmp_path / "store.json"))
+    phone = "491234567"
+    delivered_at = datetime(2026, 8, 6, 12, tzinfo=UTC)
+    source = repository.create(
+        phone, title="Bounded", scheduled_at=delivered_at, language="en",
+    )
+    repository.mark_sent(source["reminder_id"], now=delivered_at)
+    current = delivered_at + timedelta(minutes=1)
+
+    last_target = current
+    for sequence in range(1, SNOOZE_MAX_COUNT + 1):
+        last_target = delivered_at + timedelta(minutes=sequence + 1)
+        status, snooze = repository.snooze_recent(
+            phone, scheduled_at=last_target, now=current,
+        )
+        assert status == "snoozed"
+        assert snooze["snooze_count"] == sequence
+
+    assert repository.snooze_recent(
+        phone,
+        scheduled_at=delivered_at + timedelta(minutes=SNOOZE_MAX_COUNT + 2),
+        now=current,
+    )[0] == "limit"
+    assert repository.snooze_recent(
+        phone, scheduled_at=last_target, now=current,
+    )[0] == "existing"
+    assert repository.snooze_recent(
+        phone, scheduled_at=current + timedelta(days=8), now=current,
+    )[0] == "invalid"
+
+
 @pytest.mark.parametrize(("language", "command"), (
     ("ar", "تم التذكير"), ("de", "Erinnerung erledigt"),
     ("en", "reminder done"), ("uk", "нагадування виконано"),
@@ -233,6 +341,14 @@ def test_delivery_and_acknowledgement_messages_explain_the_command(language, com
         "timezone": "Europe/Berlin",
     }
     assert command.casefold() in render_reminder(language, "Office").casefold()
+    snooze_command = {
+        "ar": "ذكرني بعد 10 دقائق",
+        "de": "Erinnere mich nochmal in 10 Minuten",
+        "en": "remind me again in 10 minutes",
+        "uk": "нагадай мені ще раз через 10 хвилин",
+        "el": "θύμισέ μου ξανά σε 10 λεπτά",
+    }[language]
+    assert snooze_command.casefold() in render_reminder(language, "Office").casefold()
     assert "Office" in reminder_acknowledged_message(language, reminder)
     assert "1." in reminder_acknowledgement_selection_message(language, [reminder])
 
