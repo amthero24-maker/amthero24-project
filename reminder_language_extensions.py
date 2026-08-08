@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 import reminder_conversation_extensions as reminders
+import sam_product_voice as sam_voice
 
 core = reminders.core
 base = reminders.base
@@ -109,4 +110,5 @@ def install() -> None:
     reminders.process_incoming = process_incoming
     base.process_incoming = process_incoming
     core.process_incoming = process_incoming
+    sam_voice.install(core)
     _INSTALLED = True
