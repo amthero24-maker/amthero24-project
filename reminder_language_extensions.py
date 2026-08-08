@@ -18,8 +18,20 @@ _ORIGINAL_EXTRACT_TITLE = reminders._extract_title
 _INSTALLED = False
 
 
+def _is_german_reminder_turn(text: str) -> bool:
+    """Recognize short German reminder turns that generic language scoring can miss."""
+    normalized = str(text or "").casefold()
+    return bool(
+        re.search(r"\berinnere\s+mich\b", normalized)
+        or re.search(r"\bminuten?\b", normalized)
+        or re.search(r"\bstunden?\b", normalized)
+    )
+
+
 def detect_turn_language(text: str, profile: dict[str, Any]) -> str:
     fallback = base._language(profile)
+    if _is_german_reminder_turn(text):
+        return "de"
     return core.detect_language(text, fallback) if str(text or "").strip() else fallback
 
 
@@ -51,9 +63,41 @@ def prepare_turn_language(message: Any) -> str:
     return language
 
 
+def should_clarify_implicit_snooze(intent: Any, recent_count: int) -> bool:
+    """Avoid guessing which delivered reminder a bare time-only request refers to."""
+    return bool(
+        intent is not None
+        and getattr(intent, "action", "") == "snooze"
+        and getattr(intent, "snooze_implicit", False)
+        and getattr(intent, "position", None) is None
+        and recent_count > 1
+    )
+
+
 async def process_incoming(message: Any) -> None:
     if message.message_type == "text" and str(message.text or "").strip():
-        prepare_turn_language(message)
+        language = prepare_turn_language(message)
+        profile = core.store.get_user(message.sender)
+        if (
+            str(profile.get("onboarding_stage") or "") == "complete"
+            and profile.get("memory_consent") == "granted"
+            and base.reminder_delivery_ready(message.sender)
+        ):
+            intent = reminders.detect_conversational_reminder_intent(message.text)
+            if intent is not None and getattr(intent, "snooze_implicit", False):
+                recent = base._repository().recent_deliveries(message.sender, limit=10)
+                if should_clarify_implicit_snooze(intent, len(recent)) and intent.scheduled_at is not None:
+                    core.store.update_user(message.sender, {
+                        reminders._PENDING_AT: intent.scheduled_at.isoformat(),
+                        "session_language": language,
+                        "session_expires_at": core._session_expiry(),
+                    })
+                    await core._finish(
+                        message.message_id,
+                        reminders._question(language, "title"),
+                        message.sender,
+                    )
+                    return
     await _ORIGINAL_PROCESS_INCOMING(message)
 
 
