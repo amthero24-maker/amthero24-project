@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import reminder_language_extensions as language_layer
 from data_store import JsonDataStore
@@ -24,6 +25,14 @@ def test_current_english_reminder_turn_overrides_arabic_profile() -> None:
     ) == "en"
 
 
+def test_short_german_reminder_turn_overrides_english_profile() -> None:
+    profile = _profile()
+    profile["preferred_language"] = "en"
+    profile["session_language"] = "en"
+    assert language_layer.detect_turn_language("Erinnere mich in 2 Minuten", profile) == "de"
+    assert language_layer.detect_turn_language("In 10 Minuten bitte", profile) == "de"
+
+
 def test_english_reminder_title_drops_leftover_infinitive_marker() -> None:
     assert language_layer.clean_english_reminder_title(
         "Remind me in 2 minutes to sleep", "to sleep"
@@ -34,6 +43,16 @@ def test_non_english_reminder_title_is_unchanged() -> None:
     assert language_layer.clean_english_reminder_title(
         "ذكرني بعد دقيقتين نام", "نام"
     ) == "نام"
+
+
+def test_multiple_recent_deliveries_make_implicit_snooze_a_title_clarification() -> None:
+    implicit = SimpleNamespace(action="snooze", snooze_implicit=True, position=None)
+    explicit = SimpleNamespace(action="snooze", snooze_implicit=False, position=None)
+    selected = SimpleNamespace(action="snooze", snooze_implicit=True, position=2)
+    assert language_layer.should_clarify_implicit_snooze(implicit, 2) is True
+    assert language_layer.should_clarify_implicit_snooze(implicit, 1) is False
+    assert language_layer.should_clarify_implicit_snooze(explicit, 2) is False
+    assert language_layer.should_clarify_implicit_snooze(selected, 2) is False
 
 
 def test_prepare_turn_language_updates_session_and_consented_preference(tmp_path, monkeypatch) -> None:
