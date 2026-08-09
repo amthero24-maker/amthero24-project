@@ -82,3 +82,39 @@ def test_unknown_status_does_not_activate_mission() -> None:
         mission_status="unexpected_external_value",
     )
     assert state.stage == "understand"
+
+
+def test_short_answer_after_identity_question_preserves_context() -> None:
+    state = infer_conversation_state(
+        text="مكتب الضرائب",
+        returning_user=True,
+        has_attachment=False,
+        current_topic="identity",
+        mission_status="",
+    )
+    assert state.stage == "contextual_followup"
+    assert "immediately preceding question" in state.continuation
+
+
+def test_short_answer_after_capabilities_question_preserves_context() -> None:
+    contract = build_sam_conversation_contract(
+        text="Finanzamt",
+        returning_user=True,
+        has_attachment=False,
+        current_topic="capabilities",
+        mission_status="",
+    )
+    assert "Current stage: contextual_followup" in contract
+    assert "dictionary or FAQ lookup" in contract
+    assert "1-3 short sentences" in contract
+
+
+def test_long_new_request_after_identity_is_not_forced_into_followup() -> None:
+    state = infer_conversation_state(
+        text="عندي رسالة من مكتب الضرائب وفيها مهلة أسبوعين وبدي أعرف شو لازم أعمل",
+        returning_user=True,
+        has_attachment=False,
+        current_topic="identity",
+        mission_status="",
+    )
+    assert state.stage == "understand"
