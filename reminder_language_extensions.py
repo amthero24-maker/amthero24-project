@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import onboarding as onboarding_rules
 import reminder_conversation_extensions as reminders
 import sam_product_voice as sam_voice
 import sam_conversation_voice as sam_conversation
@@ -17,7 +18,33 @@ core = reminders.core
 base = reminders.base
 _ORIGINAL_PROCESS_INCOMING = reminders.process_incoming
 _ORIGINAL_EXTRACT_TITLE = reminders._extract_title
+_ORIGINAL_IS_NAME_QUESTION = core.is_name_question
 _INSTALLED = False
+
+
+def _normalize_name_question(text: str) -> str:
+    value = onboarding_rules._normalize(text)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _is_user_name_question(text: str) -> bool:
+    """Recognize natural variants asking for the user's saved name.
+
+    Keep Sam-name questions (for example ``شو اسمك انت`` / ``Wie heißt du``)
+    out of this path so they continue to the product identity layer.
+    """
+    if _ORIGINAL_IS_NAME_QUESTION(text):
+        return True
+    normalized = _normalize_name_question(text)
+    variants = {
+        "شو اسمي انا", "شو اسمي أنا", "بتعرف شو اسمي", "بتتذكر شو اسمي",
+        "ما هو اسمي", "ما هو اسمي انا", "ما هو اسمي أنا",
+        "wie heiße ich denn", "wie heisse ich denn", "weißt du wie ich heiße", "weisst du wie ich heisse",
+        "what is my name again", "do you remember what my name is", "do you know what my name is",
+        "як мене звати знову", "ти пам ятаєш як мене звати",
+        "πως με λενε ξανα", "θυμασαι πως με λενε",
+    }
+    return normalized in {_normalize_name_question(item) for item in variants}
 
 
 def _is_german_reminder_turn(text: str) -> bool:
@@ -111,6 +138,7 @@ def install() -> None:
     reminders.process_incoming = process_incoming
     base.process_incoming = process_incoming
     core.process_incoming = process_incoming
+    core.is_name_question = _is_user_name_question
     sam_voice.install(core)
     sam_conversation.install(core)
     _INSTALLED = True
