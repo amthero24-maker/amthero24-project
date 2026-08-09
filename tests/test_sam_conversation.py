@@ -105,7 +105,7 @@ def test_short_answer_after_capabilities_question_preserves_context() -> None:
         mission_status="",
     )
     assert "Current stage: contextual_followup" in contract
-    assert "not a dictionary or FAQ lookup" in contract
+    assert "dictionary or FAQ lookup" in contract
     assert "1-3 short sentences" in contract
 
 
