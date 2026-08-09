@@ -81,7 +81,7 @@ jobs:
         run: python -m pip freeze --all > resolved-audit-environment.txt
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: supply-chain-evidence
           path: |
