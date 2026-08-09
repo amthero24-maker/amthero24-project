@@ -26,6 +26,7 @@ _ACTIVE_MISSION_STATUSES = {
 }
 _AWAITING_STATUSES = {"awaiting_reply", "waiting", "pending_reply"}
 _FINISHED_STATUSES = {"mission_finished", "finished", "completed", "done", "closed"}
+_TRANSIENT_CONVERSATION_TOPICS = {"identity", "capabilities", "greeting"}
 
 
 def _normalize(value: str) -> str:
@@ -35,6 +36,19 @@ def _normalize(value: str) -> str:
 def _is_greeting_only(text: str) -> bool:
     normalized = re.sub(r"[\s.!?,،؛]+", " ", (text or "").casefold()).strip()
     return normalized in {item.casefold() for item in _GREETING_ONLY}
+
+
+def _is_short_context_answer(text: str) -> bool:
+    """Return true for a compact answer that likely responds to Sam's last question.
+
+    This is deliberately structural rather than semantic: it does not guess the
+    user's intent or execute anything. It only tells the prompt layer to preserve
+    the immediately preceding conversational question instead of treating a
+    1-4-word answer as a brand-new standalone FAQ query.
+    """
+    cleaned = re.sub(r"[.!?,،؛؟]+", " ", (text or "").strip())
+    words = [item for item in cleaned.split() if item]
+    return bool(words) and len(words) <= 4 and len(cleaned) <= 60
 
 
 def infer_conversation_state(
@@ -47,7 +61,9 @@ def infer_conversation_state(
 ) -> SamConversationState:
     """Infer the safest next conversational stage from explicit context only."""
     normalized_status = _normalize(mission_status)
-    known_topic = bool((current_topic or "").strip()) and current_topic.casefold() != "unknown"
+    topic = (current_topic or "").strip()
+    known_topic = bool(topic) and topic.casefold() != "unknown"
+    transient_topic = topic.casefold() in _TRANSIENT_CONVERSATION_TOPICS
 
     if normalized_status in _FINISHED_STATUSES:
         stage = "mission_finished"
@@ -67,6 +83,9 @@ def infer_conversation_state(
     elif returning_user and not known_topic and _is_greeting_only(text):
         stage = "relationship_continues"
         continuation = "acknowledge the return briefly and ask what should be continued or started"
+    elif returning_user and transient_topic and _is_short_context_answer(text):
+        stage = "contextual_followup"
+        continuation = "treat the short message as a likely answer to Sam's immediately preceding question; acknowledge it naturally and ask one useful next question instead of giving a generic definition or restarting discovery"
     else:
         stage = "understand"
         continuation = "confirm the real objective and only the missing fact needed for the next action"
@@ -102,6 +121,7 @@ def build_sam_conversation_contract(
         "follow_up": "Maintain the waiting state accurately. Distinguish between no reply yet, a new reply, and a deadline requiring action.",
         "mission_finished": "Mark the result and any remaining obligation precisely. Do not imply ongoing work when the mission is complete.",
         "relationship_continues": "Keep the relationship continuous without manufacturing familiarity, dependency, or an unfinished mission.",
+        "contextual_followup": "Do not answer the short phrase as a dictionary or FAQ lookup. Use the previous assistant question and recent messages to understand what the user is answering. Respond conversationally in 1-3 short sentences and ask at most one concrete next question.",
     }[state.stage]
     return f"""
 SAM CONVERSATION CONTRACT
