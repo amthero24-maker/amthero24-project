@@ -16,6 +16,8 @@ _DELETE_PATTERNS = (
     "امسح بياناتي",
     "احذف بياناتي",
     "видали мої дані",
+    "διαγραψε τα δεδομενα μου",
+    "διαγραφή δεδομένων μου",
 )
 _LEAVE_PATTERNS = {
     "اخرج من النسخة التجريبية",
@@ -40,17 +42,19 @@ _LEAVE_PATTERNS = {
 def _normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").casefold().strip()
     value = re.sub(r"[\u064b-\u065f\u0670\u0640]", "", value)
+    value = value.translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا"}))
     value = re.sub(r"[؟،؛!?.,:;]+", " ", value)
     value = re.sub(r"[^\w\u0600-\u06ff\u0370-\u03ff\u0400-\u04ff]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
 _NORMALIZED_LEAVE_PATTERNS = frozenset(_normalize(item) for item in _LEAVE_PATTERNS)
+_NORMALIZED_DELETE_PATTERNS = tuple(_normalize(item) for item in _DELETE_PATTERNS)
 
 
 def is_delete_request(text: str) -> bool:
-    lowered = str(text or "").casefold()
-    return any(phrase in lowered for phrase in _DELETE_PATTERNS)
+    normalized = _normalize(text)
+    return any(phrase in normalized for phrase in _NORMALIZED_DELETE_PATTERNS)
 
 
 def is_leave_request(text: str) -> bool:
@@ -79,12 +83,12 @@ def beta_not_active_message(language: str) -> str:
 
 def beta_privacy_unavailable_message(language: str) -> str:
     return {
-        "ar": "تعذر التحقق من بيانات مشاركتك بالنسخة التجريبية حاليًا. لم أنفذ حذفًا أو تغييرًا جزئيًا؛ جرّب مرة ثانية لاحقًا.",
-        "de": "Deine Closed-Beta-Daten konnten gerade nicht sicher geprüft werden. Es wurde keine teilweise Löschung oder Änderung ausgeführt; bitte versuche es später erneut.",
-        "en": "Your Closed Beta data could not be verified safely right now. No partial deletion or change was performed; please try again later.",
-        "uk": "Дані участі в закритій Beta зараз неможливо безпечно перевірити. Часткове видалення чи зміну не виконано; спробуйте пізніше.",
-        "el": "Τα δεδομένα συμμετοχής στην κλειστή Beta δεν μπόρεσαν να επαληθευτούν με ασφάλεια. Δεν έγινε μερική διαγραφή ή αλλαγή· δοκιμάστε αργότερα.",
-    }.get(language, "Deine Closed-Beta-Daten konnten gerade nicht sicher geprüft werden. Es wurde keine teilweise Löschung oder Änderung ausgeführt; bitte versuche es später erneut.")
+        "ar": "تعذر إكمال العملية على بيانات مشاركتك بالنسخة التجريبية بشكل موثوق. لا أستطيع تأكيد نتيجة كاملة الآن؛ جرّب مرة ثانية لاحقًا.",
+        "de": "Der Vorgang für deine Closed-Beta-Daten konnte nicht zuverlässig abgeschlossen werden. Ein vollständiges Ergebnis kann gerade nicht bestätigt werden; bitte versuche es später erneut.",
+        "en": "The operation on your Closed Beta data could not be completed reliably. A complete result cannot be confirmed right now; please try again later.",
+        "uk": "Операцію з даними участі в закритій Beta не вдалося надійно завершити. Повний результат зараз неможливо підтвердити; спробуйте пізніше.",
+        "el": "Η ενέργεια στα δεδομένα συμμετοχής στην κλειστή Beta δεν ολοκληρώθηκε αξιόπιστα. Δεν μπορεί να επιβεβαιωθεί πλήρες αποτέλεσμα τώρα· δοκιμάστε αργότερα.",
+    }.get(language, "Der Vorgang für deine Closed-Beta-Daten konnte nicht zuverlässig abgeschlossen werden. Ein vollständiges Ergebnis kann gerade nicht bestätigt werden; bitte versuche es später erneut.")
 
 
 def render_beta_export(language: str, payload: dict[str, Any]) -> str:
