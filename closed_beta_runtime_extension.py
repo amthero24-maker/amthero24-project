@@ -38,8 +38,8 @@ def _runtime_environment() -> dict[str, str]:
         "CLOSED_BETA_ADMISSION_WAVE": os.getenv(
             "CLOSED_BETA_ADMISSION_WAVE", "wave1"
         ),
-        "CLOSED_BETA_TENANT_KEY": os.getenv(
-            "CLOSED_BETA_TENANT_KEY", "default"
+        "CLOSED_BETA_TENANT_KEY": (
+            os.getenv("CLOSED_BETA_TENANT_KEY", "").strip() or "default"
         ),
         "CLOSED_BETA_NOTICE_VERSION": os.getenv(
             "CLOSED_BETA_NOTICE_VERSION", "2026-08-wave1-v1"
