@@ -62,7 +62,9 @@ class MigrationSpec:
 _MIGRATION_LOCK_KEY = 4_814_172_024_045
 _LEDGER_TABLE = "amthero_schema_migrations"
 
-_EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
+# Schema v1 is immutable once recorded in production. New tables and columns belong to
+# later versions so a deployed v1 checksum can never be rewritten by a newer release.
+_SCHEMA_V1_EXPECTED: dict[str, tuple[str, ...]] = {
     "hero_users": ("phone_hash", "profile"),
     "inbound_messages": ("message_id", "phone_hash", "status"),
     "inbound_work_queue": ("message_id", "status", "lease_owner"),
@@ -83,6 +85,25 @@ _EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
     "human_support_admin_events": (),
     "anonymous_feedback": (),
     _LEDGER_TABLE: ("version", "name", "checksum", "app_version", "applied_at"),
+}
+
+_SCHEMA_V2_EXPECTED: dict[str, tuple[str, ...]] = {
+    "closed_beta_admissions": (
+        "tenant_key",
+        "wave",
+        "phone_hash",
+        "status",
+        "consent_version",
+        "admitted_at",
+        "revoked_at",
+        "created_at",
+        "updated_at",
+    ),
+}
+
+_EXPECTED_SCHEMA: dict[str, tuple[str, ...]] = {
+    **_SCHEMA_V1_EXPECTED,
+    **_SCHEMA_V2_EXPECTED,
 }
 
 
@@ -173,8 +194,40 @@ def _apply_schema_v1(store: Any, executor: OnlineMigrationExecutor) -> tuple[str
     return components
 
 
+def _apply_schema_v2(store: Any, executor: OnlineMigrationExecutor) -> tuple[str, ...]:
+    del store
+    executor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS closed_beta_admissions (
+            tenant_key TEXT NOT NULL,
+            wave TEXT NOT NULL,
+            phone_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+            consent_version TEXT NOT NULL,
+            admitted_at TIMESTAMPTZ NOT NULL,
+            revoked_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (tenant_key, wave, phone_hash)
+        )
+        """
+    )
+    executor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS closed_beta_admissions_scope_status_idx
+        ON closed_beta_admissions (tenant_key, wave, status, admitted_at)
+        """
+    )
+
+    from schema_bootstrap import schema_component_names
+
+    return schema_component_names()
+
+
 _SCHEMA_V1_NAME = "production_schema_v1"
-_SCHEMA_V1_CHECKSUM = _contract_checksum(1, _SCHEMA_V1_NAME, _EXPECTED_SCHEMA)
+_SCHEMA_V1_CHECKSUM = _contract_checksum(1, _SCHEMA_V1_NAME, _SCHEMA_V1_EXPECTED)
+_SCHEMA_V2_NAME = "closed_beta_admission_schema_v2"
+_SCHEMA_V2_CHECKSUM = _contract_checksum(2, _SCHEMA_V2_NAME, _EXPECTED_SCHEMA)
 _MIGRATIONS = (
     MigrationSpec(
         version=1,
@@ -183,6 +236,13 @@ _MIGRATIONS = (
         apply=_apply_schema_v1,
         phase="expand",
         legacy_bootstrap=True,
+    ),
+    MigrationSpec(
+        version=2,
+        name=_SCHEMA_V2_NAME,
+        checksum=_SCHEMA_V2_CHECKSUM,
+        apply=_apply_schema_v2,
+        phase="expand",
     ),
 )
 LATEST_SCHEMA_VERSION = _MIGRATIONS[-1].version
@@ -285,7 +345,7 @@ def run_database_migrations(store: Any, *, app_version: str) -> MigrationReport:
         required_version=LATEST_SCHEMA_VERSION,
         applied_versions=tuple(applied_now),
         components=tuple(components),
-        schema_checksum=_SCHEMA_V1_CHECKSUM,
+        schema_checksum=_MIGRATIONS[-1].checksum,
     )
     setattr(store, "schema_migration_report", report)
     setattr(store, "schema_bootstrapped_components", report.components)
