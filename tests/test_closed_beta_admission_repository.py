@@ -1,4 +1,5 @@
 import json
+import re
 
 from closed_beta_admission import AdmissionDecision, AdmissionPolicy
 from closed_beta_admission_repository import ClosedBetaAdmissionRepository
@@ -147,12 +148,66 @@ def test_tenants_waves_and_recipients_are_isolated():
     assert tenant_b_wave_1.is_admitted(beta) is True
 
 
+def test_export_is_identifier_free_and_delete_covers_all_tenant_waves():
+    store = MemoryStore()
+    policy = AdmissionPolicy(enabled=True, capacity=2)
+    tenant_a_wave_1 = ClosedBetaAdmissionRepository(
+        store,
+        tenant_key="tenant_a",
+        wave="wave1",
+    )
+    tenant_a_wave_2 = ClosedBetaAdmissionRepository(
+        store,
+        tenant_key="tenant_a",
+        wave="wave2",
+    )
+    tenant_b_wave_1 = ClosedBetaAdmissionRepository(
+        store,
+        tenant_key="tenant_b",
+        wave="wave1",
+    )
+    phone = "+491700000030"
+
+    for repository in (tenant_a_wave_1, tenant_a_wave_2, tenant_b_wave_1):
+        assert repository.claim(
+            phone,
+            policy=policy,
+            beta_opt_in=True,
+            consent_version="closed-beta-v1",
+        ).decision == AdmissionDecision.ADMITTED
+    assert tenant_a_wave_2.revoke(phone) is True
+
+    assert tenant_a_wave_1._lock_material() == tenant_a_wave_2._lock_material()
+    assert tenant_a_wave_1._lock_material() != tenant_b_wave_1._lock_material()
+
+    exported = tenant_a_wave_1.export_user_status(phone)
+    assert exported["status"] == "available"
+    assert exported["active"] is True
+    assert [(record["wave"], record["status"]) for record in exported["records"]] == [
+        ("wave1", "active"),
+        ("wave2", "revoked"),
+    ]
+    assert all(record["consent_version"] == "closed-beta-v1" for record in exported["records"])
+    serialized_export = json.dumps(exported, sort_keys=True)
+    assert phone not in serialized_export
+    assert "tenant_a" not in serialized_export
+    assert re.search(r"\b[a-f0-9]{64}\b", serialized_export) is None
+
+    assert tenant_a_wave_1.delete_user(phone) is True
+    assert tenant_a_wave_1.export_user_status(phone) == {
+        "status": "available",
+        "active": False,
+        "records": [],
+    }
+    assert tenant_b_wave_1.is_admitted(phone) is True
+
+
 def test_raw_phone_is_not_stored_and_delete_is_tenant_scoped():
     store = MemoryStore()
     policy = AdmissionPolicy(enabled=True, capacity=2)
     repository = ClosedBetaAdmissionRepository(store, tenant_key="tenant_a")
     other_tenant = ClosedBetaAdmissionRepository(store, tenant_key="tenant_b")
-    phone = "+491700000030"
+    phone = "+491700000031"
 
     assert repository.claim(
         phone,
@@ -214,3 +269,7 @@ def test_invalid_input_and_broken_storage_fail_closed():
     assert result.decision == AdmissionDecision.BLOCKED
     assert result.verified is False
     assert broken.is_admitted("+491700000041") is False
+    assert broken.export_user_status("+491700000041") == {
+        "status": "unavailable",
+        "records": [],
+    }

@@ -52,6 +52,21 @@ def _consent_version(value: str) -> str:
     return clean
 
 
+def _timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
+
+
 class ClosedBetaAdmissionRepository:
     """Atomically claims capacity using hashed recipient identifiers only."""
 
@@ -192,7 +207,15 @@ class ClosedBetaAdmissionRepository:
             return self._blocked(policy)
 
     def _lock_material(self) -> str:
-        return f"amthero24:closed-beta:{self.tenant_key}:{self.wave}"
+        # User deletion spans all waves, so every mutating operation uses one tenant-level
+        # lock. This prevents an in-flight claim from recreating data during deletion.
+        return f"amthero24:closed-beta:{self.tenant_key}"
+
+    def _lock_postgres(self, connection: Any) -> None:
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
+            (self._lock_material(),),
+        )
 
     def _claim_postgres(
         self,
@@ -203,10 +226,7 @@ class ClosedBetaAdmissionRepository:
         current = _now()
         with self.store.pool.connection() as connection:
             with connection.transaction():
-                connection.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
-                    (self._lock_material(),),
-                )
+                self._lock_postgres(connection)
                 existing = connection.execute(
                     """
                     SELECT status
@@ -389,6 +409,69 @@ class ClosedBetaAdmissionRepository:
         except Exception:
             return False
 
+    def export_user_status(self, phone: str) -> dict[str, Any]:
+        """Return this tenant's admission metadata without recipient identifiers."""
+        try:
+            key = _phone_hash(phone)
+            if not self._schema_ready:
+                return {"status": "unavailable", "records": []}
+            if self.backend_name == "postgresql":
+                with self.store.pool.connection() as connection:
+                    rows = connection.execute(
+                        """
+                        SELECT wave, status, consent_version, admitted_at, revoked_at
+                        FROM closed_beta_admissions
+                        WHERE tenant_key = %s AND phone_hash = %s
+                        ORDER BY wave
+                        """,
+                        (self.tenant_key, key),
+                    ).fetchall()
+                records = [
+                    {
+                        "wave": str(row["wave"])[:40],
+                        "status": str(row["status"])[:20],
+                        "consent_version": str(row["consent_version"])[:80],
+                        "admitted_at": _timestamp(row["admitted_at"]),
+                        "revoked_at": _timestamp(row["revoked_at"]),
+                    }
+                    for row in rows
+                ]
+            else:
+                snapshot = self.store.snapshot()
+                tenant_records = snapshot.get("closed_beta_admissions", {}).get(
+                    self.tenant_key,
+                    {},
+                )
+                records = []
+                for wave, wave_records in sorted(tenant_records.items()):
+                    if not isinstance(wave_records, dict):
+                        continue
+                    record = wave_records.get(key)
+                    if not isinstance(record, dict):
+                        continue
+                    records.append(
+                        {
+                            "wave": str(wave)[:40],
+                            "status": str(record.get("status") or "")[:20],
+                            "consent_version": str(
+                                record.get("consent_version") or ""
+                            )[:80],
+                            "admitted_at": _timestamp(record.get("admitted_at")),
+                            "revoked_at": _timestamp(record.get("revoked_at")),
+                        }
+                    )
+            return {
+                "status": "available",
+                "active": any(record["status"] == "active" for record in records),
+                "records": records,
+            }
+        except Exception as exc:
+            logger.warning(
+                "Closed Beta admission export unavailable: %s",
+                type(exc).__name__,
+            )
+            return {"status": "unavailable", "records": []}
+
     def revoke(self, phone: str) -> bool:
         """Release one active slot. Missing or replayed revocations are harmless."""
         try:
@@ -399,10 +482,7 @@ class ClosedBetaAdmissionRepository:
             if self.backend_name == "postgresql":
                 with self.store.pool.connection() as connection:
                     with connection.transaction():
-                        connection.execute(
-                            "SELECT pg_advisory_xact_lock(hashtext(%s)::bigint)",
-                            (self._lock_material(),),
-                        )
+                        self._lock_postgres(connection)
                         cursor = connection.execute(
                             """
                             UPDATE closed_beta_admissions
@@ -444,13 +524,15 @@ class ClosedBetaAdmissionRepository:
                 return False
             if self.backend_name == "postgresql":
                 with self.store.pool.connection() as connection:
-                    cursor = connection.execute(
-                        """
-                        DELETE FROM closed_beta_admissions
-                        WHERE tenant_key = %s AND phone_hash = %s
-                        """,
-                        (self.tenant_key, key),
-                    )
+                    with connection.transaction():
+                        self._lock_postgres(connection)
+                        cursor = connection.execute(
+                            """
+                            DELETE FROM closed_beta_admissions
+                            WHERE tenant_key = %s AND phone_hash = %s
+                            """,
+                            (self.tenant_key, key),
+                        )
                 return cursor.rowcount > 0
 
             def delete_record(data: dict[str, Any]) -> bool:

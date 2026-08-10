@@ -6,7 +6,10 @@ real-user database is contacted.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -172,7 +175,70 @@ def test_revoke_releases_capacity_without_cross_tenant_effects() -> None:
         store.close()
 
 
-def test_storage_contains_hashes_only_and_privacy_delete_is_tenant_scoped() -> None:
+def test_claim_revoke_and_delete_share_one_tenant_lock_across_waves() -> None:
+    store = _store()
+    tenant = _scope("tenant")
+    wave_1 = _scope("wave_a")
+    wave_2 = _scope("wave_b")
+    policy = AdmissionPolicy(enabled=True, capacity=5)
+    wave_1_repository = ClosedBetaAdmissionRepository(
+        store,
+        tenant_key=tenant,
+        wave=wave_1,
+    )
+    wave_2_repository = ClosedBetaAdmissionRepository(
+        store,
+        tenant_key=tenant,
+        wave=wave_2,
+    )
+    existing_phone = _phone(250)
+    new_phone = _phone(251)
+
+    try:
+        assert wave_2_repository.claim(
+            existing_phone,
+            policy=policy,
+            beta_opt_in=True,
+            consent_version="v1",
+        ).decision == AdmissionDecision.ADMITTED
+        assert wave_1_repository._lock_material() == wave_2_repository._lock_material()
+
+        with store.pool.connection() as holder:
+            holder.execute(
+                "SELECT pg_advisory_lock(hashtext(%s)::bigint)",
+                (wave_1_repository._lock_material(),),
+            )
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                claim_future = executor.submit(
+                    wave_1_repository.claim,
+                    new_phone,
+                    policy=policy,
+                    beta_opt_in=True,
+                    consent_version="v1",
+                )
+                delete_future = executor.submit(
+                    wave_2_repository.delete_user,
+                    existing_phone,
+                )
+                time.sleep(0.2)
+                assert claim_future.done() is False
+                assert delete_future.done() is False
+                holder.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s)::bigint)",
+                    (wave_1_repository._lock_material(),),
+                )
+                claim_result = claim_future.result(timeout=5)
+                delete_result = delete_future.result(timeout=5)
+
+        assert claim_result.decision == AdmissionDecision.ADMITTED
+        assert delete_result is True
+        assert wave_1_repository.is_admitted(new_phone) is True
+        assert wave_2_repository.is_admitted(existing_phone) is False
+    finally:
+        store.close()
+
+
+def test_storage_export_and_privacy_delete_are_identifier_free_and_tenant_scoped() -> None:
     store = _store()
     tenant_a = _scope("tenant_a")
     tenant_b = _scope("tenant_b")
@@ -194,6 +260,7 @@ def test_storage_contains_hashes_only_and_privacy_delete_is_tenant_scoped() -> N
                 beta_opt_in=True,
                 consent_version="closed-beta-v1",
             ).decision == AdmissionDecision.ADMITTED
+        assert repositories[1].revoke(phone) is True
 
         with store.pool.connection() as connection:
             rows = connection.execute(
@@ -208,6 +275,18 @@ def test_storage_contains_hashes_only_and_privacy_delete_is_tenant_scoped() -> N
         assert all(str(row["phone_hash"]) != phone for row in rows)
         assert all(len(str(row["phone_hash"])) == 64 for row in rows)
         assert phone not in repr(rows)
+
+        exported = repositories[0].export_user_status(phone)
+        assert exported["status"] == "available"
+        assert exported["active"] is True
+        assert [(record["wave"], record["status"]) for record in exported["records"]] == [
+            (wave_1, "active"),
+            (wave_2, "revoked"),
+        ]
+        serialized_export = json.dumps(exported, sort_keys=True)
+        assert phone not in serialized_export
+        assert tenant_a not in serialized_export
+        assert re.search(r"\b[a-f0-9]{64}\b", serialized_export) is None
 
         assert repositories[0].delete_user(phone) is True
         assert repositories[0].is_admitted(phone) is False
