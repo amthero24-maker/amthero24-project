@@ -42,6 +42,16 @@ def test_contract_checksum_is_deterministic_and_non_secret() -> None:
     assert first.isalnum()
 
 
+def test_production_schema_v1_checksum_is_frozen() -> None:
+    assert migrations._SCHEMA_V1_CHECKSUM == (
+        "b79ba86b0703b775ba29b6321c73ae9227f327f52cd53ff518a921e5f9b67c5a"
+    )
+    assert migrations.LATEST_SCHEMA_VERSION == 2
+    assert [item.version for item in migrations._MIGRATIONS] == [1, 2]
+    assert migrations._MIGRATIONS[0].legacy_bootstrap is True
+    assert migrations._MIGRATIONS[1].legacy_bootstrap is False
+
+
 def test_schema_contract_reports_only_missing_schema_identifiers() -> None:
     rows = []
     for table, columns in migrations._EXPECTED_SCHEMA.items():
@@ -72,14 +82,17 @@ def test_migration_readiness_is_safe_and_backend_aware() -> None:
 
     report = migrations.MigrationReport(
         status="current",
-        current_version=1,
-        required_version=1,
-        applied_versions=(1,),
-        components=("hero_memory",),
+        current_version=migrations.LATEST_SCHEMA_VERSION,
+        required_version=migrations.LATEST_SCHEMA_VERSION,
+        applied_versions=(migrations.LATEST_SCHEMA_VERSION,),
+        components=("hero_memory", "closed_beta_admission"),
         schema_checksum="a" * 64,
     )
     postgres = SimpleNamespace(backend_name="postgresql", schema_migration_report=report)
-    assert migrations.migration_readiness(postgres) == ("current", 1)
+    assert migrations.migration_readiness(postgres) == (
+        "current",
+        migrations.LATEST_SCHEMA_VERSION,
+    )
 
 
 def test_migration_report_contains_no_user_or_request_fields() -> None:
