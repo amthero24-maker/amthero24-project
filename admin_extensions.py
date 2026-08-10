@@ -9,6 +9,10 @@ from fastapi.responses import JSONResponse
 
 import document_action_extensions as composed
 from admin_metrics import build_overview, contains_personal_fields
+from closed_beta_metrics import (
+    build_closed_beta_metrics,
+    contains_closed_beta_identifiers,
+)
 from config import APP_VERSION, GROQ_MODEL
 
 core = composed.core
@@ -39,13 +43,20 @@ def _authorize(request: Request) -> JSONResponse | None:
     return None
 
 
+def build_operator_overview() -> dict[str, object]:
+    """Compose product and Closed Beta aggregates without user identifiers."""
+    payload = build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
+    payload["closed_beta_admission"] = build_closed_beta_metrics(core.store)
+    return payload
+
+
 @core.app.get("/admin/overview", include_in_schema=False)
 async def admin_overview(request: Request) -> JSONResponse:
     denied = _authorize(request)
     if denied is not None:
         return denied
-    payload = build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
-    if contains_personal_fields(payload):
+    payload = build_operator_overview()
+    if contains_personal_fields(payload) or contains_closed_beta_identifiers(payload):
         return JSONResponse(
             {"status": "unavailable"},
             status_code=500,
