@@ -5,18 +5,28 @@ on:
     paths:
       - closed_beta_admission.py
       - closed_beta_admission_repository.py
+      - closed_beta_metrics.py
+      - admin_extensions.py
+      - launch_extensions.py
       - tests/test_closed_beta_admission.py
       - tests/test_closed_beta_admission_repository.py
+      - tests/test_closed_beta_metrics.py
       - tests/test_postgresql_closed_beta_admission.py
+      - tests/test_postgresql_closed_beta_metrics.py
       - .github/workflows/closed-beta-admission.yml
   push:
     branches: [main]
     paths:
       - closed_beta_admission.py
       - closed_beta_admission_repository.py
+      - closed_beta_metrics.py
+      - admin_extensions.py
+      - launch_extensions.py
       - tests/test_closed_beta_admission.py
       - tests/test_closed_beta_admission_repository.py
+      - tests/test_closed_beta_metrics.py
       - tests/test_postgresql_closed_beta_admission.py
+      - tests/test_postgresql_closed_beta_metrics.py
       - .github/workflows/closed-beta-admission.yml
 
 permissions:
@@ -35,12 +45,17 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet -r requirements-dev.txt
       - name: Compile admission modules
-        run: python -m compileall -q closed_beta_admission.py closed_beta_admission_repository.py
-      - name: Run deterministic admission tests
+        run: >-
+          python -m compileall -q
+          closed_beta_admission.py
+          closed_beta_admission_repository.py
+          closed_beta_metrics.py
+      - name: Run deterministic admission and monitoring tests
         run: >-
           python -m pytest -q
           tests/test_closed_beta_admission.py
           tests/test_closed_beta_admission_repository.py
+          tests/test_closed_beta_metrics.py
 
   admission-postgres:
     runs-on: ubuntu-latest
@@ -71,5 +86,8 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install --quiet -r requirements-dev.txt
-      - name: Run atomic PostgreSQL admission tests
-        run: python -m pytest -vv --tb=short tests/test_postgresql_closed_beta_admission.py
+      - name: Run atomic PostgreSQL admission and monitoring tests
+        run: >-
+          python -m pytest -vv --tb=short
+          tests/test_postgresql_closed_beta_admission.py
+          tests/test_postgresql_closed_beta_metrics.py
