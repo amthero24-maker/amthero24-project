@@ -35,6 +35,71 @@ def test_readable_document_is_analyzed_in_every_verified_action_language(languag
     assert facts.has_actionable_date is True
 
 
+@pytest.mark.parametrize("language", sorted(VERIFIED_ACTION_LANGUAGES))
+def test_readable_document_without_deadline_stays_analyzed_without_inventing_actionable_date(language: str) -> None:
+    facts = BriefScannerFacts(
+        language=language,
+        readable=True,
+        sender_organization="Synthetic Service Provider",
+        requested_action="review information",
+    )
+
+    assert initial_state(facts) == BriefScannerState.ANALYZED
+    assert facts.language_quality_verified is True
+    assert facts.deadline is None
+    assert facts.appointment_date is None
+    assert facts.has_actionable_date is False
+    assert aggregate_events_for_analysis(facts) == (
+        BriefScannerEvent.SCANNER_STARTED,
+        BriefScannerEvent.DOCUMENT_READABLE,
+        BriefScannerEvent.SUMMARY_DELIVERED,
+    )
+
+
+@pytest.mark.parametrize("language", sorted(VERIFIED_ACTION_LANGUAGES))
+def test_payment_amount_and_due_date_are_preserved_in_every_verified_action_language(language: str) -> None:
+    due_date = date(2026, 8, 20)
+    facts = BriefScannerFacts(
+        language=language,
+        readable=True,
+        sender_organization="Synthetic Utility",
+        deadline=due_date,
+        requested_action="pay invoice",
+        amount_minor=12345,
+        currency="EUR",
+    )
+
+    facts.validate()
+    assert initial_state(facts) == BriefScannerState.ANALYZED
+    assert facts.amount_minor == 12345
+    assert facts.currency == "EUR"
+    assert facts.deadline == due_date
+    assert facts.has_actionable_date is True
+
+
+@pytest.mark.parametrize("language", sorted(VERIFIED_ACTION_LANGUAGES))
+def test_appointment_invitation_is_actionable_in_every_verified_action_language(language: str) -> None:
+    appointment_date = date(2026, 9, 3)
+    facts = BriefScannerFacts(
+        language=language,
+        readable=True,
+        sender_organization="Synthetic Municipality",
+        appointment_date=appointment_date,
+        requested_action="attend appointment",
+        contact_channel="in_person",
+    )
+
+    assert initial_state(facts) == BriefScannerState.ANALYZED
+    assert facts.appointment_date == appointment_date
+    assert facts.deadline is None
+    assert facts.has_actionable_date is True
+    assert aggregate_events_for_analysis(facts) == (
+        BriefScannerEvent.SCANNER_STARTED,
+        BriefScannerEvent.DOCUMENT_READABLE,
+        BriefScannerEvent.SUMMARY_DELIVERED,
+    )
+
+
 def test_valid_unverified_language_can_be_analyzed_but_is_not_action_verified() -> None:
     facts = BriefScannerFacts(language="fr", readable=True)
 
