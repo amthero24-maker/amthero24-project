@@ -9,6 +9,11 @@ from fastapi.responses import JSONResponse
 
 import admin_extensions as admin_module
 import provider_extensions as composed
+from closed_beta_metrics import (
+    apply_closed_beta_launch_check,
+    build_closed_beta_metrics,
+    contains_closed_beta_identifiers,
+)
 from config import APP_VERSION, GROQ_MODEL
 from encryption_policy import assess_secret
 from launch_readiness import build_launch_report
@@ -125,13 +130,19 @@ async def launch_readiness(request: Request) -> JSONResponse:
         return denied
     try:
         overview = admin_module.build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
+        beta_metrics = build_closed_beta_metrics(core.store)
+        overview["closed_beta_admission"] = beta_metrics
     except Exception as exc:
         return _unavailable(_overview_failure_code(exc))
     try:
         report = _apply_controlled_canary_scope(build_launch_report(overview))
+        report = apply_closed_beta_launch_check(report, beta_metrics)
     except Exception:
         return _unavailable("launch_report_build_failed")
-    if admin_module.contains_personal_fields(report):
+    if (
+        admin_module.contains_personal_fields(report)
+        or contains_closed_beta_identifiers(report)
+    ):
         return _unavailable("personal_field_guard_failed")
     return JSONResponse(report, headers={"Cache-Control": "no-store"})
 
@@ -164,7 +175,10 @@ async def reminder_encryption_preflight(request: Request) -> JSONResponse:
         "safe_to_apply",
     }
     payload = {key: report[key] for key in allowed if key in report}
-    if admin_module.contains_personal_fields(payload):
+    if (
+        admin_module.contains_personal_fields(payload)
+        or contains_closed_beta_identifiers(payload)
+    ):
         return _unavailable("personal_field_guard_failed")
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
