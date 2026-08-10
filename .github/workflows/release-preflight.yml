@@ -28,7 +28,7 @@ jobs:
       BACKUP_MANIFEST_PATH: ${{ vars.BACKUP_MANIFEST_PATH }}
       SMOKE_TIMEOUT_SECONDS: "20"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
