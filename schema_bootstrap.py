@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from abuse_guard import AbuseGuardRepository
+from closed_beta_admission_repository import ClosedBetaAdmissionRepository
 from document_action_repository import PendingDocumentRepository
 from durable_queue import DurableQueueRepository
 from entitlement_engine import EntitlementRepository
@@ -32,6 +33,7 @@ _COMPONENTS: tuple[tuple[str, type[Any]], ...] = (
     ("provider_reliability", ProviderReliabilityRepository),
     ("human_support", SupportRepository),
     ("anonymous_feedback", FeedbackRepository),
+    ("closed_beta_admission", ClosedBetaAdmissionRepository),
 )
 
 
@@ -47,6 +49,8 @@ def bootstrap_postgres_schemas(store: Any) -> tuple[str, ...]:
 
     initialized: list[str] = []
     for name, repository_type in _COMPONENTS:
-        repository_type(store)
+        repository = repository_type(store)
+        if getattr(repository, "schema_ready", True) is not True:
+            raise RuntimeError(f"schema_component_unavailable:{name}")
         initialized.append(name)
     return tuple(initialized)
