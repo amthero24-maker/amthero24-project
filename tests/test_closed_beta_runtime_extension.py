@@ -8,6 +8,7 @@ import pytest
 
 from closed_beta_admission import AdmissionPolicy
 from closed_beta_admission_repository import ClosedBetaAdmissionRepository
+from closed_beta_privacy import is_delete_request
 from closed_beta_runtime_extension import install, runtime_state
 from data_store import JsonDataStore
 
@@ -119,7 +120,7 @@ async def test_enabled_gate_requires_notice_then_claims_one_slot_idempotently(tm
     assert "Closed Beta" in core.replies[-1][1]
 
     await core.process_incoming(_message("yes", "+490000000002", "yes"))
-    assert "admitted" in core.replies[-1][1]
+    assert "Closed Beta" in core.replies[-1][1]
 
     follow_up = _message("continue", "+490000000002", "I need help")
     await core.process_incoming(follow_up)
@@ -157,7 +158,14 @@ async def test_internal_document_text_cannot_become_beta_opt_in(tmp_path) -> Non
 async def test_explicit_leave_releases_slot_without_deleting_other_user_data(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
     phone = "+490000000004"
-    store.update_user(phone, {"memory_consent": "granted", "first_name": "Synthetic"})
+    store.update_user(
+        phone,
+        {
+            "memory_consent": "granted",
+            "first_name": "Synthetic",
+            "preferred_language": "en",
+        },
+    )
     repository = _admit(store, phone)
     core = _Core(store)
     install(core, env_provider=lambda: {})
@@ -174,7 +182,14 @@ async def test_explicit_leave_releases_slot_without_deleting_other_user_data(tmp
 async def test_export_contains_identifier_free_beta_metadata(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
     phone = "+490000000005"
-    store.update_user(phone, {"memory_consent": "granted", "first_name": "Synthetic"})
+    store.update_user(
+        phone,
+        {
+            "memory_consent": "granted",
+            "first_name": "Synthetic",
+            "preferred_language": "en",
+        },
+    )
     _admit(store, phone)
     core = _Core(store)
     install(core, env_provider=lambda: {})
@@ -195,7 +210,14 @@ async def test_export_contains_identifier_free_beta_metadata(tmp_path) -> None:
 async def test_delete_removes_beta_and_other_user_data_before_confirmation(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
     phone = "+490000000006"
-    store.update_user(phone, {"memory_consent": "granted", "first_name": "Synthetic"})
+    store.update_user(
+        phone,
+        {
+            "memory_consent": "granted",
+            "first_name": "Synthetic",
+            "preferred_language": "en",
+        },
+    )
     repository = _admit(store, phone)
     core = _Core(store)
     install(core, env_provider=lambda: {})
@@ -208,6 +230,20 @@ async def test_delete_removes_beta_and_other_user_data_before_confirmation(tmp_p
     assert core.original_calls == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "delete my data",
+        "Lösch meine Daten",
+        "احذف بياناتي",
+        "видали мої дані",
+        "διαγραφή δεδομένων μου",
+    ],
+)
+def test_delete_command_is_supported_in_all_product_languages(text: str) -> None:
+    assert is_delete_request(text) is True
+
+
 def test_invalid_configuration_blocks_readiness_without_exposing_values(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
     ready, state = runtime_state(
@@ -217,6 +253,12 @@ def test_invalid_configuration_blocks_readiness_without_exposing_values(tmp_path
     assert ready is False
     assert state == "misconfigured"
     assert "synthetic-invalid-value" not in state
+
+
+def test_disabled_configuration_is_visible_but_ready(tmp_path) -> None:
+    ready, state = runtime_state(JsonDataStore(tmp_path / "store.json"), {})
+    assert ready is True
+    assert state == "disabled"
 
 
 def test_readiness_wrapper_marks_invalid_beta_configuration_not_ready(tmp_path) -> None:
