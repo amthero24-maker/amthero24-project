@@ -13,6 +13,7 @@ import admin_extensions as admin_module
 import launch_extensions as launch_module
 from admin_metrics import contains_personal_fields
 from outbound_delivery import DeliveryReceipt, OutboundDeliveryRepository
+from outbound_delivery_recovery import OutboundDeliveryRecoveryState
 
 
 @pytest.fixture(autouse=True)
@@ -20,11 +21,13 @@ def clean_delivery_rows(monkeypatch) -> None:
     monkeypatch.setenv("OUTBOUND_DELIVERY_RETENTION_DAYS", "30")
     store = runtime_health.store
     assert store.backend_name == "postgresql"
+    OutboundDeliveryRepository(store)
+    OutboundDeliveryRecoveryState(store)
     with store.pool.connection() as connection:
-        connection.execute("TRUNCATE outbound_delivery_messages")
+        connection.execute("TRUNCATE outbound_delivery_recovery_state, outbound_delivery_messages")
     yield
     with store.pool.connection() as connection:
-        connection.execute("TRUNCATE outbound_delivery_messages")
+        connection.execute("TRUNCATE outbound_delivery_recovery_state, outbound_delivery_messages")
 
 
 def test_postgres_receipts_are_replica_safe_hashed_and_monotonic() -> None:
@@ -62,6 +65,60 @@ def test_postgres_receipts_are_replica_safe_hashed_and_monotonic() -> None:
     assert row["message_kind"] == "text"
     assert row["status"] == "read"
     assert message_id not in json.dumps(dict(row), ensure_ascii=False)
+
+
+def test_postgres_recovery_bootstraps_and_survives_receipt_retention() -> None:
+    store = runtime_health.store
+    repository = OutboundDeliveryRepository(store)
+    start = datetime(2026, 8, 12, 10, 0, tzinfo=UTC)
+    failed_id = "wamid.pg-recovery-failed"
+    repository.record_accepted(failed_id, now=start)
+    failure = DeliveryReceipt(failed_id, "failed", start + timedelta(minutes=1), "131031")
+    assert repository.record_receipt(failure, now=start + timedelta(minutes=1)) == "failed"
+
+    recovery = OutboundDeliveryRecoveryState(store)
+    assert recovery.snapshot() == {
+        "recovery_required": True,
+        "recovery_evidence": "unresolved_failure",
+        "recovery_failure_code": "131031",
+    }
+
+    with store.pool.connection() as connection:
+        connection.execute(
+            "UPDATE outbound_delivery_messages SET expires_at = %s",
+            (start - timedelta(seconds=1),),
+        )
+    assert repository.cleanup(now=start) == 1
+    assert recovery.snapshot()["recovery_required"] is True
+
+    sent_id = "wamid.pg-recovery-sent"
+    repository.record_accepted(sent_id, now=start + timedelta(minutes=2))
+    sent = DeliveryReceipt(sent_id, "sent", start + timedelta(minutes=3))
+    sent_state = repository.record_receipt(sent, now=start + timedelta(minutes=3))
+    recovery.record_receipt(sent, resulting_status=sent_state)
+    assert recovery.snapshot()["recovery_required"] is True
+
+    delivered_id = "wamid.pg-recovery-delivered"
+    repository.record_accepted(delivered_id, now=start + timedelta(minutes=4))
+    delivered = DeliveryReceipt(delivered_id, "delivered", start + timedelta(minutes=5))
+    delivered_state = repository.record_receipt(delivered, now=start + timedelta(minutes=5))
+    recovery.record_receipt(delivered, resulting_status=delivered_state)
+    assert recovery.snapshot() == {
+        "recovery_required": False,
+        "recovery_evidence": "success_after_failure",
+        "recovery_failure_code": "",
+    }
+
+    with store.pool.connection() as connection:
+        state_row = connection.execute(
+            "SELECT state_key, last_failure_code FROM outbound_delivery_recovery_state"
+        ).fetchone()
+    encoded = json.dumps(dict(state_row), default=str, sort_keys=True)
+    assert state_row["state_key"] == "global"
+    assert state_row["last_failure_code"] == "131031"
+    assert failed_id not in encoded
+    assert sent_id not in encoded
+    assert delivered_id not in encoded
 
 
 def test_postgres_aggregate_admin_and_launch_reports_are_person_free() -> None:
@@ -103,7 +160,13 @@ def test_postgres_aggregate_admin_and_launch_reports_are_person_free() -> None:
     }
 
     admin = admin_module.build_overview(store, now=current, version="test", model="test")
-    assert admin["outbound_delivery"] == overview
+    assert admin["outbound_delivery"] == {
+        **overview,
+        "failure_codes": {"131047": 1},
+        "recovery_required": False,
+        "recovery_evidence": "success_after_failure",
+        "recovery_failure_code": "",
+    }
     assert contains_personal_fields(admin) is False
 
     launch = launch_module.build_launch_report(admin, environment={
