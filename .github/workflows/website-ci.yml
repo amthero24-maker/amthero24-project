@@ -29,6 +29,7 @@ jobs:
       NEXT_PUBLIC_SITE_URL: https://amthero24.de
       NEXT_PUBLIC_SITE_INDEXABLE: "false"
       NEXT_PUBLIC_BETA_CTA_ENABLED: "false"
+      NEXT_PUBLIC_BETA_CTA_URL: ""
       NEXT_PUBLIC_BETA_CAPACITY: "5"
       NEXT_PUBLIC_BETA_NOTICE_VERSION: 2026-08-wave1-v2-ai-transparent
       LEGAL_PRODUCTION_READY: "false"
@@ -83,6 +84,31 @@ jobs:
             exit 1
           fi
           echo "Expected fail-closed GO rejection confirmed."
+      - name: Prove GO accepts only a safe actionable WhatsApp CTA
+        shell: bash
+        env:
+          LEGAL_PRODUCTION_READY: "true"
+          NEXT_PUBLIC_SITE_INDEXABLE: "true"
+          NEXT_PUBLIC_BETA_CTA_ENABLED: "true"
+          NEXT_PUBLIC_BETA_CTA_URL: "https://wa.me/491000000000?text=AmtHero24%20Beta"
+          DOMAIN_PRIMARY_TLS_CONFIRMED: "true"
+          DOMAIN_REDIRECTS_CONFIRMED: "true"
+          EMAIL_INBOUND_ROUTING_CONFIRMED: "true"
+          EMAIL_OUTBOUND_AUTH_CONFIRMED: "true"
+          BETA_NOTICE_OWNER_APPROVED: "true"
+          AI_TRANSPARENCY_REVIEW_CONFIRMED: "true"
+        run: |
+          set -euo pipefail
+          npm run go:check
+          if NEXT_PUBLIC_BETA_CTA_URL='' npm run go:check; then
+            echo "GO unexpectedly accepted an enabled CTA without a target." >&2
+            exit 1
+          fi
+          if NEXT_PUBLIC_BETA_CTA_URL='https://example.com/join' npm run go:check; then
+            echo "GO unexpectedly accepted a non-WhatsApp CTA target." >&2
+            exit 1
+          fi
+          echo "Safe actionable WhatsApp CTA contract confirmed."
       - name: Build noindex preview artifact
         run: npm run build
       - name: Verify Railway deployment contract
