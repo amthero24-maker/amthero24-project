@@ -1,0 +1,11 @@
+import fs from 'node:fs';
+const page = fs.readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8');
+const legal = fs.readFileSync(new URL('../app/[legal]/page.jsx', import.meta.url), 'utf8');
+const tools = ['Brief Scanner','Termin Assistance','Kündigung','Vertrags-Check','Geld zurück','Nachrichten & E-Mails'];
+const routes = ['impressum','datenschutz','agb','widerruf','kontakt','beta','cookie-einstellungen','barrierefreiheit'];
+for (const item of tools) if (!page.includes(item)) throw new Error(`Missing MVP tool: ${item}`);
+for (const route of routes) if (!legal.includes(route)) throw new Error(`Missing legal route: ${route}`);
+if (!page.includes('KI-gestützter')) throw new Error('AI transparency copy missing');
+if (!page.includes('5 Sprachen')) throw new Error('Language value proposition missing');
+if (!page.includes('Fail-closed')) throw new Error('Fail-closed trust section missing');
+console.log('Content preflight PASS: 6 MVP journeys, legal routes, AI transparency and trust boundaries present.');
