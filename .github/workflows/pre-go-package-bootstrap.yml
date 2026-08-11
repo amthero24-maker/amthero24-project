@@ -28,6 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f .github/bootstrap-source/part-07.txt
           cat .github/bootstrap-source/part-*.txt | base64 --decode > /tmp/pre-go-source.tar.gz
           tar -tzf /tmp/pre-go-source.tar.gz >/dev/null
           tar -xzf /tmp/pre-go-source.tar.gz -C .
