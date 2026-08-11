@@ -60,6 +60,22 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: website/package-lock.json
+      - name: Generate scoped Next.js security-update candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pkg set dependencies.next=16.3.0
+          npm pkg set devDependencies.eslint-config-next=16.3.0
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Upload candidate manifests
+        uses: actions/upload-artifact@v7
+        with:
+          name: website-next-16.3.0-candidate
+          path: |
+            website/package.json
+            website/package-lock.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund
       - name: Audit production npm dependencies
