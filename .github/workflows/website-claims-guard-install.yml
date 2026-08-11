@@ -1,0 +1,82 @@
+name: Website Claims Guard Install
+
+on:
+  push:
+    branches:
+      - feat/pre-go-launch-package-205
+    paths:
+      - ".github/website-claims-guard-install-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-claims-guard-install-205
+  cancel-in-progress: false
+
+jobs:
+  install-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/pre-go-launch-package-205
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install exact dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+      - name: Add claims guard to permanent content check
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          path = Path("website/package.json")
+          package = json.loads(path.read_text(encoding="utf-8"))
+          package.setdefault("scripts", {})["content:check"] = (
+              "node scripts/validate-content.mjs && node scripts/validate-claims.mjs"
+          )
+          path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Commit permanent guard wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add website/package.json website/scripts/validate-claims.mjs
+          git diff --cached --check
+          git config user.name "AmtHero24 Launch Automation"
+          git config user.email "actions@users.noreply.github.com"
+          if ! git diff --cached --quiet; then
+            git commit -m "test: enforce precise legal and marketing claims"
+            git push origin HEAD:feat/pre-go-launch-package-205
+          fi
+      - name: Validate legal production lock
+        working-directory: website
+        run: npm run legal:check
+      - name: Validate content, privacy, and claims
+        working-directory: website
+        run: npm run content:check
+      - name: Run ESLint
+        working-directory: website
+        run: npm run lint
+      - name: Build standalone site
+        working-directory: website
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Confirm GO remains blocked
+        working-directory: website
+        shell: bash
+        run: |
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed." >&2
+            exit 1
+          fi
+          echo "Strict GO remains correctly blocked."
