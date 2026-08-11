@@ -1,0 +1,80 @@
+name: Website Source Bootstrap
+
+on:
+  push:
+    branches:
+      - feat/pre-go-launch-package-205
+    paths:
+      - ".github/workflows/website-source-bootstrap.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-source-bootstrap-205
+  cancel-in-progress: false
+
+jobs:
+  materialize-validate-and-pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/pre-go-launch-package-205
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Reconstruct reviewed source package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/bootstrap-source/part-*.txt | base64 --decode > /tmp/amthero24-source.tar.gz
+          echo "dd256f6b7a6a3cb74b97735dd9223ab91896c6171f06c308b47d1a0f907c6879  /tmp/amthero24-source.tar.gz" | sha256sum --check --strict
+          tar -xzf /tmp/amthero24-source.tar.gz
+      - name: Install media dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          python -m pip install --quiet Pillow==11.3.0
+      - name: Resolve and pin website dependency graph
+        working-directory: website
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Install exact website dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+      - name: Generate original privacy-safe media
+        working-directory: website
+        run: python scripts/generate-demo-assets.py
+      - name: Validate safe pre-GO website
+        working-directory: website
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run legal:check
+          npm run content:check
+          npm run lint
+          npm run build
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed before legal/operator/domain approval." >&2
+            exit 1
+          fi
+      - name: Commit materialized source, lockfile and media
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add website .github/workflows/website-ci.yml
+          if git diff --cached --quiet; then
+            echo "Source package already materialized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat: add pre-GO website and legal launch package"
+          git push origin HEAD:feat/pre-go-launch-package-205
