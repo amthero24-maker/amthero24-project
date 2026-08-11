@@ -24,12 +24,16 @@ Deploy the website first on a Railway-generated hostname. Verify build, `/api/he
 
 1. Add all three domains to the same controlled Cloudflare account or otherwise ensure the same DNS policy is applied.
 2. Import/verify DNS records; remove stale records only after confirming they are not in use.
-3. For `amthero24.de`, add the exact CNAME target Railway provides for the website custom domain. Do not invent the target.
-4. Keep Cloudflare proxy mode aligned with Railway's current custom-domain guidance. Confirm Railway has issued/validated TLS before declaring the domain ready.
-5. Set SSL/TLS mode to Full (strict) after origin certificate validation is confirmed.
-6. Enable Always Use HTTPS only after HTTPS works end-to-end.
-7. Enable DNSSEC after all authoritative DNS is stable; record the DS status.
-8. Do not enable HSTS preload before the final domain and subdomain inventory is proven safe.
+3. In Railway, add `amthero24.de` as the website custom domain. Railway currently provides **both** a CNAME target and a TXT ownership-verification record. Add both exactly as Railway displays them; do not invent either value. A missing TXT record can leave the domain returning 404 even when DNS resolves.
+4. For the apex CNAME in Cloudflare, use the Railway-provided target. Cloudflare CNAME flattening can represent the apex safely.
+5. When Cloudflare proxying is enabled (orange cloud), follow Railway's current documented requirement: set Cloudflare SSL/TLS encryption mode to **Full**, **not Full (Strict)** and not Flexible. Railway explicitly warns that Full (Strict) does not work as intended for its proxied custom-domain configuration.
+6. Keep Cloudflare Universal SSL enabled for the public zone.
+7. Wait for Railway domain verification / green state and confirm HTTPS end-to-end before declaring the domain ready.
+8. Enable Always Use HTTPS only after HTTPS works end-to-end.
+9. Enable DNSSEC after all authoritative DNS is stable; verify the registrar DS chain before recording PASS.
+10. Do not enable HSTS preload before the final domain/subdomain inventory, redirect behavior and certificate path are proven safe.
+
+If Railway certificate validation becomes stuck, diagnose DNS/TXT/CAA/DNSSEC first. Railway's current troubleshooting guidance allows temporarily switching the Cloudflare record to DNS-only to complete certificate validation, then restoring the proxy after the Railway domain is green. Do not use this as a random retry loop.
 
 ## Canonical redirects
 
@@ -43,7 +47,7 @@ After `https://amthero24.de` is healthy, configure permanent redirects:
 
 Use HTTP 301 only after the canonical site is verified. Before that, temporary redirects are safer during setup.
 
-Verify with curl/browser that the redirect is one hop, HTTPS remains valid, paths are preserved, and no redirect loop exists.
+For the final Cloudflare redirect rules, preserve query strings and path suffixes and avoid redirect chains. Verify every host with `curl -I` and a browser from an uncached/private session.
 
 ## Temporary noindex gate
 
@@ -89,7 +93,8 @@ Do not publish placeholder DNS values.
 ## Evidence to record before GO
 
 - Railway website deployment ID/SHA
-- custom-domain verification state
+- Railway custom-domain CNAME + TXT verification state (values themselves do not need to be copied to GitHub)
+- Cloudflare proxy state and SSL/TLS mode = Full
 - TLS certificate valid for canonical hostname
 - Cloudflare DNSSEC state
 - 301 redirect tests for `.com`, `.global`, and `www`
