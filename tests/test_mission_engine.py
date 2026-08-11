@@ -30,6 +30,17 @@ def test_detect_structured_mission_updates() -> None:
     due = detect_mission_intent("المهلة 10.08.2026")
     assert due is not None and due.title == "@mission-due:2026-08-10"
 
+    german_due = detect_mission_intent("Die Frist ist am 20.08.2026")
+    assert german_due is not None and german_due.title == "@mission-due:2026-08-20"
+
+
+def test_appointment_help_with_date_is_not_silently_consumed_as_mission_update() -> None:
+    request = (
+        "Mein Termin beim Bürgeramt ist am 20.08.2026 um 10:00 Uhr in Aachen. "
+        "Erstelle eine Vorbereitungsliste."
+    )
+    assert detect_mission_intent(request) is None
+
 
 def test_invalid_deadline_does_not_create_update() -> None:
     assert detect_mission_intent("المهلة 32.15.2026") is None
