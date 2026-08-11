@@ -79,12 +79,12 @@ def _provider_capture(target: dict[str, object]):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(("journey", "request", "marker"), _TEXT_JOURNEYS)
+@pytest.mark.parametrize(("journey", "user_text", "marker"), _TEXT_JOURNEYS)
 async def test_text_mvp_journey_reaches_shared_production_prompt_and_reply_path(
     tmp_path,
     monkeypatch,
     journey: str,
-    request: str,
+    user_text: str,
     marker: str,
 ) -> None:
     for flag in (
@@ -100,8 +100,8 @@ async def test_text_mvp_journey_reaches_shared_production_prompt_and_reply_path(
 
     store, sender = _install_synthetic_store(tmp_path, journey)
     message_id = f"synthetic-{journey}"
-    message = application.core.IncomingMessage(message_id, sender, request, "text")
-    assert store.claim_message(message_id, sender, request)
+    message = application.core.IncomingMessage(message_id, sender, user_text, "text")
+    assert store.claim_message(message_id, sender, user_text)
 
     captured: dict[str, object] = {}
     with patch.object(
@@ -116,7 +116,7 @@ async def test_text_mvp_journey_reaches_shared_production_prompt_and_reply_path(
         await application.process_incoming(message)
 
     prompt = str(captured["system_prompt"])
-    assert captured["user_text"] == request
+    assert captured["user_text"] == user_text
     assert captured["image_bytes"] is None
     assert "SIX MVP JOURNEY RUNTIME CONTRACT" in prompt
     assert marker in prompt
