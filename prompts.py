@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from conversation_intelligence import LANGUAGE_NAMES
+from mvp_runtime_contract import build_mvp_runtime_contract
 from sam_behavior import build_sam_behavior_contract
 from sam_conversation import build_sam_conversation_contract
 from sam_emotion import build_sam_emotion_contract
@@ -77,6 +78,7 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
         returning_user=returning_user,
         has_attachment=has_image,
     )
+    mvp_runtime_contract = build_mvp_runtime_contract()
 
     return f"""
 {personality_contract}
@@ -88,6 +90,8 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
 {emotion_contract}
 
 {voice_contract}
+
+{mvp_runtime_contract}
 
 NON-NEGOTIABLE OUTPUT RULES
 - Reply ONLY in {reply_language}, except when drafting an official German letter or email.
