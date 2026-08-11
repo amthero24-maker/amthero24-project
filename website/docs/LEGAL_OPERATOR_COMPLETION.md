@@ -7,7 +7,8 @@ Purpose: collect only factual operator/provider data needed to replace fail-clos
 - Full legal/operator name: `Wissam Zidan` (confirm exact legal spelling before publication)
 - Trading/project name: `AmtHero24`
 - Legal form/status: `[REQUIRED]`
-- Serviceable postal address in Germany: `[REQUIRED]`
+- Serviceable postal address / ladungsfähige Anschrift: `[REQUIRED]`
+- Country of the serviceable address: `[REQUIRED]`
 - Email: `info@amthero24.de` (must be operational before publication)
 - Support email: `support@amthero24.de` (must be operational before publication)
 - Telephone number: `[REVIEW WHETHER REQUIRED/INTENDED]`
@@ -41,7 +42,8 @@ Do not set any corresponding production-ready flag until documentary evidence ex
 4. all processor/subprocessor facts are verified;
 5. `info@` and `support@` are functioning;
 6. the canonical domain and TLS are verified;
-7. the owner explicitly approves the exact final legal text/version.
+7. VSBG applicability/wording has been reviewed against the actual business status;
+8. the owner explicitly approves the exact final legal text/version.
 
 ## Legal drafting note
 
