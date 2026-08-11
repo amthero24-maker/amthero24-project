@@ -14,13 +14,13 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from production_smoke import SmokeCheck, run_smoke
+from production_smoke import SmokeCheck, SmokeError, fetch_json, run_smoke
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,81 @@ def _bounded_delay(value: float) -> float:
 
 def _safe_failure(detail: str) -> list[SmokeCheck]:
     return [SmokeCheck("monitor_execution", "fail", detail[:240])]
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_percent(value: Any) -> float:
+    try:
+        return max(0.0, min(100.0, float(value or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _needs_outbound_diagnostics(checks: Sequence[SmokeCheck]) -> bool:
+    return any(
+        check.name == "launch_decision"
+        and not check.passed
+        and "outbound_delivery" in str(check.detail)
+        for check in checks
+    )
+
+
+def _outbound_delivery_detail(payload: dict[str, Any]) -> str:
+    """Return only aggregate delivery counts/ages; never identifiers or content."""
+    raw = payload.get("outbound_delivery")
+    delivery = raw if isinstance(raw, dict) else {}
+    raw_statuses = delivery.get("by_status")
+    statuses = raw_statuses if isinstance(raw_statuses, dict) else {}
+    ordered = ("accepted", "sent", "delivered", "read", "failed")
+    encoded_statuses = ",".join(
+        f"{name}:{_safe_nonnegative_int(statuses.get(name))}" for name in ordered
+    )
+    return (
+        f"tracked_24h={_safe_nonnegative_int(delivery.get('tracked_24h'))}; "
+        f"by_status={encoded_statuses}; "
+        f"terminal_24h={_safe_nonnegative_int(delivery.get('terminal_24h'))}; "
+        f"delivery_success_pct={_safe_percent(delivery.get('delivery_success_pct')):.1f}; "
+        f"pending_over_15m={_safe_nonnegative_int(delivery.get('pending_over_15m'))}; "
+        f"oldest_pending_age_seconds={_safe_nonnegative_int(delivery.get('oldest_pending_age_seconds'))}"
+    )[:600]
+
+
+def _append_outbound_diagnostics(
+    checks: Sequence[SmokeCheck],
+    *,
+    base_url: str,
+    admin_token: str,
+) -> list[SmokeCheck]:
+    result = list(checks)
+    if not admin_token or not _needs_outbound_diagnostics(result):
+        return result
+    try:
+        status, overview = fetch_json(
+            base_url,
+            "/admin/overview",
+            token=admin_token,
+            timeout=float(os.getenv("SMOKE_TIMEOUT_SECONDS", "15")),
+        )
+        delivery = overview.get("outbound_delivery")
+        if status == 200 and isinstance(delivery, dict):
+            result.append(SmokeCheck("outbound_delivery_diagnostics", "pass", _outbound_delivery_detail(overview)))
+        else:
+            result.append(SmokeCheck("outbound_delivery_diagnostics", "pass", f"unavailable; HTTP {status}"))
+    except SmokeError as exc:
+        result.append(
+            SmokeCheck(
+                "outbound_delivery_diagnostics",
+                "pass",
+                f"unavailable; {type(exc).__name__}",
+            )
+        )
+    return result
 
 
 def run_monitor(
@@ -86,6 +161,11 @@ def run_monitor(
         if attempt < total_attempts and delay:
             sleep(delay)
 
+    final_checks = _append_outbound_diagnostics(
+        final_checks,
+        base_url=base_url,
+        admin_token=admin_token,
+    )
     healthy = bool(final_checks) and all(check.passed for check in final_checks)
     return MonitorReport(
         status="healthy" if healthy else "unhealthy",
