@@ -52,6 +52,26 @@ _TRACK_REGEXES = (
     r"^\s*(?:παρακολουθησε|αποθηκευσε ως εργασια)\s+(.+)$",
 )
 
+_RELATIVE_TOMORROW_PATTERNS = (
+    r"(?:الموعد|المهلة|اخر موعد|آخر موعد)(?: هو| هي)? (?:بكرا|غدا)",
+    r"(?:die |der )?(?:frist|termin|deadline)(?: ist)? morgen",
+    r"(?:the )?(?:deadline|due date)(?: is)? tomorrow",
+    r"(?:кінцевий термін|термін)(?: є)? завтра",
+    r"(?:η )?(?:προθεσμια|προθεσμία)(?: ειναι| είναι)? αυριο",
+)
+_RELATIVE_AFTER_DAYS_PATTERNS = (
+    r"(?:الموعد|المهلة|اخر موعد|آخر موعد)(?: هو| هي)? بعد (\d{1,3}) (?:يوم|ايام|أيام)",
+    r"(?:ذكرني|ذكّرني|نبهني|نبّهني) بعد (\d{1,3}) (?:يوم|ايام|أيام)",
+    r"(?:die |der )?(?:frist|termin|deadline)(?: ist)? in (\d{1,3}) tagen?",
+    r"erinnere mich in (\d{1,3}) tagen?",
+    r"(?:the )?(?:deadline|due date)(?: is)? in (\d{1,3}) days?",
+    r"remind me in (\d{1,3}) days?",
+    r"(?:кінцевий термін|термін)(?: є)? через (\d{1,3}) д(?:ень|ні|нів)",
+    r"нагадай мені через (\d{1,3}) д(?:ень|ні|нів)",
+    r"(?:η )?(?:προθεσμια|προθεσμία)(?: ειναι| είναι)? σε (\d{1,3}) ημερ(?:α|ες)",
+    r"θυμισε μου σε (\d{1,3}) ημερ(?:α|ες)",
+)
+
 
 def _normalize(text: str) -> str:
     value = unicodedata.normalize("NFKC", text or "").casefold().strip()
@@ -62,27 +82,13 @@ def _normalize(text: str) -> str:
 
 def _relative_due_date(text: str, *, now: datetime | None = None) -> str:
     normalized = _normalize(text)
-    due_context = (
-        "موعد", "مهلة", "ذكرني", "تذكير", "frist", "termin", "erinnere", "deadline", "remind",
-        "термін", "нагадай", "προθεσμια", "θυμισε",
-    )
-    if not any(token in normalized for token in due_context):
-        return ""
-
     current = (now or datetime.now(UTC)).date()
-    tomorrow_terms = ("بكرا", "غدا", "غداً", "morgen", "tomorrow", "завтра", "αυριο")
-    if any(_normalize(term) in normalized for term in tomorrow_terms):
+
+    if any(re.fullmatch(pattern, normalized) for pattern in _RELATIVE_TOMORROW_PATTERNS):
         return (current + timedelta(days=1)).isoformat()
 
-    patterns = (
-        r"بعد\s+(\d{1,3})\s+(?:يوم|ايام|أيام)",
-        r"in\s+(\d{1,3})\s+tagen?",
-        r"in\s+(\d{1,3})\s+days?",
-        r"через\s+(\d{1,3})\s+д",
-        r"σε\s+(\d{1,3})\s+ημερ",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, normalized)
+    for pattern in _RELATIVE_AFTER_DAYS_PATTERNS:
+        match = re.fullmatch(pattern, normalized)
         if match:
             days = max(1, min(int(match.group(1)), 365))
             return (current + timedelta(days=days)).isoformat()
