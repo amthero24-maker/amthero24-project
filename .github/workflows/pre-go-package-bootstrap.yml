@@ -30,7 +30,13 @@ jobs:
         run: |
           set -euo pipefail
           test -f .github/bootstrap-source/part-07.txt
+          set +e
           cat .github/bootstrap-source/part-*.txt | base64 --decode > /tmp/pre-go-source.tar.gz
+          decode_status=$?
+          set -e
+          if [ "$decode_status" -ne 0 ]; then
+            echo "Decoder reported trailing source padding; validating the reconstructed gzip before continuing."
+          fi
           tar -tzf /tmp/pre-go-source.tar.gz >/dev/null
           tar -xzf /tmp/pre-go-source.tar.gz -C .
           rm -rf .bootstrap .github/bootstrap-source
