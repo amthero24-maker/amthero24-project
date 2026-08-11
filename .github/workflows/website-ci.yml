@@ -35,7 +35,7 @@ jobs:
       LEGAL_OPERATOR_NAME: Wissam Zidan
       LEGAL_TRADING_NAME: AmtHero24
       LEGAL_OPERATOR_STATUS: "[REQUIRED]"
-      LEGAL_COUNTRY: Deutschland
+      LEGAL_COUNTRY: "[REQUIRED]"
       LEGAL_EMAIL_INFO: info@amthero24.de
       LEGAL_EMAIL_SUPPORT: support@amthero24.de
       LEGAL_PROVIDER_DPAS_CONFIRMED: "false"
