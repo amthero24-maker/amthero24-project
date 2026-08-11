@@ -23,4 +23,4 @@ const pages = {
 };
 
 export async function generateMetadata({ params }) { const { legal } = await params; return { title: pages[legal]?.[0] || "AmtHero24" }; }
-export default async function Legal({ params }) { const { legal } = await params; const page = pages[legal]; if (!page) notFound(); return <main className="legal"><Link href="/">← Zurück zu AmtHero24</Link><p className="eyebrow">AmtHero24 · Rechtliches</p><h1>{page[0]}</h1>{page[1]}</main>; }
+export default async function Legal({ params }) { const { legal } = await params; const page = pages[legal]; if (!page) notFound(); return <main id="main" className="legal"><Link href="/">← Zurück zu AmtHero24</Link><p className="eyebrow">AmtHero24 · Rechtliches</p><h1>{page[0]}</h1>{page[1]}</main>; }
