@@ -69,7 +69,7 @@ export const metadata = {
 };
 
 export default function BetaNoticePage() {
-  return <main className="legal betaNoticePage">
+  return <main id="main" className="legal betaNoticePage">
     <Link href="/">← Zurück zu AmtHero24</Link>
     <p className="eyebrow">AmtHero24 · Closed Beta</p>
     <h1>Closed-Beta-Hinweis</h1>
