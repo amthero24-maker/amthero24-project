@@ -39,8 +39,22 @@ jobs:
           fi
           tar -tzf /tmp/pre-go-source.tar.gz >/dev/null
           tar -xzf /tmp/pre-go-source.tar.gz -C .
+
+          # GitHub Apps cannot create or modify Actions workflow files through a
+          # workflow-triggered git push. Keep those two files out of this commit;
+          # the connected GitHub app adds them explicitly after materialization.
+          mkdir -p /tmp/pre-go-workflows
+          for file in \
+            .github/workflows/website-ci.yml \
+            .github/workflows/website-assets-bootstrap.yml; do
+            if [ -f "$file" ]; then
+              mv "$file" /tmp/pre-go-workflows/
+            fi
+          done
+
           rm -rf .bootstrap .github/bootstrap-source
-          rm -f .github/workflows/pre-go-package-bootstrap.yml
+          # Keep this bootstrap workflow unchanged during the bot push. It is
+          # removed later through the connected GitHub app.
       - name: Run safe pre-GO source checks
         shell: bash
         run: |
@@ -49,13 +63,15 @@ jobs:
           test -f website/package-lock.json
           cd website
           node scripts/validate-launch.mjs
+          node scripts/validate-content.mjs
           python3 -m py_compile scripts/generate-demo-assets.py
-      - name: Commit complete package
+      - name: Commit website and launch documentation only
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "AmtHero24 Launch Automation"
           git config user.email "actions@users.noreply.github.com"
-          git add -A
+          git add -A website .github/bootstrap-source .bootstrap
+          git diff --cached --check
           git commit -m "feat: materialize complete pre-go website and legal package"
           git push origin HEAD:feat/pre-go-launch-package-205
