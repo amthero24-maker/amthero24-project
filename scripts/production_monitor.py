@@ -69,6 +69,12 @@ def _safe_failure_code(value: Any) -> str:
     return clean or "unknown"
 
 
+def _safe_recovery_evidence(value: Any) -> str:
+    raw = str(value or "none").strip().casefold()
+    allowed = {"none", "success_only", "success_after_failure", "unresolved_failure"}
+    return raw if raw in allowed else "unknown"
+
+
 def _needs_outbound_diagnostics(checks: Sequence[SmokeCheck]) -> bool:
     return any(
         check.name == "launch_decision"
@@ -94,6 +100,12 @@ def _outbound_delivery_detail(payload: dict[str, Any]) -> str:
         f"{_safe_failure_code(code)}:{_safe_nonnegative_int(count)}"
         for code, count in sorted(codes.items(), key=lambda item: str(item[0]))[:10]
     ) or "none"
+    recovery_required = delivery.get("recovery_required") is True
+    recovery_code = (
+        _safe_failure_code(delivery.get("recovery_failure_code"))
+        if recovery_required
+        else "none"
+    )
     return (
         f"tracked_24h={_safe_nonnegative_int(delivery.get('tracked_24h'))}; "
         f"by_status={encoded_statuses}; "
@@ -101,8 +113,11 @@ def _outbound_delivery_detail(payload: dict[str, Any]) -> str:
         f"terminal_24h={_safe_nonnegative_int(delivery.get('terminal_24h'))}; "
         f"delivery_success_pct={_safe_percent(delivery.get('delivery_success_pct')):.1f}; "
         f"pending_over_15m={_safe_nonnegative_int(delivery.get('pending_over_15m'))}; "
-        f"oldest_pending_age_seconds={_safe_nonnegative_int(delivery.get('oldest_pending_age_seconds'))}"
-    )[:600]
+        f"oldest_pending_age_seconds={_safe_nonnegative_int(delivery.get('oldest_pending_age_seconds'))}; "
+        f"recovery_required={'true' if recovery_required else 'false'}; "
+        f"recovery_evidence={_safe_recovery_evidence(delivery.get('recovery_evidence'))}; "
+        f"recovery_failure_code={recovery_code}"
+    )[:750]
 
 
 def _append_outbound_diagnostics(
