@@ -26,12 +26,37 @@ const legalLinks = [
   ["/cookie-einstellungen", "Cookies"], ["/barrierefreiheit", "Barrierefreiheit"],
 ];
 
+function resolveBetaCtaUrl(): string | null {
+  if (process.env.NEXT_PUBLIC_BETA_CTA_ENABLED !== "true") return null;
+  const raw = process.env.NEXT_PUBLIC_BETA_CTA_URL?.trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) return null;
+
+    if (url.hostname === "wa.me") {
+      const path = url.pathname.replace(/\/+$/, "");
+      if (!/^\/(?:\d{6,20}|message\/[A-Za-z0-9_-]{5,64})$/.test(path)) return null;
+    } else if (url.hostname === "api.whatsapp.com") {
+      const phone = url.searchParams.get("phone") || "";
+      if (url.pathname !== "/send" || !/^\d{6,20}$/.test(phone)) return null;
+    } else {
+      return null;
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 export default function Home() {
-  const betaEnabled = process.env.NEXT_PUBLIC_BETA_CTA_ENABLED === "true";
+  const betaCtaUrl = resolveBetaCtaUrl();
   return <>
     <header className="nav"><a className="brand" href="#top"><b>A24</b> AmtHero24</a><nav><a href="#how">So funktioniert&apos;s</a><a href="#tools">Werkzeuge</a><a href="#trust">Sicherheit</a><a href="#faq">FAQ</a></nav></header>
     <main id="main">
-      <section className="hero" id="top"><div className="heroCopy"><span className="pill">Closed Beta · Zugang noch geschlossen</span><p className="eyebrow">Der Alltagsheld für Deutschland</p><h1>Papierkram in Deutschland.<br/><em>Endlich verständlich.</em></h1><p className="lead">Sam ist dein KI-gestützter persönlicher Assistent in WhatsApp. Er hilft dir, Briefe zu verstehen, Termine zu ordnen, Nachrichten vorzubereiten und Fristen im Blick zu behalten – in deiner Sprache.</p><button className="cta" disabled={!betaEnabled}>{betaEnabled ? "Closed Beta beitreten" : "Closed Beta – 5 Plätze nach GO"}</button><div className="chips"><span>✓ Keine neue App</span><span>✓ 5 Sprachen</span><span>✓ Prüfbarkeit vor Handlung</span></div></div><div className="phone"><div className="phoneHead"><span className="avatar">S</span><div><strong>Sam von AmtHero24</strong><small>KI-gestützter Assistent</small></div></div><div className="bubble user">Ich habe diesen Brief bekommen. Was muss ich tun?</div><div className="doc">📄 Schreiben_Jobcenter.pdf</div><div className="bubble sam"><b>Das Wichtigste:</b><br/>Frist: 14 Tage<br/>Nächster Schritt: Unterlagen nachreichen<br/><small>Bitte Datum und Aktenzeichen im Original prüfen.</small></div></div></section>
+      <section className="hero" id="top"><div className="heroCopy"><span className="pill">{betaCtaUrl ? "Closed Beta · Wave 1 kontrolliert geöffnet" : "Closed Beta · Zugang noch geschlossen"}</span><p className="eyebrow">Der Alltagsheld für Deutschland</p><h1>Papierkram in Deutschland.<br/><em>Endlich verständlich.</em></h1><p className="lead">Sam ist dein KI-gestützter persönlicher Assistent in WhatsApp. Er hilft dir, Briefe zu verstehen, Termine zu ordnen, Nachrichten vorzubereiten und Fristen im Blick zu behalten – in deiner Sprache.</p>{betaCtaUrl ? <a className="cta" href={betaCtaUrl} target="_blank" rel="noopener noreferrer">Closed Beta beitreten</a> : <button className="cta" disabled>Closed Beta – 5 Plätze nach GO</button>}<div className="chips"><span>✓ Keine neue App</span><span>✓ 5 Sprachen</span><span>✓ Prüfbarkeit vor Handlung</span></div></div><div className="phone"><div className="phoneHead"><span className="avatar">S</span><div><strong>Sam von AmtHero24</strong><small>KI-gestützter Assistent</small></div></div><div className="bubble user">Ich habe diesen Brief bekommen. Was muss ich tun?</div><div className="doc">📄 Schreiben_Jobcenter.pdf</div><div className="bubble sam"><b>Das Wichtigste:</b><br/>Frist: 14 Tage<br/>Nächster Schritt: Unterlagen nachreichen<br/><small>Bitte Datum und Aktenzeichen im Original prüfen.</small></div></div></section>
 
       <section className="section"><p className="eyebrow">Warum AmtHero24?</p><h2>Aus Druck und Unklarheit wird ein nächster Schritt.</h2><div className="grid3"><article><b>01</b><h3>„Ich verstehe den Brief nicht.“</h3><p>Behördensprache, Verträge und Fristen werden in Alltagssprache erklärt.</p></article><article><b>02</b><h3>„Ich verliere den Überblick.“</h3><p>Termin, Ort, Unterlagen und Erinnerung werden logisch zusammengeführt.</p></article><article><b>03</b><h3>„Wie antworte ich richtig?“</h3><p>Sam erstellt einen strukturierten Entwurf, den du vor dem Senden prüfst.</p></article></div></section>
 
