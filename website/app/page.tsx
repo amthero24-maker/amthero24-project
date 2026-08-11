@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const tools = [
   ["Brief Scanner", "Brief, PDF oder Foto senden. Sam sortiert Absender, Frist, Betrag, Referenz und nächsten Schritt."],
   ["Termin Assistance", "Termin, Ort, Unterlagen und Vorbereitung an einem Platz – inklusive Erinnerung."],
@@ -18,10 +20,16 @@ const faq = [
   ["Wann kann ich der Beta beitreten?", "Wave 1 bleibt bis zu einem separaten GO geschlossen. Danach sind maximal fünf gleichzeitig zugelassene Beta-Nutzer vorgesehen."],
 ];
 
+const legalLinks = [
+  ["/impressum", "Impressum"], ["/datenschutz", "Datenschutz"], ["/agb", "AGB"],
+  ["/widerruf", "Widerruf"], ["/kontakt", "Kontakt"], ["/beta", "Beta-Hinweis"],
+  ["/cookie-einstellungen", "Cookies"], ["/barrierefreiheit", "Barrierefreiheit"],
+];
+
 export default function Home() {
   const betaEnabled = process.env.NEXT_PUBLIC_BETA_CTA_ENABLED === "true";
   return <>
-    <header className="nav"><a className="brand" href="#top"><b>A24</b> AmtHero24</a><nav><a href="#how">So funktioniert's</a><a href="#tools">Werkzeuge</a><a href="#trust">Sicherheit</a><a href="#faq">FAQ</a></nav></header>
+    <header className="nav"><a className="brand" href="#top"><b>A24</b> AmtHero24</a><nav><a href="#how">So funktioniert&apos;s</a><a href="#tools">Werkzeuge</a><a href="#trust">Sicherheit</a><a href="#faq">FAQ</a></nav></header>
     <main id="main">
       <section className="hero" id="top"><div className="heroCopy"><span className="pill">Closed Beta · Zugang noch geschlossen</span><p className="eyebrow">Der Alltagsheld für Deutschland</p><h1>Papierkram in Deutschland.<br/><em>Endlich verständlich.</em></h1><p className="lead">Sam ist dein KI-gestützter persönlicher Assistent in WhatsApp. Er hilft dir, Briefe zu verstehen, Termine zu ordnen, Nachrichten vorzubereiten und Fristen im Blick zu behalten – in deiner Sprache.</p><button className="cta" disabled={!betaEnabled}>{betaEnabled ? "Closed Beta beitreten" : "Closed Beta – 5 Plätze nach GO"}</button><div className="chips"><span>✓ Keine neue App</span><span>✓ 5 Sprachen</span><span>✓ Prüfbarkeit vor Handlung</span></div></div><div className="phone"><div className="phoneHead"><span className="avatar">S</span><div><strong>Sam von AmtHero24</strong><small>KI-gestützter Assistent</small></div></div><div className="bubble user">Ich habe diesen Brief bekommen. Was muss ich tun?</div><div className="doc">📄 Schreiben_Jobcenter.pdf</div><div className="bubble sam"><b>Das Wichtigste:</b><br/>Frist: 14 Tage<br/>Nächster Schritt: Unterlagen nachreichen<br/><small>Bitte Datum und Aktenzeichen im Original prüfen.</small></div></div></section>
 
@@ -37,6 +45,6 @@ export default function Home() {
 
       <section className="section" id="faq"><p className="eyebrow">FAQ</p><h2>Die Fragen, die vor dem ersten Chat geklärt sein sollten.</h2><div className="faq">{faq.map(([q,a])=><details key={q}><summary>{q}</summary><p>{a}</p></details>)}</div></section>
     </main>
-    <footer><div><b>AmtHero24</b><p>Sam – persönlicher KI-Assistent für Alltag und Verwaltung in Deutschland.</p></div><div className="links"><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a><a href="/agb">AGB</a><a href="/widerruf">Widerruf</a><a href="/kontakt">Kontakt</a><a href="/beta">Beta-Hinweis</a><a href="/cookie-einstellungen">Cookies</a><a href="/barrierefreiheit">Barrierefreiheit</a></div><div className="langs">DE · العربية · EN · Українська · Ελληνικά</div></footer>
+    <footer><div><b>AmtHero24</b><p>Sam – persönlicher KI-Assistent für Alltag und Verwaltung in Deutschland.</p></div><div className="links">{legalLinks.map(([href,label]) => <Link href={href} key={href}>{label}</Link>)}</div><div className="langs">DE · العربية · EN · Українська · Ελληνικά</div></footer>
   </>;
 }
