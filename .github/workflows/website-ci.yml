@@ -62,6 +62,33 @@ jobs:
           cache-dependency-path: website/package-lock.json
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund
+      - name: Audit production npm dependencies
+        id: npm_audit
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high --json > npm-audit.json
+      - name: Generate production CycloneDX SBOM
+        id: npm_sbom
+        continue-on-error: true
+        run: npm sbom --omit=dev --sbom-format cyclonedx > npm-sbom.cdx.json
+      - name: Upload website supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: website-supply-chain-evidence
+          path: |
+            website/npm-audit.json
+            website/npm-sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce website supply-chain outcomes
+        if: always()
+        shell: bash
+        env:
+          NPM_AUDIT_OUTCOME: ${{ steps.npm_audit.outcome }}
+          NPM_SBOM_OUTCOME: ${{ steps.npm_sbom.outcome }}
+        run: |
+          test "$NPM_AUDIT_OUTCOME" = "success"
+          test "$NPM_SBOM_OUTCOME" = "success"
       - name: Generate local synthetic media assets
         shell: bash
         run: |
