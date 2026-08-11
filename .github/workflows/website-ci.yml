@@ -55,8 +55,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: website/package-lock.json
+      - name: Resolve dependency lock for validation
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund
       - name: Generate local synthetic media assets
