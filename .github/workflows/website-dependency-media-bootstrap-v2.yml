@@ -1,0 +1,100 @@
+name: Website Dependency and Media Bootstrap V2
+
+on:
+  push:
+    branches:
+      - feat/pre-go-launch-package-205
+    paths:
+      - ".github/website-bootstrap-trigger-v2.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-dependency-media-bootstrap-v2-205
+  cancel-in-progress: false
+
+jobs:
+  pin-generate-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/pre-go-launch-package-205
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install deterministic media dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          python -m pip install --quiet Pillow==11.3.0
+      - name: Resolve and pin website dependency graph
+        working-directory: website
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Install exact website dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+      - name: Generate original privacy-safe media
+        working-directory: website
+        run: python scripts/generate-demo-assets.py
+      - name: Verify six deterministic 15-second local videos
+        working-directory: website
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find public/media -maxdepth 1 -name '*.mp4' | wc -l)" -eq 6
+          for file in public/media/*.mp4; do
+            codec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$file")"
+            size="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file")"
+            duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$file")"
+            test "$codec" = "h264"
+            test "$size" = "1280x720"
+            python - "$duration" <<'PY'
+import sys
+value = float(sys.argv[1])
+assert 14.95 <= value <= 15.05, value
+PY
+          done
+      - name: Commit lockfile and generated media before source validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add website/package-lock.json website/public/media website/public/og-amthero24.png
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git config user.name "AmtHero24 Launch Automation"
+            git config user.email "actions@users.noreply.github.com"
+            git commit -m "build: pin website dependencies and add original demo media"
+            git push origin HEAD:feat/pre-go-launch-package-205
+          fi
+      - name: Validate legal production lock
+        working-directory: website
+        run: npm run legal:check
+      - name: Validate content, privacy, links, and local assets
+        working-directory: website
+        run: npm run content:check
+      - name: Run website lint
+        working-directory: website
+        run: npm run lint
+      - name: Build standalone Next.js site
+        working-directory: website
+        run: npm run build
+      - name: Prove strict GO remains blocked
+        working-directory: website
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed before legal/operator/domain approval." >&2
+            exit 1
+          fi
+          echo "Strict GO is correctly blocked."
