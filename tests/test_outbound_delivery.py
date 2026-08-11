@@ -14,6 +14,7 @@ from outbound_delivery import (
     extract_response_message_ids,
 )
 from outbound_delivery_policy import augment_launch_report, outbound_delivery_check
+from outbound_delivery_recovery import OutboundDeliveryRecoveryState
 
 
 def _repository(tmp_path, monkeypatch):
@@ -137,6 +138,55 @@ def test_receipts_are_idempotent_and_success_can_recover_an_earlier_failure(tmp_
     ) == "unknown"
 
 
+def test_recovery_state_bootstraps_survives_cleanup_and_requires_later_success(tmp_path, monkeypatch) -> None:
+    store, repository = _repository(tmp_path, monkeypatch)
+    start = datetime(2026, 8, 10, 10, 0, tzinfo=UTC)
+    failed_id = "wamid.recovery-private-failed"
+    repository.record_accepted(failed_id, now=start)
+    failure = DeliveryReceipt(failed_id, "failed", start + timedelta(minutes=1), "131031")
+    assert repository.record_receipt(failure, now=start) == "failed"
+
+    recovery = OutboundDeliveryRecoveryState(store)
+    assert recovery.snapshot() == {
+        "recovery_required": True,
+        "recovery_evidence": "unresolved_failure",
+        "recovery_failure_code": "131031",
+    }
+
+    def expire(data):
+        for record in data.setdefault("outbound_delivery", {}).values():
+            record["expires_at"] = (start - timedelta(seconds=1)).isoformat()
+
+    store._transaction(expire)
+    assert repository.cleanup(now=start) == 1
+    assert store.snapshot()["outbound_delivery"] == {}
+    assert recovery.snapshot()["recovery_required"] is True
+
+    sent_id = "wamid.recovery-private-sent"
+    repository.record_accepted(sent_id, now=start + timedelta(minutes=2))
+    sent = DeliveryReceipt(sent_id, "sent", start + timedelta(minutes=3))
+    sent_state = repository.record_receipt(sent, now=start + timedelta(minutes=3))
+    recovery.record_receipt(sent, resulting_status=sent_state)
+    assert recovery.snapshot()["recovery_required"] is True
+
+    delivered_id = "wamid.recovery-private-delivered"
+    repository.record_accepted(delivered_id, now=start + timedelta(minutes=4))
+    delivered = DeliveryReceipt(delivered_id, "delivered", start + timedelta(minutes=5))
+    delivered_state = repository.record_receipt(delivered, now=start + timedelta(minutes=5))
+    recovery.record_receipt(delivered, resulting_status=delivered_state)
+    assert recovery.snapshot() == {
+        "recovery_required": False,
+        "recovery_evidence": "success_after_failure",
+        "recovery_failure_code": "",
+    }
+
+    encoded = json.dumps(store.snapshot().get("outbound_delivery_recovery", {}), sort_keys=True)
+    assert failed_id not in encoded
+    assert sent_id not in encoded
+    assert delivered_id not in encoded
+    assert contains_personal_fields({"outbound_delivery_recovery": recovery.snapshot()}) is False
+
+
 def test_json_aggregate_and_cleanup_are_bounded_and_person_free(tmp_path, monkeypatch) -> None:
     store, repository = _repository(tmp_path, monkeypatch)
     current = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
@@ -187,6 +237,9 @@ def test_delivery_launch_policy_and_augmentation_are_idempotent() -> None:
         "delivery_success_pct": 100.0,
         "pending_over_15m": 0,
         "oldest_pending_age_seconds": 0,
+        "recovery_required": False,
+        "recovery_evidence": "success_only",
+        "recovery_failure_code": "",
     }
     blocked = dict(healthy)
     blocked["by_status"] = {"accepted": 0, "sent": 0, "delivered": 2, "read": 0, "failed": 10}
@@ -198,6 +251,20 @@ def test_delivery_launch_policy_and_augmentation_are_idempotent() -> None:
     assert outbound_delivery_check({
         "outbound_delivery": {**healthy, "pending_over_15m": 1, "oldest_pending_age_seconds": 901}
     })["status"] == "warning"
+    stale_failure = {
+        **healthy,
+        "tracked_24h": 0,
+        "by_status": {"accepted": 0, "sent": 0, "delivered": 0, "read": 0, "failed": 0},
+        "terminal_24h": 0,
+        "delivery_success_pct": 0.0,
+        "recovery_required": True,
+        "recovery_evidence": "unresolved_failure",
+        "recovery_failure_code": "131031",
+    }
+    stale_check = outbound_delivery_check({"outbound_delivery": stale_failure})
+    assert stale_check["status"] == "warning"
+    assert "strictly later delivered/read" in stale_check["detail"]
+    assert "131031" in stale_check["detail"]
 
     base = {
         "status": "ready",
