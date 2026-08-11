@@ -23,6 +23,7 @@ This checklist authorizes nothing by itself. The owner must explicitly issue GO 
 - [ ] No analytics, marketing trackers, remote fonts, external video embeds or uncontrolled third-party scripts.
 - [ ] `NEXT_PUBLIC_SITE_INDEXABLE=false` until legal publication is approved.
 - [ ] `NEXT_PUBLIC_BETA_CTA_ENABLED=false` until explicit owner GO.
+- [ ] Before enabling the CTA, `NEXT_PUBLIC_BETA_CTA_URL` is the tested AmtHero24 WhatsApp entry point and passes the approved HTTPS `wa.me` / `api.whatsapp.com` target policy.
 - [ ] Strict `go:check` remains BLOCKED before final external facts are supplied.
 
 ## C. Legal publication
