@@ -15,11 +15,20 @@ def test_relative_deadline_tomorrow_is_deterministic() -> None:
     intent = enhanced_detect_mission_intent("الموعد بكرا", detect_mission_intent, now=now)
     assert intent == MissionIntent("create", "@mission-due:2026-07-27")
 
+    german = enhanced_detect_mission_intent("Der Termin ist morgen", detect_mission_intent, now=now)
+    assert german == MissionIntent("create", "@mission-due:2026-07-27")
+
 
 def test_relative_deadline_after_days_is_bounded() -> None:
     now = datetime(2026, 7, 26, 10, 0, tzinfo=UTC)
     intent = enhanced_detect_mission_intent("ذكرني بعد 3 أيام", detect_mission_intent, now=now)
     assert intent == MissionIntent("create", "@mission-due:2026-07-29")
+
+
+def test_relative_appointment_help_is_not_silently_consumed_as_mission_update() -> None:
+    now = datetime(2026, 7, 26, 10, 0, tzinfo=UTC)
+    request = "Mein Termin beim Bürgeramt ist morgen. Erstelle eine Vorbereitungsliste."
+    assert enhanced_detect_mission_intent(request, detect_mission_intent, now=now) is None
 
 
 def test_technical_topic_becomes_human_mission_title() -> None:
