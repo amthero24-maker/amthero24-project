@@ -12,7 +12,7 @@ on:
       - ".github/workflows/website-ci.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: website-ci-${{ github.ref }}
@@ -54,46 +54,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: website/package-lock.json
-      - name: Generate scoped Next.js security-update candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm pkg set dependencies.next=16.3.0
-          npm pkg set devDependencies.eslint-config-next=16.3.0
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - name: Upload candidate manifests
-        uses: actions/upload-artifact@v7
-        with:
-          name: website-next-16.3.0-candidate
-          path: |
-            website/package.json
-            website/package-lock.json
-          if-no-files-found: error
-          retention-days: 7
-      - name: Commit scoped security manifests to PR branch
-        if: github.event_name == 'pull_request' && github.head_ref == 'audit/website-npm-supply-chain-205'
-        working-directory: .
-        shell: bash
-        env:
-          TARGET_BRANCH: ${{ github.head_ref }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add website/package.json website/package-lock.json
-          if git diff --cached --quiet; then
-            echo "Scoped manifests already committed."
-            exit 0
-          fi
-          git commit -m "deps: update website Next.js to 16.3.0"
-          git push origin "HEAD:${TARGET_BRANCH}"
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund
       - name: Audit production npm dependencies
