@@ -34,6 +34,7 @@ jobs:
       LEGAL_PRODUCTION_READY: "false"
       LEGAL_OPERATOR_NAME: Wissam Zidan
       LEGAL_TRADING_NAME: AmtHero24
+      LEGAL_OPERATOR_STATUS: "[REQUIRED]"
       LEGAL_COUNTRY: Deutschland
       LEGAL_EMAIL_INFO: info@amthero24.de
       LEGAL_EMAIL_SUPPORT: support@amthero24.de
@@ -42,6 +43,7 @@ jobs:
       LEGAL_GROQ_ZDR_ENABLED: "false"
       LEGAL_RAILWAY_REGION_CONFIRMED: "false"
       LEGAL_WEBSITE_REVIEW_CONFIRMED: "false"
+      LEGAL_VSBG_REVIEW_CONFIRMED: "false"
       DOMAIN_PRIMARY_TLS_CONFIRMED: "false"
       DOMAIN_REDIRECTS_CONFIRMED: "false"
       EMAIL_INBOUND_ROUTING_CONFIRMED: "false"
@@ -117,6 +119,7 @@ jobs:
           test -f app/robots.js
           test -f app/sitemap.js
           test -f 'app/[legal]/page.jsx'
-          for route in impressum datenschutz agb widerruf kontakt beta cookie-einstellungen barrierefreiheit; do
+          test -f app/beta/page.tsx
+          for route in impressum datenschutz agb widerruf kontakt cookie-einstellungen barrierefreiheit; do
             grep -q "${route}" 'app/[legal]/page.jsx'
           done
