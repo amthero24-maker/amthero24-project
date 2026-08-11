@@ -1,11 +1,6 @@
-name: Website Source Bootstrap
+name: Website Dependency and Media Bootstrap
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    branches: [main]
-    paths:
-      - ".github/workflows/website-source-bootstrap.yml"
   push:
     branches:
       - feat/pre-go-launch-package-205
@@ -16,15 +11,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: website-source-bootstrap-205
+  group: website-dependency-media-bootstrap-205
   cancel-in-progress: false
 
 jobs:
-  materialize-validate-and-pin:
-    if: >-
-      github.event_name == 'push' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref == 'feat/pre-go-launch-package-205')
+  pin-generate-and-validate:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -35,17 +27,12 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package.json
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
-      - name: Reconstruct reviewed source package
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/bootstrap-source/part-*.txt | base64 --decode > /tmp/amthero24-source.tar.gz
-          echo "dd256f6b7a6a3cb74b97735dd9223ab91896c6171f06c308b47d1a0f907c6879  /tmp/amthero24-source.tar.gz" | sha256sum --check --strict
-          tar -xzf /tmp/amthero24-source.tar.gz
-      - name: Install media dependencies
+      - name: Install deterministic media dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -74,16 +61,35 @@ jobs:
             echo "Strict GO unexpectedly passed before legal/operator/domain approval." >&2
             exit 1
           fi
-      - name: Commit materialized source, lockfile and media
+      - name: Verify six deterministic 15-second local videos
+        working-directory: website
         shell: bash
         run: |
           set -euo pipefail
-          git add website .github/workflows/website-ci.yml
+          test "$(find public/media -maxdepth 1 -name '*.mp4' | wc -l)" -eq 6
+          for file in public/media/*.mp4; do
+            codec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=nw=1:nk=1 "$file")"
+            size="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file")"
+            duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$file")"
+            test "$codec" = "h264"
+            test "$size" = "1280x720"
+            python - "$duration" <<'PY'
+import sys
+value = float(sys.argv[1])
+assert 14.95 <= value <= 15.05, value
+PY
+          done
+      - name: Commit lockfile and generated media
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add website/package-lock.json website/public/media website/public/og-amthero24.png
+          git diff --cached --check
           if git diff --cached --quiet; then
-            echo "Source package already materialized."
+            echo "Lockfile and media are already current."
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "feat: add pre-GO website and legal launch package"
+          git config user.name "AmtHero24 Launch Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "build: pin website dependencies and add original demo media"
           git push origin HEAD:feat/pre-go-launch-package-205
