@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "legal:check": "node scripts/legal-preflight.mjs",
     "content:check": "node scripts/content-preflight.mjs",
-    "go:check": "node scripts/go-preflight.mjs"
+    "go:check": "npm run legal:check && node scripts/go-preflight.mjs"
   },
   "dependencies": {"next": "16.2.12", "react": "19.2.8", "react-dom": "19.2.8"},
   "devDependencies": {"@tailwindcss/postcss": "4.3.3", "@types/node": "22.15.3", "@types/react": "19.2.17", "@types/react-dom": "19.2.3", "eslint": "9.24.0", "eslint-config-next": "16.2.12", "tailwindcss": "4.3.3", "typescript": "5.8.3"}
