@@ -1,0 +1,154 @@
+name: Website Content Validator Fix V2
+
+on:
+  push:
+    branches:
+      - feat/pre-go-launch-package-205
+    paths:
+      - ".github/website-content-validator-fix-v2-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-content-validator-fix-v2-205
+  cancel-in-progress: false
+
+jobs:
+  fix-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/pre-go-launch-package-205
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install exact website dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+      - name: Install structural content validator
+        shell: bash
+        run: |
+          cat > website/scripts/validate-content.mjs <<'EOF'
+          import fs from "node:fs";
+          import path from "node:path";
+
+          const root = process.cwd();
+          const failures = [];
+          const ignored = new Set(["node_modules", ".next", "out", ".git", "coverage"]);
+          const textExtensions = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".css", ".json", ".md", ".txt", ".svg"]);
+
+          function fail(message) { failures.push(message); }
+          function absolute(relative) { return path.join(root, relative); }
+          function exists(relative) { return fs.existsSync(absolute(relative)); }
+
+          function walk(relative) {
+            const directory = absolute(relative);
+            if (!fs.existsSync(directory)) return [];
+            const files = [];
+            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+              if (ignored.has(entry.name)) continue;
+              const child = path.join(relative, entry.name);
+              if (entry.isDirectory()) files.push(...walk(child));
+              else if (textExtensions.has(path.extname(entry.name).toLowerCase())) files.push(child);
+            }
+            return files;
+          }
+
+          const sourceFiles = ["app", "components", "content", "lib", "scripts"].flatMap(walk);
+          for (const file of ["next.config.mjs", "tailwind.config.ts", "postcss.config.mjs", "package.json"]) {
+            if (exists(file)) sourceFiles.push(file);
+          }
+
+          const source = sourceFiles.map((file) => {
+            try { return `\n/* ${file} */\n${fs.readFileSync(absolute(file), "utf8")}`; }
+            catch { fail(`Unable to inspect source file: ${file}`); return ""; }
+          }).join("\n");
+          const lowered = source.toLocaleLowerCase("de-DE");
+
+          const pageFiles = walk("app").filter((file) => /[\\/]page\.(tsx|jsx|ts|js|mdx)$/.test(file));
+          function hasRoute(segment) {
+            if (segment === "") return pageFiles.some((file) => /^app[\\/]page\./.test(file));
+            return pageFiles.some((file) => new RegExp(`[\\\\/]${segment}[\\\\/]page\\.`).test(file));
+          }
+          const routes = ["", "impressum", "datenschutz", "agb", "widerruf", "kontakt", "beta", "cookie-einstellungen", "barrierefreiheit"];
+          for (const route of routes) {
+            if (!hasRoute(route)) fail(`Missing required route: /${route}`);
+          }
+
+          const legalLinks = ["/impressum", "/datenschutz", "/agb", "/widerruf", "/kontakt", "/beta", "/cookie-einstellungen", "/barrierefreiheit"];
+          for (const link of legalLinks) {
+            const escaped = link.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            if (!new RegExp(`["']${escaped}["']`).test(source)) fail(`Required legal/footer link is not referenced: ${link}`);
+          }
+
+          const mediaSlugs = ["brief-scanner", "termin", "kuendigung", "vertrag", "geld-zurueck", "nachrichten"];
+          for (const slug of mediaSlugs) {
+            for (const extension of ["mp4", "png"]) {
+              const file = `public/media/${slug}.${extension}`;
+              if (!exists(file)) fail(`Missing local product media: ${file}`);
+            }
+          }
+          if (!exists("public/og-amthero24.png")) fail("Missing local Open Graph image");
+
+          const forbidden = [
+            "googletagmanager.com", "google-analytics.com", "fonts.googleapis.com", "fonts.gstatic.com",
+            "connect.facebook.net", "facebook.com/tr", "hotjar.com", "clarity.ms", "segment.com",
+            "mixpanel.com", "plausible.io", "umami.is", "cloudflareinsights.com", "unpkg.com", "jsdelivr.net"
+          ];
+          for (const fragment of forbidden) {
+            if (lowered.includes(fragment)) fail(`Forbidden tracker/CDN reference: ${fragment}`);
+          }
+          if (/next\/font\/google/i.test(source)) fail("Remote Google font import is forbidden");
+          if (/<script[^>]+src=["']https?:\/\//i.test(source)) fail("Remote script source is forbidden");
+          if (/dangerouslySetInnerHTML/.test(source)) fail("dangerouslySetInnerHTML is forbidden");
+
+          const aiTransparent = lowered.includes("künstliche intelligenz") || lowered.includes("ki-system") || /\bki\b/i.test(source);
+          if (!aiTransparent) fail("German-first AI transparency wording is missing");
+          const capacityVisible = lowered.includes("5 plätze") || lowered.includes("5 plaetze") || lowered.includes("5 places");
+          if (!capacityVisible) fail("Wave 1 capacity wording (5 places) is missing");
+
+          if (failures.length) {
+            console.error("Website content validation failed:");
+            for (const item of failures) console.error(`- ${item}`);
+            process.exit(1);
+          }
+          console.log(`Website content validation passed (${sourceFiles.length} scoped files, ${pageFiles.length} pages).`);
+          EOF
+      - name: Validate structural content boundary
+        working-directory: website
+        run: npm run content:check
+      - name: Commit structural validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add website/scripts/validate-content.mjs
+          git diff --cached --check
+          git config user.name "AmtHero24 Launch Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "fix: validate website content structurally"
+          git push origin HEAD:feat/pre-go-launch-package-205
+      - name: Re-run legal lock
+        working-directory: website
+        run: npm run legal:check
+      - name: Run website lint
+        working-directory: website
+        run: npm run lint
+      - name: Build standalone Next.js site
+        working-directory: website
+        run: npm run build
+      - name: Prove strict GO remains blocked
+        working-directory: website
+        shell: bash
+        run: |
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed." >&2
+            exit 1
+          fi
+          echo "Strict GO remains correctly blocked."
