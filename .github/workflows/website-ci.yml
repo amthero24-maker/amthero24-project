@@ -1,0 +1,106 @@
+name: Website CI
+
+on:
+  pull_request:
+    paths:
+      - "website/**"
+      - ".github/workflows/website-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/website-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    env:
+      NEXT_PUBLIC_SITE_URL: https://amthero24.de
+      NEXT_PUBLIC_SITE_INDEXABLE: "false"
+      NEXT_PUBLIC_BETA_CTA_ENABLED: "false"
+      NEXT_PUBLIC_BETA_CAPACITY: "5"
+      NEXT_PUBLIC_BETA_NOTICE_VERSION: 2026-08-wave1-v2-ai-transparent
+      LEGAL_PRODUCTION_READY: "false"
+      LEGAL_OPERATOR_NAME: Wissam Zidan
+      LEGAL_TRADING_NAME: AmtHero24
+      LEGAL_COUNTRY: Deutschland
+      LEGAL_EMAIL_INFO: info@amthero24.de
+      LEGAL_EMAIL_SUPPORT: support@amthero24.de
+      LEGAL_PROVIDER_DPAS_CONFIRMED: "false"
+      LEGAL_META_TERMS_CONFIRMED: "false"
+      LEGAL_GROQ_ZDR_ENABLED: "false"
+      LEGAL_RAILWAY_REGION_CONFIRMED: "false"
+      LEGAL_WEBSITE_REVIEW_CONFIRMED: "false"
+      DOMAIN_PRIMARY_TLS_CONFIRMED: "false"
+      DOMAIN_REDIRECTS_CONFIRMED: "false"
+      EMAIL_INBOUND_ROUTING_CONFIRMED: "false"
+      EMAIL_OUTBOUND_AUTH_CONFIRMED: "false"
+      BETA_NOTICE_OWNER_APPROVED: "false"
+      AI_TRANSPARENCY_REVIEW_CONFIRMED: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Generate local synthetic media assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil fonts-dejavu-core
+          python3 scripts/generate-demo-assets.py
+      - name: Validate fail-closed legal and launch configuration
+        run: npm run legal:check
+      - name: Validate content, legal routes and local media
+        run: npm run content:check
+      - name: Lint website
+        run: npm run lint
+      - name: Prove strict GO remains blocked before owner/legal completion
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed with pre-GO variables." >&2
+            exit 1
+          fi
+          echo "Expected fail-closed GO rejection confirmed."
+      - name: Build noindex preview artifact
+        run: npm run build
+      - name: Verify standalone health endpoint source
+        run: test -f app/api/health/route.js
+      - name: Verify no backend admission activation was introduced
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R --line-number --exclude-dir=node_modules --exclude='.env.example' \
+            'CLOSED_BETA_ADMISSION_ENABLED[[:space:]]*=[[:space:]]*true' .; then
+            echo 'Website scope must not enable backend Closed Beta admission.' >&2
+            exit 1
+          fi
+      - name: Verify legal and robots routes exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/robots.js
+          test -f app/sitemap.js
+          test -f 'app/[legal]/page.jsx'
+          for route in impressum datenschutz agb widerruf kontakt beta cookie-einstellungen barrierefreiheit; do
+            grep -q "${route}" 'app/[legal]/page.jsx'
+          done
