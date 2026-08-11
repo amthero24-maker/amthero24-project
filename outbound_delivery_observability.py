@@ -1,6 +1,7 @@
 """Read-only aggregate outbound-delivery observability helpers."""
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -20,12 +21,26 @@ def _integer(value: Any) -> int:
         return 0
 
 
+def _safe_failure_code(value: Any) -> str:
+    """Return a bounded provider code only; never reflect provider error text."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "unknown"
+    clean = "".join(character for character in raw if character.isalnum() or character in {"_", "-"})[:40]
+    return clean or "unknown"
+
+
+def _failure_code_dict(counter: Counter[str]) -> dict[str, int]:
+    return dict(sorted((code, int(count)) for code, count in counter.items()))
+
+
 def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None) -> dict[str, Any]:
     """Return aggregate delivery health without exposing identifiers or message content."""
     current = _now(now)
     cutoff = current - timedelta(hours=24)
     pending_cutoff = current - timedelta(minutes=15)
     counts = {status: 0 for status in ("accepted", "sent", "delivered", "read", "failed")}
+    failure_codes: Counter[str] = Counter()
 
     if str(getattr(store, "backend_name", "json")) != "postgresql":
         records = store.snapshot().get("outbound_delivery", {}).values()
@@ -52,6 +67,8 @@ def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None)
             status = str(record.get("status") or "")
             if accepted >= cutoff and status in counts:
                 counts[status] += 1
+                if status == "failed":
+                    failure_codes[_safe_failure_code(record.get("failure_code"))] += 1
             if status in {"accepted", "sent"}:
                 age = max(0, int((current - accepted).total_seconds()))
                 oldest = max(oldest, age)
@@ -65,6 +82,17 @@ def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None)
                 FROM outbound_delivery_messages
                 WHERE accepted_at >= %s AND expires_at > %s
                 GROUP BY status
+                """,
+                (cutoff, current),
+            ).fetchall()
+            failure_rows = connection.execute(
+                """
+                SELECT failure_code, COUNT(*) AS count
+                FROM outbound_delivery_messages
+                WHERE accepted_at >= %s
+                  AND expires_at > %s
+                  AND status = 'failed'
+                GROUP BY failure_code
                 """,
                 (cutoff, current),
             ).fetchall()
@@ -93,6 +121,8 @@ def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None)
             status = str(row.get("status") or "")
             if status in counts:
                 counts[status] = _integer(row.get("count"))
+        for row in failure_rows:
+            failure_codes[_safe_failure_code(row.get("failure_code"))] += _integer(row.get("count"))
         pending = _integer(aggregate.get("pending_over_15m") if aggregate else 0)
         oldest = max(0, _integer(aggregate.get("oldest_pending_age_seconds") if aggregate else 0))
 
@@ -103,6 +133,7 @@ def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None)
     return {
         "tracked_24h": tracked,
         "by_status": counts,
+        "failure_codes": _failure_code_dict(failure_codes),
         "terminal_24h": terminal,
         "delivery_success_pct": success_rate,
         "pending_over_15m": pending,
