@@ -73,6 +73,30 @@ def _reminder_diagnostic_detail(payload: dict[str, Any]) -> str:
     )[:900]
 
 
+def _launch_decision_detail(payload: dict[str, Any]) -> str:
+    """Return only bounded non-ready launch check codes for incident diagnosis."""
+    decision = _safe_code(payload.get("status"), fallback="missing")
+    raw_checks = payload.get("checks")
+    if not isinstance(raw_checks, list):
+        return decision
+    non_ready: list[str] = []
+    for raw in raw_checks:
+        if not isinstance(raw, dict):
+            continue
+        status = _safe_code(raw.get("status"), fallback="missing")
+        if status == "ready":
+            continue
+        code = _safe_code(raw.get("code"), fallback="unknown")
+        token = f"{status}:{code}"
+        if token not in non_ready:
+            non_ready.append(token)
+        if len(non_ready) >= 12:
+            break
+    if not non_ready:
+        return decision
+    return f"{decision}; non_ready={','.join(non_ready)}"[:900]
+
+
 def _base_url(value: str) -> str:
     cleaned = str(value or "").strip()
     if not cleaned.startswith(("https://", "http://")):
@@ -221,7 +245,7 @@ def run_smoke(
             endpoint_ok = launch_status == 200 and decision in {"ready", "warning", "blocked"}
             checks.append(SmokeCheck("launch_report_endpoint", "pass" if endpoint_ok else "fail", f"HTTP {launch_status}; status={decision}"))
             launch_ok = decision == "ready" or (decision == "warning" and not require_launch_ready)
-            checks.append(SmokeCheck("launch_decision", "pass" if launch_ok else "fail", decision))
+            checks.append(SmokeCheck("launch_decision", "pass" if launch_ok else "fail", _launch_decision_detail(launch)))
             if (
                 reminder_check_index is not None
                 and reminders == "disabled"
