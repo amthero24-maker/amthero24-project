@@ -6,6 +6,7 @@ on:
       - feat/pre-go-launch-package-205
     paths:
       - ".github/workflows/pre-go-package-bootstrap.yml"
+      - ".github/bootstrap-source/**"
 
 permissions:
   contents: write
