@@ -14,4 +14,11 @@ if (!page.includes('url.hostname === "wa.me"') || !page.includes('url.hostname =
   throw new Error('Beta CTA must restrict targets to approved WhatsApp hosts');
 }
 if (!page.includes('<button className="cta" disabled>')) throw new Error('Disabled pre-GO CTA boundary missing');
-console.log('Content preflight PASS: 6 MVP journeys, legal routes, AI transparency, trust boundaries and fail-closed actionable CTA present.');
+const demoVideoTag = page.match(/<video\b[^>]*className="demoVideo"[^>]*\/>/s)?.[0];
+if (!demoVideoTag) throw new Error('Local MVP demo video markup missing');
+if (!/\bcontrols\b/.test(demoVideoTag)) throw new Error('MVP demo videos must expose native playback controls');
+if (/\bautoPlay\b/.test(demoVideoTag) || /\bloop\b/.test(demoVideoTag)) {
+  throw new Error('MVP demo videos must not autoplay or loop');
+}
+if (!demoVideoTag.includes('preload="metadata"')) throw new Error('MVP demo videos must remain metadata-only before user playback');
+console.log('Content preflight PASS: 6 MVP journeys, legal routes, AI transparency, trust boundaries, accessible local demos and fail-closed actionable CTA present.');
