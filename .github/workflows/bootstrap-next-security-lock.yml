@@ -1,0 +1,53 @@
+name: Bootstrap website Next security lock
+
+on:
+  push:
+    branches:
+      - fix/website-next-16-3-0-security-205
+    paths:
+      - .github/workflows/bootstrap-next-security-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out focused dependency branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Generate exact committed security update
+        working-directory: website
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pkg set dependencies.next=16.3.0
+          npm pkg set devDependencies.eslint-config-next=16.3.0
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          npm ci --no-audit --no-fund
+          npm audit --omit=dev --audit-level=high
+      - name: Commit only manifests and remove bootstrap workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/bootstrap-next-security-lock.yml
+          git config user.name "AmtHero24"
+          git config user.email "amthero24@gmail.com"
+          git add website/package.json website/package-lock.json .github/workflows/bootstrap-next-security-lock.yml
+          changed_count="$(git diff --cached --name-only | wc -l | tr -d ' ')"
+          test "$changed_count" = "3"
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/bootstrap-next-security-lock.yml|website/package.json|website/package-lock.json) ;;
+              *) echo "Unexpected staged path: $path" >&2; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
+          git commit -m "fix: upgrade website Next.js to 16.3.0 security release"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
