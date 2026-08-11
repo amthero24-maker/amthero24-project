@@ -64,11 +64,11 @@ _LAST_ACTION_REGEXES = (
     r"^\s*τελευταια ενεργεια\s*[:\-]?\s*(.+)$",
 )
 _DUE_UPDATE_REMAINDER_PATTERNS = (
-    r"(?:الموعد|المهلة|اخر موعد|آخر موعد)(?: هو| هي| بتاريخ| يوم)?",
-    r"(?:der |die )?(?:frist|termin|deadline)(?: ist| am| auf)?",
-    r"(?:the )?(?:deadline|due date)(?: is| on)?",
-    r"(?:кінцевий термін|термін)(?: є| на)?",
-    r"(?:η )?(?:προθεσμια|προθεσμία)(?: ειναι| είναι| στις)?",
+    r"(?:الموعد|المهلة|اخر موعد|آخر موعد)(?: هو| هي)?(?: بتاريخ| يوم)?",
+    r"(?:der |die )?(?:frist|termin|deadline)(?: ist)?(?: am| auf)?",
+    r"(?:the )?(?:deadline|due date)(?: is)?(?: on)?",
+    r"(?:кінцевий термін|термін)(?: є)?(?: на)?",
+    r"(?:η )?(?:προθεσμια|προθεσμία)(?: ειναι| είναι)?(?: στις)?",
 )
 
 
@@ -203,7 +203,7 @@ def memory_required_message(language: str) -> str:
         "de": "Damit ich diese Aufgabe beim nächsten Mal weiterverfolgen kann, muss die Erinnerung mit deiner Zustimmung aktiviert sein. Schreib „Erinnerung aktivieren“.",
         "en": "To keep following this task next time, memory needs to be enabled with your permission. Say “enable memory”.",
         "uk": "Щоб продовжити цю справу наступного разу, потрібно за твоєю згодою увімкнути пам’ять. Напиши «увімкни пам’ять».",
-        "el": "Για να συνεχίσω αυτήν την εργασία την επόμενη φορά, χρειάζεται να ενεργοποιηθεί η μνήμη με τη συγκατάθεσή σου. Γράψε «ενεργοποίησε μνήμη».",
+        "el": "Για να συνεχίσω αυτή την εργασία την επόμενη φορά, χρειάζεται να ενεργοποιηθεί η μνήμη με τη συγκατάθεσή σου. Γράψε «ενεργοποίησε μνήμη».",
     }[lang]
 
 
