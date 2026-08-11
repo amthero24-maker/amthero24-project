@@ -3,15 +3,8 @@ name: MVP Journey Composition
 on:
   pull_request:
     paths:
-      - "app.py"
-      - "application.py"
-      - "reminder_extensions.py"
-      - "reminder_conversation_extensions.py"
-      - "reminder_language_extensions.py"
-      - "mission_engine.py"
-      - "mission_intelligence.py"
-      - "prompts.py"
-      - "mvp_runtime_contract.py"
+      - "*.py"
+      - "requirements*.txt"
       - "tests/test_mission_engine.py"
       - "tests/test_mission_intelligence.py"
       - "tests/test_mvp_journey_production_composition.py"
@@ -19,15 +12,8 @@ on:
   push:
     branches: [main]
     paths:
-      - "app.py"
-      - "application.py"
-      - "reminder_extensions.py"
-      - "reminder_conversation_extensions.py"
-      - "reminder_language_extensions.py"
-      - "mission_engine.py"
-      - "mission_intelligence.py"
-      - "prompts.py"
-      - "mvp_runtime_contract.py"
+      - "*.py"
+      - "requirements*.txt"
       - "tests/test_mission_engine.py"
       - "tests/test_mission_intelligence.py"
       - "tests/test_mvp_journey_production_composition.py"
