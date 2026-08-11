@@ -63,6 +63,12 @@ def _safe_percent(value: Any) -> float:
         return 0.0
 
 
+def _safe_failure_code(value: Any) -> str:
+    raw = str(value or "").strip()
+    clean = "".join(character for character in raw if character.isalnum() or character in {"_", "-"})[:40]
+    return clean or "unknown"
+
+
 def _needs_outbound_diagnostics(checks: Sequence[SmokeCheck]) -> bool:
     return any(
         check.name == "launch_decision"
@@ -73,7 +79,7 @@ def _needs_outbound_diagnostics(checks: Sequence[SmokeCheck]) -> bool:
 
 
 def _outbound_delivery_detail(payload: dict[str, Any]) -> str:
-    """Return only aggregate delivery counts/ages; never identifiers or content."""
+    """Return only aggregate delivery counts/ages/codes; never identifiers or content."""
     raw = payload.get("outbound_delivery")
     delivery = raw if isinstance(raw, dict) else {}
     raw_statuses = delivery.get("by_status")
@@ -82,9 +88,16 @@ def _outbound_delivery_detail(payload: dict[str, Any]) -> str:
     encoded_statuses = ",".join(
         f"{name}:{_safe_nonnegative_int(statuses.get(name))}" for name in ordered
     )
+    raw_codes = delivery.get("failure_codes")
+    codes = raw_codes if isinstance(raw_codes, dict) else {}
+    encoded_codes = ",".join(
+        f"{_safe_failure_code(code)}:{_safe_nonnegative_int(count)}"
+        for code, count in sorted(codes.items(), key=lambda item: str(item[0]))[:10]
+    ) or "none"
     return (
         f"tracked_24h={_safe_nonnegative_int(delivery.get('tracked_24h'))}; "
         f"by_status={encoded_statuses}; "
+        f"failure_codes={encoded_codes}; "
         f"terminal_24h={_safe_nonnegative_int(delivery.get('terminal_24h'))}; "
         f"delivery_success_pct={_safe_percent(delivery.get('delivery_success_pct')):.1f}; "
         f"pending_over_15m={_safe_nonnegative_int(delivery.get('pending_over_15m'))}; "
