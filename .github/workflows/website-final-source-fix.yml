@@ -1,0 +1,107 @@
+name: Website Final Source Fix
+
+on:
+  push:
+    branches:
+      - feat/pre-go-launch-package-205
+    paths:
+      - ".github/website-final-source-fix-trigger.txt"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-final-source-fix-205
+  cancel-in-progress: false
+
+jobs:
+  fix-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/pre-go-launch-package-205
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install exact dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+      - name: Install deterministic source checks
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("website")
+          validator = r'''import fs from "node:fs";
+          import path from "node:path";
+          const root=process.cwd(); const failures=[];
+          const required=["app/page.tsx","app/impressum/page.tsx","app/datenschutz/page.tsx","app/agb/page.tsx","app/widerruf/page.tsx","app/kontakt/page.tsx","app/beta/page.tsx","app/cookie-einstellungen/page.tsx","app/barrierefreiheit/page.tsx"];
+          const media=["brief-scanner","termin","kuendigung","vertrag","geld-zurueck","nachrichten"];
+          const exists=(p)=>fs.existsSync(path.join(root,p));
+          for(const p of required) if(!exists(p)) failures.push(`Missing required page: ${p}`);
+          for(const slug of media) for(const ext of ["mp4","png"]) if(!exists(`public/media/${slug}.${ext}`)) failures.push(`Missing local media: ${slug}.${ext}`);
+          if(!exists("public/og-amthero24.png")) failures.push("Missing Open Graph image");
+          const extensions=new Set([".js",".jsx",".mjs",".ts",".tsx",".css",".json",".md",".mdx",".svg"]);
+          function walk(relative){const absolute=path.join(root,relative);if(!fs.existsSync(absolute))return[];let files=[];for(const entry of fs.readdirSync(absolute,{withFileTypes:true})){if(["node_modules",".next","out","coverage"].includes(entry.name))continue;const child=path.join(relative,entry.name);if(entry.isDirectory())files=files.concat(walk(child));else if(extensions.has(path.extname(entry.name).toLowerCase()))files.push(child);}return files;}
+          const files=["app","components","content","lib"].flatMap(walk);
+          const source=files.map((file)=>fs.readFileSync(path.join(root,file),"utf8")).join("\n");
+          const lowered=source.toLocaleLowerCase("de-DE");
+          for(const host of ["googletagmanager.com","google-analytics.com","fonts.googleapis.com","fonts.gstatic.com","connect.facebook.net","facebook.com/tr","hotjar.com","clarity.ms","segment.com","mixpanel.com","plausible.io","umami.is","cloudflareinsights.com","unpkg.com","jsdelivr.net"])if(lowered.includes(host))failures.push(`Forbidden tracker/CDN: ${host}`);
+          if(/next\/font\/google/i.test(source))failures.push("Remote Google fonts are forbidden");
+          if(/<script[^>]+src=["']https?:\/\//i.test(source))failures.push("Remote scripts are forbidden");
+          if(/dangerouslySetInnerHTML/.test(source))failures.push("dangerouslySetInnerHTML is forbidden");
+          for(const route of ["/impressum","/datenschutz","/agb","/widerruf","/kontakt","/beta","/cookie-einstellungen","/barrierefreiheit"])if(!source.includes(route))failures.push(`Legal route is not referenced: ${route}`);
+          if(!/(künstliche intelligenz|ki-system|\bki\b)/i.test(source))failures.push("German AI transparency wording is missing");
+          if(!/(5\s*(plätze|plaetze|places|slots))/i.test(source))failures.push("Wave 1 capacity wording is missing");
+          if(failures.length){console.error("Website content validation failed:");failures.forEach((failure)=>console.error(`- ${failure}`));process.exit(1);}console.log(`Website content validation passed (${files.length} scoped files).`);
+          '''
+          (root / "scripts/validate-content.mjs").write_text(validator, encoding="utf-8")
+
+          package_path = root / "package.json"
+          package = json.loads(package_path.read_text(encoding="utf-8"))
+          package.setdefault("scripts", {})["lint"] = "eslint app components content lib scripts --max-warnings=0"
+          package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Commit source-check corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add website/scripts/validate-content.mjs website/package.json
+          git diff --cached --check
+          if ! git diff --cached --quiet; then
+            git config user.name "AmtHero24 Launch Automation"
+            git config user.email "actions@users.noreply.github.com"
+            git commit -m "fix: finalize website validation and lint commands"
+            git push origin HEAD:feat/pre-go-launch-package-205
+          fi
+      - name: Validate legal production lock
+        working-directory: website
+        run: npm run legal:check
+      - name: Validate content and privacy boundary
+        working-directory: website
+        run: npm run content:check
+      - name: Run ESLint
+        working-directory: website
+        run: npm run lint
+      - name: Build standalone website
+        working-directory: website
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Confirm strict GO remains blocked
+        working-directory: website
+        shell: bash
+        run: |
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed before operator/legal/domain approval." >&2
+            exit 1
+          fi
+          echo "Strict GO remains correctly blocked."
