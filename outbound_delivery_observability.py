@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+_RECOVERY_EVIDENCE = {"none", "success_only", "success_after_failure", "unresolved_failure"}
+
 
 def _now(value: datetime | None = None) -> datetime:
     current = value or datetime.now(UTC)
@@ -34,7 +36,27 @@ def _failure_code_dict(counter: Counter[str]) -> dict[str, int]:
     return dict(sorted((code, int(count)) for code, count in counter.items()))
 
 
-def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None) -> dict[str, Any]:
+def _recovery_payload(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    required = raw.get("recovery_required") is True
+    evidence = str(raw.get("recovery_evidence") or "none")
+    if evidence not in _RECOVERY_EVIDENCE:
+        evidence = "unresolved_failure" if required else "none"
+    return {
+        "recovery_required": required,
+        "recovery_evidence": evidence,
+        "recovery_failure_code": (
+            _safe_failure_code(raw.get("recovery_failure_code")) if required else ""
+        ),
+    }
+
+
+def build_outbound_delivery_overview(
+    store: Any,
+    *,
+    now: datetime | None = None,
+    recovery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return aggregate delivery health without exposing identifiers or message content."""
     current = _now(now)
     cutoff = current - timedelta(hours=24)
@@ -138,4 +160,5 @@ def build_outbound_delivery_overview(store: Any, *, now: datetime | None = None)
         "delivery_success_pct": success_rate,
         "pending_over_15m": pending,
         "oldest_pending_age_seconds": oldest,
+        **_recovery_payload(recovery),
     }

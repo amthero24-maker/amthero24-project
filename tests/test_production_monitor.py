@@ -119,6 +119,9 @@ def test_outbound_warning_adds_only_aggregate_privacy_safe_diagnostics() -> None
             "delivery_success_pct": 83.3,
             "pending_over_15m": 1,
             "oldest_pending_age_seconds": 1200,
+            "recovery_required": True,
+            "recovery_evidence": "unresolved_failure",
+            "recovery_failure_code": "131031",
             "phone": "+49123456789",
             "message": "must never appear",
         }
@@ -143,7 +146,9 @@ def test_outbound_warning_adds_only_aggregate_privacy_safe_diagnostics() -> None
     assert diagnostic["detail"] == (
         "tracked_24h=7; by_status=accepted:0,sent:1,delivered:3,read:2,failed:1; "
         "failure_codes=131047:1; terminal_24h=6; delivery_success_pct=83.3; "
-        "pending_over_15m=1; oldest_pending_age_seconds=1200"
+        "pending_over_15m=1; oldest_pending_age_seconds=1200; "
+        "recovery_required=true; recovery_evidence=unresolved_failure; "
+        "recovery_failure_code=131031"
     )
     assert "+49123456789" not in write_report(report)
     assert "must never appear" not in write_report(report)
@@ -151,7 +156,7 @@ def test_outbound_warning_adds_only_aggregate_privacy_safe_diagnostics() -> None
     fetch.assert_called_once()
 
 
-def test_outbound_diagnostics_default_to_no_failure_codes() -> None:
+def test_outbound_diagnostics_default_to_no_failure_codes_or_recovery() -> None:
     overview = {
         "outbound_delivery": {
             "tracked_24h": 1,
@@ -172,6 +177,9 @@ def test_outbound_diagnostics_default_to_no_failure_codes() -> None:
         )
     diagnostic = next(item for item in report.checks if item["name"] == "outbound_delivery_diagnostics")
     assert "failure_codes=none" in diagnostic["detail"]
+    assert "recovery_required=false" in diagnostic["detail"]
+    assert "recovery_evidence=none" in diagnostic["detail"]
+    assert "recovery_failure_code=none" in diagnostic["detail"]
 
 
 def test_outbound_diagnostics_are_not_fetched_without_matching_launch_warning() -> None:

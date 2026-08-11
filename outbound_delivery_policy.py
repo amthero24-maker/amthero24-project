@@ -19,6 +19,11 @@ def _float(value: Any) -> float:
         return 0.0
 
 
+def _safe_failure_code(value: Any) -> str:
+    raw = str(value or "").strip()
+    return "".join(character for character in raw if character.isalnum() or character in {"_", "-"})[:40]
+
+
 def outbound_delivery_check(overview: dict[str, Any]) -> dict[str, str]:
     raw = overview.get("outbound_delivery", {})
     payload = raw if isinstance(raw, dict) else {}
@@ -30,6 +35,8 @@ def outbound_delivery_check(overview: dict[str, Any]) -> dict[str, str]:
     pending = _integer(payload.get("pending_over_15m"))
     oldest = _integer(payload.get("oldest_pending_age_seconds"))
     success_rate = _float(payload.get("delivery_success_pct"))
+    recovery_required = payload.get("recovery_required") is True
+    recovery_code = _safe_failure_code(payload.get("recovery_failure_code"))
 
     if pending >= 20 or oldest >= 3600:
         return {
@@ -44,6 +51,14 @@ def outbound_delivery_check(overview: dict[str, Any]) -> dict[str, str]:
             "status": "blocked",
             "detail": f"WhatsApp terminal delivery success is {success_rate:.1f}% with {failed} current failure(s) during the last 24 hours.",
             "action": "Investigate aggregate Meta failure codes and account/template health before accepting more Beta traffic.",
+        }
+    if recovery_required:
+        code_detail = f" (bounded failure code: {recovery_code})" if recovery_code else ""
+        return {
+            "code": "outbound_delivery",
+            "status": "warning",
+            "detail": "The latest aggregate outbound failure has no strictly later delivered/read receipt proving recovery" + code_detail + ".",
+            "action": "Keep the Beta cohort fixed, resolve the Meta/account condition, then obtain one owner-authorized delivered/read receipt before re-evaluating launch readiness.",
         }
     if pending > 0 or oldest >= 900 or (failed > 0 and terminal > 0 and success_rate < 95.0):
         details: list[str] = []
@@ -64,7 +79,7 @@ def outbound_delivery_check(overview: dict[str, Any]) -> dict[str, str]:
         return {
             "code": "outbound_delivery",
             "status": "ready",
-            "detail": "Outbound delivery tracking is initialized; no messages were tracked during the last 24 hours.",
+            "detail": "Outbound delivery tracking is initialized; no messages were tracked during the last 24 hours and no unresolved aggregate failure remains.",
         }
     return {
         "code": "outbound_delivery",

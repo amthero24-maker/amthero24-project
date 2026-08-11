@@ -23,6 +23,7 @@ from entitlement_engine import EntitlementRepository
 from feedback_engine import FeedbackRepository
 from hero_memory import HeroMemory
 from outbound_delivery import DeliveryReceipt, OutboundDeliveryRepository
+from outbound_delivery_recovery import OutboundDeliveryRecoveryState
 from provider_reliability import ProviderReliabilityRepository
 from reminder_engine import ReminderRepository, decrypt_recipient
 from schema_recovery import inspect_database_schema
@@ -39,6 +40,7 @@ EXPECTED_TABLES = {
     "inbound_messages",
     "inbound_work_queue",
     "outbound_delivery_messages",
+    "outbound_delivery_recovery_state",
     "schema_migrations",
     "amthero_schema_migrations",
     "hero_missions",
@@ -104,6 +106,7 @@ def _seed_source(database_url: str) -> dict[str, str]:
     feedback = FeedbackRepository(store)
     durable_queue = DurableQueueRepository(store)
     outbound = OutboundDeliveryRepository(store)
+    outbound_recovery = OutboundDeliveryRecoveryState(store)
     now = datetime(2026, 7, 26, 12, tzinfo=UTC)
 
     try:
@@ -118,11 +121,13 @@ def _seed_source(database_url: str) -> dict[str, str]:
         store.update_message_status("wamid.recovery-drill", "sent")
         durable_queue.enqueue("wamid.recovery-drill", PHONE, now=now)
         outbound.record_accepted(OUTBOUND_ID, message_kind="template", now=now)
-        outbound.record_receipt(DeliveryReceipt(
+        delivery_receipt = DeliveryReceipt(
             OUTBOUND_ID,
             "delivered",
             now + timedelta(seconds=15),
-        ), now=now)
+        )
+        delivery_status = outbound.record_receipt(delivery_receipt, now=now)
+        outbound_recovery.record_receipt(delivery_receipt, resulting_status=delivery_status)
         memory.record_consent(PHONE, "granted", "recovery-v1")
         mission = memory.create_mission(
             PHONE,
@@ -195,6 +200,7 @@ def test_encrypted_backup_restores_complete_schema_compatible_application_state(
         "inbound_messages",
         "inbound_work_queue",
         "outbound_delivery_messages",
+        "outbound_delivery_recovery_state",
         "hero_missions",
         "hero_reminders",
         "pending_document_actions",
@@ -270,6 +276,11 @@ def test_encrypted_backup_restores_complete_schema_compatible_application_state(
         assert outbound is not None
         assert outbound["status"] == "delivered"
         assert outbound["message_kind"] == "template"
+        assert OutboundDeliveryRecoveryState(target_store).snapshot() == {
+            "recovery_required": False,
+            "recovery_evidence": "success_only",
+            "recovery_failure_code": "",
+        }
 
         restored_reminders = ReminderRepository(target_store).list(
             PHONE, active_only=False, limit=10,

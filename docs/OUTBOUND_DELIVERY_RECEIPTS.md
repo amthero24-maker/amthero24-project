@@ -26,7 +26,7 @@ traffic.
 
 ## Stored fields
 
-The table contains only:
+The per-message table contains only:
 
 - SHA-256 hash of Meta's outbound message ID
 - bounded message kind such as text, template, image, or document
@@ -38,6 +38,10 @@ The table contains only:
 It never stores recipient phone numbers, sender hashes, text, template parameters,
 media IDs, error titles/messages/details, webhook payloads, or document content.
 
+A separate singleton recovery record contains no message hash or identity. It stores only
+the latest aggregate failed timestamp, latest aggregate delivered/read timestamp, the
+bounded code of the latest unresolved failure, and an update timestamp.
+
 ## Protected operator metrics
 
 `/admin/overview` exposes aggregate counts for the last 24 hours:
@@ -47,11 +51,18 @@ media IDs, error titles/messages/details, webhook payloads, or document content.
 - delivered/read success percentage among terminal outcomes
 - messages still accepted/sent after 15 minutes
 - age of the oldest pending message
+- whether a historical failure still lacks a strictly later delivered/read receipt
+- the bounded failure code while that recovery proof is still missing
 
 `/admin/launch-readiness` blocks Beta growth when pending delivery becomes material or
 terminal delivery success drops sharply. Smaller failures and delayed receipts create a
 warning so the cohort remains fixed while Meta account, token, template, and service
 health are reviewed.
+
+A warning does not disappear merely because the 24-hour metrics window becomes empty.
+After an effective failed receipt, the aggregate recovery state remains warning until a
+known outbound message receives a strictly later `delivered` or `read` receipt. An
+`accepted` or `sent` status is not delivery proof and does not clear the warning.
 
 ## Failure handling
 
@@ -66,8 +77,14 @@ recorded through privacy-safe logs and provider telemetry instead.
 ## Retention and recovery
 
 `OUTBOUND_DELIVERY_RETENTION_DAYS` defaults to 30 days and is bounded between 1 and 180
-days. Expired hashed lifecycle rows are removed by the existing privacy-retention
-worker. The table is included in the encrypted PostgreSQL backup and restore drill.
+days. Expired hashed per-message lifecycle rows are removed by the existing
+privacy-retention worker. The identity-free aggregate recovery record survives that
+cleanup so launch readiness cannot recover from a known failure through passage of time
+alone. Both tables are included in the encrypted PostgreSQL backup and restore drill.
+
+On first deployment of the aggregate recovery state, it is bootstrapped from retained
+per-message rows. A later delivered/read receipt can then clear an unresolved failure in
+the normal signed-webhook path.
 
 Delivery receipts improve operational evidence but do not provide mathematical
 exactly-once delivery across the external WhatsApp API. Meta's status events remain the
