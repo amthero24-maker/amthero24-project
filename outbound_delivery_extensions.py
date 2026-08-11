@@ -7,7 +7,7 @@ reports.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from fastapi import BackgroundTasks, Request
 from fastapi.responses import JSONResponse
@@ -19,13 +19,14 @@ import privacy_engine as privacy_module
 import queue_observability_extensions as composed
 import whatsapp as whatsapp_module
 from outbound_delivery import (
+    DeliveryReceipt,
     OutboundDeliveryRepository,
     extract_delivery_receipts,
     extract_response_message_ids,
-    record_receipts,
 )
 from outbound_delivery_observability import build_outbound_delivery_overview
 from outbound_delivery_policy import augment_launch_report
+from outbound_delivery_recovery import OutboundDeliveryRecoveryState
 
 logger = logging.getLogger("amthero24.outbound_delivery")
 core = composed.core
@@ -33,6 +34,7 @@ _ORIGINAL_ADMIN_BUILD_OVERVIEW = admin_module.build_overview
 _ORIGINAL_BUILD_LAUNCH_REPORT = launch_module.build_launch_report
 _ORIGINAL_PRIVACY_CLEANUP = privacy_module.cleanup_retention
 _DELIVERY_REPOSITORY: OutboundDeliveryRepository | None = None
+_DELIVERY_RECOVERY: OutboundDeliveryRecoveryState | None = None
 
 
 def _repository(store: Any | None = None) -> OutboundDeliveryRepository:
@@ -41,6 +43,32 @@ def _repository(store: Any | None = None) -> OutboundDeliveryRepository:
     if _DELIVERY_REPOSITORY is None or _DELIVERY_REPOSITORY.store is not target:
         _DELIVERY_REPOSITORY = OutboundDeliveryRepository(target)
     return _DELIVERY_REPOSITORY
+
+
+def _recovery(store: Any | None = None) -> OutboundDeliveryRecoveryState:
+    global _DELIVERY_RECOVERY
+    target = store or core.store
+    _repository(target)  # Ensure the per-message table exists before recovery bootstrap.
+    if _DELIVERY_RECOVERY is None or _DELIVERY_RECOVERY.store is not target:
+        _DELIVERY_RECOVERY = OutboundDeliveryRecoveryState(target)
+    return _DELIVERY_RECOVERY
+
+
+def record_receipts(
+    repository: OutboundDeliveryRepository,
+    receipts: Iterable[DeliveryReceipt],
+) -> dict[str, int]:
+    """Persist known receipts and their aggregate recovery evidence atomically per event."""
+    result = {"updated": 0, "unknown": 0}
+    recovery = _recovery(repository.store)
+    for receipt in receipts:
+        state = repository.record_receipt(receipt)
+        if state == "unknown":
+            result["unknown"] += 1
+            continue
+        recovery.record_receipt(receipt, resulting_status=state)
+        result["updated"] += 1
+    return result
 
 
 def _install_send_tracking() -> None:
@@ -88,6 +116,7 @@ def _build_overview(store: Any, **kwargs: Any) -> dict[str, Any]:
     payload["outbound_delivery"] = build_outbound_delivery_overview(
         store,
         now=kwargs.get("now"),
+        recovery=_recovery(store).snapshot(),
     )
     return payload
 
