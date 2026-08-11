@@ -27,10 +27,11 @@ def _reset_store(tmp_path, monkeypatch) -> JsonDataStore:
     store = JsonDataStore(tmp_path / "delivery-extension.json")
     layer.core.store = store
     layer._DELIVERY_REPOSITORY = None
+    layer._DELIVERY_RECOVERY = None
     return store
 
 
-def _status_payload(message_id: str, status: str = "delivered") -> dict:
+def _status_payload(message_id: str, status: str = "delivered", timestamp: str = "1786359600") -> dict:
     payload = {
         "entry": [{
             "changes": [{
@@ -38,7 +39,7 @@ def _status_payload(message_id: str, status: str = "delivered") -> dict:
                     "statuses": [{
                         "id": message_id,
                         "status": status,
-                        "timestamp": "1786359600",
+                        "timestamp": timestamp,
                         "recipient_id": "+491701234567",
                     }]
                 }
@@ -89,6 +90,7 @@ def test_status_only_webhook_updates_known_message_without_storing_recipient(tmp
     assert response.status_code == 200
     assert response.json() == {"status": "accepted"}
     assert layer._repository(store).state(message_id)["status"] == "delivered"
+    assert layer._recovery(store).snapshot()["recovery_evidence"] == "success_only"
     encoded = json.dumps(store.snapshot(), ensure_ascii=False, sort_keys=True)
     assert message_id not in encoded
     assert "+491701234567" not in encoded
@@ -101,22 +103,47 @@ def test_unknown_receipt_is_acknowledged_without_creating_unbounded_record(tmp_p
 
     assert response.status_code == 200
     assert store.snapshot().get("outbound_delivery", {}) == {}
+    assert layer._recovery(store).snapshot()["recovery_evidence"] == "none"
 
 
-def test_failed_receipt_keeps_only_generic_code(tmp_path, monkeypatch) -> None:
+def test_failed_receipt_keeps_only_generic_code_and_requires_later_success(tmp_path, monkeypatch) -> None:
     store = _reset_store(tmp_path, monkeypatch)
-    message_id = "wamid.failed-receipt"
-    layer._repository(store).record_accepted(message_id)
+    failed_id = "wamid.failed-receipt"
+    layer._repository(store).record_accepted(failed_id)
 
-    response = TestClient(layer.app).post("/webhook", json=_status_payload(message_id, "failed"))
+    response = TestClient(layer.app).post(
+        "/webhook",
+        json=_status_payload(failed_id, "failed", "1786359600"),
+    )
 
     assert response.status_code == 200
-    state = layer._repository(store).state(message_id)
+    state = layer._repository(store).state(failed_id)
     assert state["status"] == "failed"
     assert state["failure_code"] == "131047"
+    assert layer._recovery(store).snapshot() == {
+        "recovery_required": True,
+        "recovery_evidence": "unresolved_failure",
+        "recovery_failure_code": "131047",
+    }
+
+    delivered_id = "wamid.delivered-after-failure"
+    layer._repository(store).record_accepted(delivered_id)
+    recovered = TestClient(layer.app).post(
+        "/webhook",
+        json=_status_payload(delivered_id, "delivered", "1786359660"),
+    )
+    assert recovered.status_code == 200
+    assert layer._recovery(store).snapshot() == {
+        "recovery_required": False,
+        "recovery_evidence": "success_after_failure",
+        "recovery_failure_code": "",
+    }
+
     encoded = json.dumps(store.snapshot(), ensure_ascii=False, sort_keys=True)
     assert "private title" not in encoded
     assert "private failure text" not in encoded
+    assert failed_id not in encoded
+    assert delivered_id not in encoded
 
 
 def test_receipt_storage_outage_returns_retryable_status(tmp_path, monkeypatch) -> None:
