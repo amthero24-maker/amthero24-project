@@ -1,12 +1,12 @@
 import Link from "next/link";
 
 const tools = [
-  ["Brief Scanner", "Brief, PDF oder Foto senden. Sam sortiert Absender, Frist, Betrag, Referenz und nächsten Schritt."],
-  ["Termin Assistance", "Termin, Ort, Unterlagen und Vorbereitung an einem Platz – inklusive Erinnerung."],
-  ["Kündigung", "Einen prüfbaren Kündigungsentwurf erstellen, ohne Fristen oder Rechtslage zu erfinden."],
-  ["Vertrags-Check", "Wichtige Klauseln, Laufzeit, Verlängerung und offene Punkte verständlich zusammenfassen."],
-  ["Geld zurück", "Rückerstattung strukturiert anfragen und Belege ordnen – ohne Erfolgsversprechen."],
-  ["Nachrichten & E-Mails", "Formelle Nachrichten auf Deutsch vorbereiten und vor dem Senden selbst prüfen."],
+  { name: "Brief Scanner", text: "Brief, PDF oder Foto senden. Sam sortiert Absender, Frist, Betrag, Referenz und nächsten Schritt.", icon: "⌕", video: "/media/brief-scanner.mp4" },
+  { name: "Termin Assistance", text: "Termin, Ort, Unterlagen und Vorbereitung an einem Platz – inklusive Erinnerung.", icon: "◷", video: "/media/termin.mp4" },
+  { name: "Kündigung", text: "Einen prüfbaren Kündigungsentwurf erstellen, ohne Fristen oder Rechtslage zu erfinden.", icon: "✎", video: "/media/kuendigung.mp4" },
+  { name: "Vertrags-Check", text: "Wichtige Klauseln, Laufzeit, Verlängerung und offene Punkte verständlich zusammenfassen.", icon: "◇", video: "/media/vertrag.mp4" },
+  { name: "Geld zurück", text: "Rückerstattung strukturiert anfragen und Belege ordnen – ohne Erfolgsversprechen.", icon: "↩", video: "/media/geld-zurueck.mp4" },
+  { name: "Nachrichten & E-Mails", text: "Formelle Nachrichten auf Deutsch vorbereiten und vor dem Senden selbst prüfen.", icon: "✉", video: "/media/nachrichten.mp4" },
 ];
 
 const faq = [
@@ -37,7 +37,7 @@ export default function Home() {
 
       <section className="section dark" id="how"><p className="eyebrow">Drei Schritte</p><h2>Einfach schreiben wie in einem normalen Chat.</h2><div className="grid3"><article><span className="step">1</span><h3>Sende, was dich beschäftigt</h3><p>Text, Foto, PDF, Word-Datei oder Sprachnachricht.</p></article><article><span className="step">2</span><h3>Sam versteht und sortiert</h3><p>Fakten, Fristen, offene Punkte und Unsicherheiten werden klar getrennt.</p></article><article><span className="step">3</span><h3>Du gehst den nächsten Schritt</h3><p>Erklärung, Entwurf, Aufgabe oder Erinnerung – unter deiner Kontrolle.</p></article></div></section>
 
-      <section className="section" id="tools"><p className="eyebrow">Sechs Werkzeuge, ein Assistent</p><h2>Für die häufigsten Alltagssituationen in Deutschland.</h2><div className="toolGrid">{tools.map(([name,text],i)=><article className="tool" key={name}><span className="toolIcon">{["⌕","◷","✎","◇","↩","✉"][i]}</span><h3>{name}</h3><p>{text}</p><div className="demo"><span></span><span></span><span></span><small>15-Sekunden-Demo · lokal · trackingfrei</small></div></article>)}</div></section>
+      <section className="section" id="tools"><p className="eyebrow">Sechs Werkzeuge, ein Assistent</p><h2>Für die häufigsten Alltagssituationen in Deutschland.</h2><div className="toolGrid">{tools.map((tool)=><article className="tool" key={tool.name}><span className="toolIcon">{tool.icon}</span><h3>{tool.name}</h3><p>{tool.text}</p><div className="demoVideoWrap"><video className="demoVideo" src={tool.video} autoPlay muted loop playsInline preload="metadata" aria-label={`${tool.name} – 15-Sekunden-Demo`} /><small>15-Sekunden-Demo · lokal gehostet · trackingfrei</small></div></article>)}</div></section>
 
       <section className="section before"><div><p className="eyebrow">Vorher</p><h2>„Was bedeutet das alles?“</h2><p>Ein langer Brief, eine Frist, ein Aktenzeichen – und keine klare Reihenfolge.</p></div><div className="arrow">→</div><div><p className="eyebrow">Mit Sam</p><h2>„Das sind die drei Dinge, die zählen.“</h2><p>Frist, benötigte Unterlagen und ein klarer nächster Schritt. Wichtige Angaben bleiben prüfbar.</p></div></section>
 
