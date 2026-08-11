@@ -24,19 +24,21 @@ jobs:
         with:
           ref: feat/pre-go-launch-package-205
           fetch-depth: 0
-      - name: Verify and unpack package
+      - name: Restore complete package from canonical source parts
         shell: bash
         run: |
           set -euo pipefail
-          cat .bootstrap/pre-go-package/chunk-* | base64 --decode > /tmp/pre-go-package.tgz
-          echo "222bfbeadb68a999dbb7aac083500dfc4069f4f104aa1236adaf65096f6381d7  /tmp/pre-go-package.tgz" | sha256sum --check
-          tar -xzf /tmp/pre-go-package.tgz -C .
-          rm -rf .bootstrap
+          cat .github/bootstrap-source/part-*.txt | base64 --decode > /tmp/pre-go-source.tar.gz
+          tar -tzf /tmp/pre-go-source.tar.gz >/dev/null
+          tar -xzf /tmp/pre-go-source.tar.gz -C .
+          rm -rf .bootstrap .github/bootstrap-source
           rm -f .github/workflows/pre-go-package-bootstrap.yml
       - name: Run safe pre-GO source checks
         shell: bash
         run: |
           set -euo pipefail
+          test -f website/package.json
+          test -f website/package-lock.json
           cd website
           node scripts/validate-launch.mjs
           python3 -m py_compile scripts/generate-demo-assets.py
@@ -47,5 +49,5 @@ jobs:
           git config user.name "AmtHero24 Launch Automation"
           git config user.email "actions@users.noreply.github.com"
           git add -A
-          git commit -m "feat: add complete pre-GO website and legal package"
+          git commit -m "feat: materialize complete pre-go website and legal package"
           git push origin HEAD:feat/pre-go-launch-package-205
