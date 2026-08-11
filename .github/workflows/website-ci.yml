@@ -21,7 +21,7 @@ concurrency:
 jobs:
   validate-website:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: website
@@ -55,15 +55,15 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
-      - name: Resolve dependency lock for validation
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cache: npm
+          cache-dependency-path: website/package-lock.json
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund
       - name: Generate local synthetic media assets
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg python3-pil fonts-dejavu-core
           python3 scripts/generate-demo-assets.py
       - name: Validate fail-closed legal and launch configuration
@@ -83,8 +83,24 @@ jobs:
           echo "Expected fail-closed GO rejection confirmed."
       - name: Build noindex preview artifact
         run: npm run build
-      - name: Verify standalone health endpoint source
-        run: test -f app/api/health/route.js
+      - name: Verify Railway deployment contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path('railway.json').read_text())
+          assert config['build']['builder'] == 'DOCKERFILE'
+          assert config['build']['dockerfilePath'] == 'Dockerfile'
+          assert config['deploy']['healthcheckPath'] == '/api/health'
+          assert config['deploy']['restartPolicyType'] == 'ON_FAILURE'
+          assert isinstance(config['deploy']['restartPolicyMaxRetries'], int)
+          PY
+          test -f Dockerfile
+          test -f app/api/health/route.js
+      - name: Build standalone Docker image
+        run: docker build --pull=false -t amthero24-website:ci .
       - name: Verify no backend admission activation was introduced
         shell: bash
         run: |
