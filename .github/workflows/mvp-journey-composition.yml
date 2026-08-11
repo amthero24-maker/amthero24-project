@@ -1,0 +1,64 @@
+name: MVP Journey Composition
+
+on:
+  pull_request:
+    paths:
+      - "*.py"
+      - "requirements*.txt"
+      - "tests/test_mission_engine.py"
+      - "tests/test_mission_intelligence.py"
+      - "tests/test_mvp_journey_production_composition.py"
+      - ".github/workflows/mvp-journey-composition.yml"
+  push:
+    branches: [main]
+    paths:
+      - "*.py"
+      - "requirements*.txt"
+      - "tests/test_mission_engine.py"
+      - "tests/test_mission_intelligence.py"
+      - "tests/test_mvp_journey_production_composition.py"
+      - ".github/workflows/mvp-journey-composition.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mvp-journey-composition-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-composition:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BRIEF_SCANNER_RUNTIME_ENABLED: "false"
+      BRIEF_SCANNER_RUNTIME_MISSION_ENABLED: "false"
+      BRIEF_SCANNER_RUNTIME_DRAFT_ENABLED: "false"
+      BRIEF_SCANNER_RUNTIME_REMINDER_ENABLED: "false"
+      CLOSED_BETA_ADMISSION_ENABLED: "false"
+      HUMAN_SUPPORT_ENABLED: "false"
+      ENTITLEMENT_ENFORCEMENT_ENABLED: "false"
+      REMINDER_WORKER_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install exact test dependencies
+        run: python -m pip install --quiet -r requirements-dev.txt
+      - name: Compile final composition and mission boundaries
+        run: >-
+          python -m compileall -q
+          app.py application.py reminder_extensions.py reminder_conversation_extensions.py
+          reminder_language_extensions.py mission_engine.py mission_intelligence.py
+          prompts.py mvp_runtime_contract.py tests/test_mission_engine.py
+          tests/test_mission_intelligence.py tests/test_mvp_journey_production_composition.py
+      - name: Prove bounded mission intent and all six MVP journeys
+        run: >-
+          python -m pytest -q
+          tests/test_mission_engine.py
+          tests/test_mission_intelligence.py
+          tests/test_mvp_journey_production_composition.py

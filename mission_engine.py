@@ -63,9 +63,12 @@ _LAST_ACTION_REGEXES = (
     r"^\s*останн(?:я|ій) дія\s*[:\-]?\s*(.+)$",
     r"^\s*τελευταια ενεργεια\s*[:\-]?\s*(.+)$",
 )
-_DUE_KEYWORDS = (
-    "الموعد", "المهلة", "آخر موعد", "اخر موعد", "frist", "termin", "deadline", "due date",
-    "кінцевий термін", "προθεσμια",
+_DUE_UPDATE_REMAINDER_PATTERNS = (
+    r"(?:الموعد|المهلة|اخر موعد|آخر موعد)(?: هو| هي)?(?: بتاريخ| يوم)?",
+    r"(?:der |die )?(?:frist|termin|deadline)(?: ist)?(?: am| auf)?",
+    r"(?:the )?(?:deadline|due date)(?: is)?(?: on)?",
+    r"(?:кінцевий термін|термін)(?: є)?(?: на)?",
+    r"(?:η )?(?:προθεσμια|προθεσμία)(?: ειναι| είναι)?(?: στις)?",
 )
 
 
@@ -83,19 +86,26 @@ def _extract_payload(text: str, patterns: tuple[str, ...]) -> str:
     return ""
 
 
-def _extract_due_date(text: str) -> str:
-    normalized = _normalize(text)
-    if not any(_normalize(keyword) in normalized for keyword in _DUE_KEYWORDS):
-        return ""
+def _explicit_due_update_remainder(text: str, start: int, end: int) -> bool:
+    remainder = _normalize((text or "")[:start] + " " + (text or "")[end:])
+    return any(re.fullmatch(pattern, remainder) for pattern in _DUE_UPDATE_REMAINDER_PATTERNS)
 
-    iso_match = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", text or "")
+
+def _extract_due_date(text: str) -> str:
+    source = text or ""
+    iso_match = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", source)
     if iso_match:
-        raw = f"{iso_match.group(1)}-{int(iso_match.group(2)):02d}-{int(iso_match.group(3)):02d}"
+        match = iso_match
+        raw = f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
     else:
-        local_match = re.search(r"\b(\d{1,2})[./](\d{1,2})[./](20\d{2})\b", text or "")
+        local_match = re.search(r"\b(\d{1,2})[./](\d{1,2})[./](20\d{2})\b", source)
         if not local_match:
             return ""
-        raw = f"{local_match.group(3)}-{int(local_match.group(2)):02d}-{int(local_match.group(1)):02d}"
+        match = local_match
+        raw = f"{match.group(3)}-{int(match.group(2)):02d}-{int(match.group(1)):02d}"
+
+    if not _explicit_due_update_remainder(source, match.start(), match.end()):
+        return ""
     try:
         return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
     except ValueError:
