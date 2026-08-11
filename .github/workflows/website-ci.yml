@@ -12,7 +12,7 @@ on:
       - ".github/workflows/website-ci.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: website-ci-${{ github.ref }}
@@ -54,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          persist-credentials: false
+          persist-credentials: true
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -76,6 +76,23 @@ jobs:
             website/package-lock.json
           if-no-files-found: error
           retention-days: 7
+      - name: Commit scoped security manifests to PR branch
+        if: github.event_name == 'pull_request' && github.head_ref == 'audit/website-npm-supply-chain-205'
+        working-directory: .
+        shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add website/package.json website/package-lock.json
+          if git diff --cached --quiet; then
+            echo "Scoped manifests already committed."
+            exit 0
+          fi
+          git commit -m "deps: update website Next.js to 16.3.0"
+          git push origin "HEAD:${TARGET_BRANCH}"
       - name: Install exact dependencies
         run: npm ci --no-audit --no-fund
       - name: Audit production npm dependencies
