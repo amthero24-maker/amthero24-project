@@ -114,6 +114,7 @@ def test_outbound_warning_adds_only_aggregate_privacy_safe_diagnostics() -> None
                 "read": 2,
                 "failed": 1,
             },
+            "failure_codes": {"131047": 1},
             "terminal_24h": 6,
             "delivery_success_pct": 83.3,
             "pending_over_15m": 1,
@@ -141,13 +142,36 @@ def test_outbound_warning_adds_only_aggregate_privacy_safe_diagnostics() -> None
     assert diagnostic["status"] == "pass"
     assert diagnostic["detail"] == (
         "tracked_24h=7; by_status=accepted:0,sent:1,delivered:3,read:2,failed:1; "
-        "terminal_24h=6; delivery_success_pct=83.3; pending_over_15m=1; "
-        "oldest_pending_age_seconds=1200"
+        "failure_codes=131047:1; terminal_24h=6; delivery_success_pct=83.3; "
+        "pending_over_15m=1; oldest_pending_age_seconds=1200"
     )
     assert "+49123456789" not in write_report(report)
     assert "must never appear" not in write_report(report)
     assert "super-secret-token" not in write_report(report)
     fetch.assert_called_once()
+
+
+def test_outbound_diagnostics_default_to_no_failure_codes() -> None:
+    overview = {
+        "outbound_delivery": {
+            "tracked_24h": 1,
+            "by_status": {"failed": 1},
+            "terminal_24h": 1,
+            "delivery_success_pct": 0,
+            "pending_over_15m": 0,
+            "oldest_pending_age_seconds": 0,
+        }
+    }
+    with patch("scripts.production_monitor.fetch_json", return_value=(200, overview)):
+        report = run_monitor(
+            "https://production.example",
+            admin_token="secret",
+            attempts=1,
+            delay_seconds=0,
+            smoke_runner=lambda *args, **kwargs: _outbound_warning(),
+        )
+    diagnostic = next(item for item in report.checks if item["name"] == "outbound_delivery_diagnostics")
+    assert "failure_codes=none" in diagnostic["detail"]
 
 
 def test_outbound_diagnostics_are_not_fetched_without_matching_launch_warning() -> None:
