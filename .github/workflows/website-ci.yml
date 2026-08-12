@@ -176,6 +176,93 @@ jobs:
           test -f app/api/health/route.js
       - name: Build standalone Docker image
         run: docker build --pull=false -t amthero24-website:ci .
+      - name: Verify runtime security and anti-cache headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_user="$(docker image inspect amthero24-website:ci --format '{{.Config.User}}')"
+          test "$image_user" = "nextjs"
+
+          container_id="$(docker run --detach --publish 127.0.0.1:3000:3000 amthero24-website:ci)"
+          cleanup() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/tmp/website-health.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if test "$ready" != "true"; then
+            docker logs "$container_id" >&2 || true
+            exit 1
+          fi
+
+          home_headers="$(mktemp)"
+          health_headers="$(mktemp)"
+          curl --fail --silent --show-error --dump-header "$home_headers" --output /tmp/website-home.html http://127.0.0.1:3000/
+          curl --fail --silent --show-error --dump-header "$health_headers" --output /tmp/website-health.json http://127.0.0.1:3000/api/health
+
+          python3 - "$home_headers" "$health_headers" <<'PY'
+          from pathlib import Path
+          import sys
+
+          def parse_headers(path: str) -> dict[str, str]:
+              result: dict[str, list[str]] = {}
+              for line in Path(path).read_text(encoding="utf-8").splitlines():
+                  if ":" not in line:
+                      continue
+                  key, value = line.split(":", 1)
+                  result.setdefault(key.strip().lower(), []).append(value.strip())
+              return {key: ", ".join(values) for key, values in result.items()}
+
+          home = parse_headers(sys.argv[1])
+          health = parse_headers(sys.argv[2])
+
+          expected_home = {
+              "x-content-type-options": "nosniff",
+              "referrer-policy": "no-referrer",
+              "x-frame-options": "DENY",
+              "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+          }
+          for name, expected in expected_home.items():
+              actual = home.get(name, "")
+              if actual != expected:
+                  raise SystemExit(f"Runtime header {name!r} mismatch: {actual!r}")
+
+          if "x-powered-by" in home:
+              raise SystemExit("Runtime must not expose X-Powered-By")
+
+          csp = home.get("content-security-policy", "")
+          required_directives = (
+              "default-src 'self'",
+              "img-src 'self' data:",
+              "media-src 'self'",
+              "script-src 'self'",
+              "connect-src 'self'",
+              "frame-ancestors 'none'",
+              "base-uri 'self'",
+              "form-action 'self'",
+          )
+          missing = [directive for directive in required_directives if directive not in csp]
+          if missing:
+              raise SystemExit(f"Runtime CSP missing directives: {missing}")
+          if "'unsafe-eval'" in csp or "*" in csp:
+              raise SystemExit("Runtime CSP contains an unsafe wildcard or unsafe-eval")
+
+          if "no-store" not in health.get("cache-control", "").lower():
+              raise SystemExit("Health route Cache-Control must include no-store")
+          if health.get("pragma", "").lower() != "no-cache":
+              raise SystemExit("Health route Pragma must be no-cache")
+          if health.get("expires", "") != "0":
+              raise SystemExit("Health route Expires must be 0")
+
+          print("Runtime security, non-disclosure and anti-cache headers verified.")
+          PY
       - name: Verify no backend admission activation was introduced
         shell: bash
         run: |
