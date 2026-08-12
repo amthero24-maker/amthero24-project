@@ -1,6 +1,6 @@
 """Strict, read-only production release gate for AmtHero24.
 
-The gate combines live production smoke checks with optional verification of a recent,
+The gate combines live production smoke checks with mandatory verification of a recent,
 encrypted, schema-compatible backup manifest. It never writes application data or prints
 credentials.
 """
@@ -99,7 +99,7 @@ def run_gate(
     admin_token: str,
     expected_version: str,
     backup_manifest: str = "",
-    require_backup: bool = False,
+    require_backup: bool = True,
     timeout: float = 20.0,
 ) -> list[GateCheck]:
     checks = [
@@ -121,10 +121,16 @@ def run_gate(
     )
     checks.extend(GateCheck(f"smoke_{item.name}", item.passed, item.detail) for item in smoke)
 
-    if require_backup or backup_manifest.strip():
+    if require_backup:
         checks.extend(verify_backup_manifest(backup_manifest))
     else:
-        checks.append(GateCheck("backup_manifest", True, "not required by this invocation"))
+        checks.append(
+            GateCheck(
+                "backup_requirement",
+                False,
+                "recent encrypted backup verification cannot be disabled",
+            )
+        )
     return checks
 
 
@@ -134,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--admin-token", default=os.getenv("ADMIN_API_TOKEN", ""))
     parser.add_argument("--expected-version", default=os.getenv("EXPECTED_APP_VERSION", ""))
     parser.add_argument("--backup-manifest", default=os.getenv("BACKUP_MANIFEST_PATH", ""))
-    parser.add_argument("--require-backup", action="store_true", default=os.getenv("RELEASE_REQUIRE_RECENT_BACKUP", "false").strip().casefold() in {"1", "true", "yes", "on"})
+    parser.add_argument("--require-backup", action="store_true", default=os.getenv("RELEASE_REQUIRE_RECENT_BACKUP", "true").strip().casefold() in {"1", "true", "yes", "on"})
     parser.add_argument("--timeout", type=float, default=float(os.getenv("SMOKE_TIMEOUT_SECONDS", "20")))
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
