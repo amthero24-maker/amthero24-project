@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from database_migrations import migration_readiness
@@ -173,5 +174,10 @@ app.router.on_shutdown.insert(0, _begin_drain_before_workers)
 
 @app.get("/ready", include_in_schema=False)
 async def ready() -> JSONResponse:
-    payload, status_code = readiness_payload(store, version=APP_VERSION, model=GROQ_MODEL)
+    payload, status_code = await run_in_threadpool(
+        readiness_payload,
+        store,
+        version=APP_VERSION,
+        model=GROQ_MODEL,
+    )
     return JSONResponse(payload, status_code=status_code, headers={"Cache-Control": "no-store"})
