@@ -1,4 +1,5 @@
 name: Issue 246 backup gate diagnostic
+# Re-run marker: latest persistent backup restored and bot restarted.
 
 on:
   push:
