@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from launch_readiness import build_launch_report
 
 
@@ -13,6 +15,12 @@ STRONG_REMINDER_KEY = "reminder-key-2026-unique-7fA9xQ2mLp8V"
 def _healthy_overview() -> dict:
     return {
         "storage_backend": "postgresql",
+        "backup_recovery": {
+            "receipt": "recent_success",
+            "latest_outcome": "success",
+            "age_seconds": 3600,
+            "max_age_hours": 30,
+        },
         "messages_24h": {"total": 100, "failed": 1},
         "providers": {
             "groq": {"total": 100, "success": 99, "failure": 1, "circuit_rejected": 0, "circuit": "closed", "latency_ms": {"p95": 900}},
@@ -36,6 +44,7 @@ def _healthy_env() -> dict[str, str]:
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "amthero24_reminder",
         "HUMAN_SUPPORT_ENABLED": "false",
+        "PRODUCTION_BACKUP_RESTORE_CERTIFIED": "true",
     }
 
 
@@ -51,6 +60,7 @@ def test_healthy_system_is_ready_for_controlled_beta() -> None:
     assert checks["brief_scanner_runtime"]["detail"] == (
         "Brief Scanner runtime is safely disabled."
     )
+    assert checks["production_backup_recovery"]["status"] == "ready"
 
 
 def test_missing_security_and_database_block_launch() -> None:
@@ -63,6 +73,52 @@ def test_missing_security_and_database_block_launch() -> None:
     assert codes["meta_signature"] == "blocked"
     assert codes["admin_access"] == "blocked"
     assert codes["reminder_encryption"] == "warning"
+    assert codes["production_backup_recovery"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    (
+        "missing",
+        "latest_started",
+        "latest_failure",
+        "stale_success",
+        "future_timestamp",
+    ),
+)
+def test_backup_receipt_must_be_recent_success(receipt: str) -> None:
+    overview = _healthy_overview()
+    overview["backup_recovery"] = {
+        "receipt": receipt,
+        "latest_outcome": "failure",
+        "age_seconds": 120,
+        "max_age_hours": 30,
+        "private_path": "/backups/must-not-leak.dump",
+    }
+
+    report = build_launch_report(overview, env=_healthy_env())
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert receipt in check["detail"]
+    assert "/backups" not in str(report)
+    assert "must-not-leak" not in str(report)
+
+
+def test_recent_backup_without_restore_certification_blocks_launch() -> None:
+    environment = _healthy_env()
+    environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED"] = "false"
+
+    report = build_launch_report(_healthy_overview(), env=environment)
+    checks = {item["code"]: item for item in report["checks"]}
+
+    assert report["status"] == "blocked"
+    assert checks["production_backup_recovery"]["status"] == "blocked"
+    assert "restore certification" in checks["production_backup_recovery"]["detail"].casefold()
 
 
 def test_provider_outage_blocks_launch_and_high_latency_warns() -> None:

@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 import admin_extensions as admin_module
 import provider_extensions as composed
+from backup_recovery import build_backup_recovery_metrics
 from closed_beta_metrics import (
     apply_closed_beta_launch_check,
     build_closed_beta_metrics,
@@ -132,6 +133,7 @@ def _build_launch_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
         version=APP_VERSION,
         model=GROQ_MODEL,
     )
+    overview["backup_recovery"] = build_backup_recovery_metrics(core.store)
     beta_metrics = build_closed_beta_metrics(core.store)
     overview["closed_beta_admission"] = beta_metrics
     return overview, beta_metrics

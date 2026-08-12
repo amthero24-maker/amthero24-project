@@ -1,6 +1,7 @@
 """Protected Beta launch report endpoint tests."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,12 +9,21 @@ from starlette.testclient import TestClient
 
 import launch_extensions
 from data_store import JsonDataStore
+from provider_reliability import ProviderReliabilityRepository
 
 ADMIN_TOKEN = "admin-token-2026-unique-8xK2mP7qR4vN"
 
 
-def _install_store(tmp_path) -> JsonDataStore:
+def _install_store(tmp_path, *, backup_receipt: bool = True) -> JsonDataStore:
     store = JsonDataStore(tmp_path / "store.json")
+    if backup_receipt:
+        ProviderReliabilityRepository(store).record(
+            "postgres_backup",
+            "encrypted_backup",
+            "success",
+            100,
+            now=datetime.now(UTC),
+        )
     launch_extensions.core.store = store
     launch_extensions.core._hero_memory_store = launch_extensions.core.HeroMemory(store)
     return store
@@ -45,6 +55,7 @@ def _env() -> dict[str, str]:
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "utility_template",
         "HUMAN_SUPPORT_ENABLED": "false",
+        "PRODUCTION_BACKUP_RESTORE_CERTIFIED": "true",
     }
 
 
@@ -77,8 +88,50 @@ def test_launch_endpoint_returns_actionable_report_without_personal_data(tmp_pat
     payload = response.json()
     assert payload["status"] == "ready"
     assert payload["launch_scope"] == "controlled_beta"
+    checks = {item["code"]: item for item in payload["checks"]}
+    assert checks["production_backup_recovery"]["status"] == "ready"
     assert "49123" not in response.text
     assert "first_name" not in response.text
+
+
+def test_launch_endpoint_blocks_without_backup_receipt(tmp_path) -> None:
+    _install_store(tmp_path, backup_receipt=False)
+    client = TestClient(launch_extensions.core.app)
+
+    with patch.dict("os.environ", _env(), clear=True), patch.object(
+        launch_extensions.admin_module, "build_overview", return_value=_overview()
+    ):
+        response = client.get(
+            "/admin/launch-readiness",
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {item["code"]: item for item in payload["checks"]}
+    assert payload["status"] == "blocked"
+    assert checks["production_backup_recovery"]["status"] == "blocked"
+    assert "missing" in checks["production_backup_recovery"]["detail"]
+
+
+def test_launch_endpoint_blocks_without_restore_certification(tmp_path) -> None:
+    _install_store(tmp_path)
+    client = TestClient(launch_extensions.core.app)
+    environment = _env()
+    environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED"] = "false"
+
+    with patch.dict("os.environ", environment, clear=True), patch.object(
+        launch_extensions.admin_module, "build_overview", return_value=_overview()
+    ):
+        response = client.get(
+            "/admin/launch-readiness",
+            headers={"X-Admin-Token": ADMIN_TOKEN},
+        )
+
+    assert response.status_code == 200
+    checks = {item["code"]: item for item in response.json()["checks"]}
+    assert response.json()["status"] == "blocked"
+    assert checks["production_backup_recovery"]["status"] == "blocked"
 
 
 def test_launch_endpoint_blocks_invalid_runtime_flag_without_echoing_it(

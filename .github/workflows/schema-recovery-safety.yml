@@ -3,6 +3,10 @@ name: Schema Recovery Safety
 on:
   pull_request:
     paths:
+      - .env.example
+      - backup_recovery.py
+      - launch_extensions.py
+      - launch_readiness.py
       - schema_recovery.py
       - postgres_cli_env.py
       - database_migrations.py
@@ -14,6 +18,9 @@ on:
       - scripts/postgres_restore.py
       - scripts/verify_backup_volume.py
       - scripts/release_preflight.py
+      - tests/test_backup_recovery.py
+      - tests/test_launch_extensions.py
+      - tests/test_launch_readiness.py
       - tests/test_schema_recovery.py
       - tests/test_postgres_operations.py
       - tests/test_railway_backup_service.py
@@ -23,6 +30,10 @@ on:
   push:
     branches: [main]
     paths:
+      - .env.example
+      - backup_recovery.py
+      - launch_extensions.py
+      - launch_readiness.py
       - schema_recovery.py
       - postgres_cli_env.py
       - database_migrations.py
@@ -34,6 +45,9 @@ on:
       - scripts/postgres_restore.py
       - scripts/verify_backup_volume.py
       - scripts/release_preflight.py
+      - tests/test_backup_recovery.py
+      - tests/test_launch_extensions.py
+      - tests/test_launch_readiness.py
       - tests/test_schema_recovery.py
       - tests/test_postgres_operations.py
       - tests/test_railway_backup_service.py
@@ -113,22 +127,28 @@ jobs:
           pg_dump --version
           pg_restore --version
           psql --version
-      - name: Compile recovery modules
+      - name: Compile recovery and launch-gate modules
         run: >-
           python -m py_compile
+          backup_recovery.py
+          launch_extensions.py
+          launch_readiness.py
           schema_recovery.py
           postgres_cli_env.py
           scripts/postgres_backup.py
           scripts/postgres_restore.py
           scripts/verify_backup_volume.py
           scripts/release_preflight.py
-      - name: Run schema identity, backup-volume, and operation policy tests
+      - name: Run schema, backup receipt, launch gate, and operation policy tests
         id: unit_tests
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           python -m pytest -vv --tb=short --junitxml=schema-recovery-unit-junit.xml \
+            tests/test_backup_recovery.py \
+            tests/test_launch_readiness.py \
+            tests/test_launch_extensions.py \
             tests/test_schema_recovery.py \
             tests/test_postgres_operations.py \
             tests/test_railway_backup_service.py \
