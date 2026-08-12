@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { resolveBetaCtaUrl } from "../lib/beta-cta";
 
 const tools = [
   { name: "Brief Scanner", text: "Brief, PDF oder Foto senden. Sam sortiert Absender, Frist, Betrag, Referenz und nächsten Schritt.", icon: "⌕", video: "/media/brief-scanner.mp4" },
@@ -25,31 +26,6 @@ const legalLinks = [
   ["/widerruf", "Widerruf"], ["/kontakt", "Kontakt"], ["/beta", "Beta-Hinweis"],
   ["/cookie-einstellungen", "Cookies"], ["/barrierefreiheit", "Barrierefreiheit"],
 ];
-
-function resolveBetaCtaUrl(): string | null {
-  if (process.env.NEXT_PUBLIC_BETA_CTA_ENABLED !== "true") return null;
-  const raw = process.env.NEXT_PUBLIC_BETA_CTA_URL?.trim();
-  if (!raw) return null;
-
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) return null;
-
-    if (url.hostname === "wa.me") {
-      const path = url.pathname.replace(/\/+$/, "");
-      if (!/^\/(?:\d{6,20}|message\/[A-Za-z0-9_-]{5,64})$/.test(path)) return null;
-    } else if (url.hostname === "api.whatsapp.com") {
-      const phone = url.searchParams.get("phone") || "";
-      if (url.pathname !== "/send" || !/^\d{6,20}$/.test(phone)) return null;
-    } else {
-      return null;
-    }
-
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
 
 export default function Home() {
   const betaCtaUrl = resolveBetaCtaUrl();
