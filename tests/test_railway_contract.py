@@ -12,16 +12,92 @@ from railway_contract import report_payload, validate_railway_contract
 from scripts.postgres_restore import restore_backup
 
 
-def _write(root, config, procfile="web: uvicorn webhook_security:app --host 0.0.0.0 --port $PORT\n"):
+ENTRYPOINT = (
+    "uvicorn webhook_security:app --host 0.0.0.0 --port $PORT "
+    "--log-config logging.railway.json"
+)
+PROCFILE = f"web: {ENTRYPOINT}\n"
+
+
+def _valid_logging_config():
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": "%(levelprefix)s %(name)s %(message)s",
+                "use_colors": None,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+                "use_colors": None,
+            },
+        },
+        "filters": {
+            "max_info": {
+                "()": "railway_logging.MaxLevelFilter",
+                "max_level": "INFO",
+            }
+        },
+        "handlers": {
+            "stdout": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+                "filters": ["max_info"],
+                "stream": "ext://sys.stdout",
+            },
+            "stderr": {
+                "class": "logging.StreamHandler",
+                "formatter": "default",
+                "level": "WARNING",
+                "stream": "ext://sys.stderr",
+            },
+            "access_stdout": {
+                "class": "logging.StreamHandler",
+                "formatter": "access",
+                "filters": ["max_info"],
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            "uvicorn": {
+                "handlers": ["stdout", "stderr"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "uvicorn.error": {"level": "INFO"},
+            "uvicorn.access": {
+                "handlers": ["access_stdout", "stderr"],
+                "level": "INFO",
+                "propagate": False,
+            },
+        },
+        "root": {"handlers": ["stdout", "stderr"], "level": "INFO"},
+    }
+
+
+def _write(
+    root,
+    config,
+    procfile=PROCFILE,
+    *,
+    logging_config=None,
+):
     (root / "railway.json").write_text(json.dumps(config), encoding="utf-8")
     (root / "Procfile").write_text(procfile, encoding="utf-8")
+    (root / "logging.railway.json").write_text(
+        json.dumps(logging_config or _valid_logging_config()),
+        encoding="utf-8",
+    )
 
 
 def _valid_config():
     return {
         "$schema": "https://railway.com/railway.schema.json",
         "deploy": {
-            "startCommand": "uvicorn webhook_security:app --host 0.0.0.0 --port $PORT",
+            "startCommand": ENTRYPOINT,
             "healthcheckPath": "/ready",
             "healthcheckTimeout": 300,
             "restartPolicyType": "ON_FAILURE",
@@ -37,6 +113,15 @@ def test_repository_railway_contract_passes() -> None:
     assert findings
     assert all(item.passed for item in findings)
     assert report_payload(findings)["passed"] is True
+
+
+def test_repository_start_commands_load_same_logging_config() -> None:
+    config = json.loads(Path("railway.json").read_text(encoding="utf-8"))
+    start_command = config["deploy"]["startCommand"]
+
+    assert start_command == ENTRYPOINT
+    assert Path("Procfile").read_text(encoding="utf-8") == f"web: {start_command}\n"
+    assert Path("logging.railway.json").is_file()
 
 
 def test_contract_rejects_liveness_path_and_unsafe_handoff(tmp_path) -> None:
@@ -73,6 +158,16 @@ def test_contract_rejects_wrong_entrypoint_and_missing_schema(tmp_path) -> None:
     assert failed == {"schema", "production_entrypoint"}
 
 
+def test_contract_rejects_unsafe_logging_stream_routing(tmp_path) -> None:
+    logging_config = _valid_logging_config()
+    logging_config["handlers"]["stdout"]["stream"] = "ext://sys.stderr"
+    _write(tmp_path, _valid_config(), logging_config=logging_config)
+
+    failed = {item.code for item in validate_railway_contract(tmp_path) if not item.passed}
+
+    assert failed == {"logging_config"}
+
+
 def test_contract_rejects_numeric_strings_that_railway_schema_rejects(tmp_path) -> None:
     config = _valid_config()
     config["deploy"].update({
@@ -95,6 +190,10 @@ def test_contract_rejects_numeric_strings_that_railway_schema_rejects(tmp_path) 
 def test_explicit_start_command_satisfies_entrypoint_without_procfile(tmp_path) -> None:
     config = _valid_config()
     (tmp_path / "railway.json").write_text(json.dumps(config), encoding="utf-8")
+    (tmp_path / "logging.railway.json").write_text(
+        json.dumps(_valid_logging_config()),
+        encoding="utf-8",
+    )
 
     findings = validate_railway_contract(tmp_path)
 
