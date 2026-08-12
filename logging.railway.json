@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "default": {
+      "()": "uvicorn.logging.DefaultFormatter",
+      "fmt": "%(levelprefix)s %(name)s %(message)s",
+      "use_colors": null
+    },
+    "access": {
+      "()": "uvicorn.logging.AccessFormatter",
+      "fmt": "%(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s",
+      "use_colors": null
+    }
+  },
+  "filters": {
+    "max_info": {
+      "()": "railway_logging.MaxLevelFilter",
+      "max_level": "INFO"
+    }
+  },
+  "handlers": {
+    "stdout": {
+      "class": "logging.StreamHandler",
+      "formatter": "default",
+      "filters": [
+        "max_info"
+      ],
+      "stream": "ext://sys.stdout"
+    },
+    "stderr": {
+      "class": "logging.StreamHandler",
+      "formatter": "default",
+      "level": "WARNING",
+      "stream": "ext://sys.stderr"
+    },
+    "access_stdout": {
+      "class": "logging.StreamHandler",
+      "formatter": "access",
+      "filters": [
+        "max_info"
+      ],
+      "stream": "ext://sys.stdout"
+    }
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": [
+        "stdout",
+        "stderr"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "level": "INFO"
+    },
+    "uvicorn.access": {
+      "handlers": [
+        "access_stdout",
+        "stderr"
+      ],
+      "level": "INFO",
+      "propagate": false
+    }
+  },
+  "root": {
+    "handlers": [
+      "stdout",
+      "stderr"
+    ],
+    "level": "INFO"
+  }
+}
