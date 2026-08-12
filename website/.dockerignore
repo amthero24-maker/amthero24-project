@@ -1,0 +1,10 @@
+node_modules
+.next
+coverage
+npm-audit.json
+npm-sbom.cdx.json
+*.log
+*.tsbuildinfo
+.env*
+!.env.example
+.DS_Store
