@@ -25,6 +25,21 @@ Long text is truncated after redaction. Binary values are replaced with their by
 
 This filter is a last safety boundary, not permission to log user data. Engineers must continue using stable event names and aggregate fields.
 
+## Railway severity and access-log routing
+
+Production Uvicorn loads `logging.railway.json` through both `railway.json` and the fallback `Procfile` entrypoint.
+
+Railway classifies stderr as error-like output. To avoid false production errors without hiding real incidents:
+
+- DEBUG and INFO records go only to stdout;
+- WARNING, ERROR, and CRITICAL records go only to stderr;
+- the root application logger and Uvicorn error logger use the same split;
+- normal Uvicorn access records go to stdout;
+- access formatting contains only the log level and HTTP status code;
+- client addresses, request lines, paths, query strings, headers, and bodies are not formatted into access logs.
+
+`railway_logging.MaxLevelFilter` implements the upper INFO boundary. The Railway deployment contract and Log Safety tests load the real configuration and prove the stream split. Do not replace it with an all-stdout configuration, because that would hide genuine warning/error severity, or an all-stderr configuration, because that recreates false incidents.
+
 ## Allowed logging
 
 Good examples:
