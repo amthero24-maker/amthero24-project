@@ -1,0 +1,19 @@
+# Recreated inside the image from the exact lockfile and source.
+node_modules
+.next
+
+# CI-only evidence must never enter the image build context.
+npm-audit.json
+npm-sbom.cdx.json
+coverage
+*.log
+
+# Local secrets and machine-specific files are never build inputs.
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Repository metadata is not part of the standalone website image.
+.git
+.gitignore
