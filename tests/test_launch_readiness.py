@@ -1,7 +1,7 @@
 """Beta launch gate tests using aggregate, privacy-safe inputs."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -10,6 +10,7 @@ from launch_readiness import build_launch_report
 
 STRONG_ADMIN_TOKEN = "admin-token-2026-unique-8xK2mP7qR4vN"
 STRONG_REMINDER_KEY = "reminder-key-2026-unique-7fA9xQ2mLp8V"
+NOW = datetime(2026, 7, 26, 12, tzinfo=UTC)
 
 
 def _healthy_overview() -> dict:
@@ -45,12 +46,15 @@ def _healthy_env() -> dict[str, str]:
         "WHATSAPP_REMINDER_TEMPLATE": "amthero24_reminder",
         "HUMAN_SUPPORT_ENABLED": "false",
         "PRODUCTION_BACKUP_RESTORE_CERTIFIED": "true",
+        "PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT": (
+            NOW - timedelta(minutes=30)
+        ).isoformat(),
     }
 
 
 def test_healthy_system_is_ready_for_controlled_beta() -> None:
     report = build_launch_report(
-        _healthy_overview(), env=_healthy_env(), now=datetime(2026, 7, 26, 12, tzinfo=UTC)
+        _healthy_overview(), env=_healthy_env(), now=NOW
     )
     assert report["status"] == "ready"
     assert report["summary"]["blocked"] == 0
@@ -66,7 +70,7 @@ def test_healthy_system_is_ready_for_controlled_beta() -> None:
 def test_missing_security_and_database_block_launch() -> None:
     overview = _healthy_overview()
     overview["storage_backend"] = "json-fallback"
-    report = build_launch_report(overview, env={}, now=datetime(2026, 7, 26, 12, tzinfo=UTC))
+    report = build_launch_report(overview, env={}, now=NOW)
     codes = {item["code"]: item["status"] for item in report["checks"]}
     assert report["status"] == "blocked"
     assert codes["postgresql"] == "blocked"
@@ -96,7 +100,7 @@ def test_backup_receipt_must_be_recent_success(receipt: str) -> None:
         "private_path": "/backups/must-not-leak.dump",
     }
 
-    report = build_launch_report(overview, env=_healthy_env())
+    report = build_launch_report(overview, env=_healthy_env(), now=NOW)
     check = next(
         item for item in report["checks"]
         if item["code"] == "production_backup_recovery"
@@ -113,7 +117,7 @@ def test_recent_backup_without_restore_certification_blocks_launch() -> None:
     environment = _healthy_env()
     environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED"] = "false"
 
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     checks = {item["code"]: item for item in report["checks"]}
 
     assert report["status"] == "blocked"
@@ -121,11 +125,86 @@ def test_recent_backup_without_restore_certification_blocks_launch() -> None:
     assert "restore certification" in checks["production_backup_recovery"]["detail"].casefold()
 
 
+def test_restore_certification_requires_valid_utc_completion_time() -> None:
+    for value in ("", "not-a-time", "2026-07-26T11:30:00"):
+        environment = _healthy_env()
+        environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] = value
+
+        report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
+        check = next(
+            item for item in report["checks"]
+            if item["code"] == "production_backup_recovery"
+        )
+
+        assert report["status"] == "blocked"
+        assert check["status"] == "blocked"
+        assert "time" in check["detail"].casefold()
+        assert value not in str(report)
+
+
+def test_future_restore_certification_time_blocks_launch() -> None:
+    environment = _healthy_env()
+    environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] = (
+        NOW + timedelta(minutes=1)
+    ).isoformat()
+
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert "future" in check["detail"].casefold()
+    assert environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] not in str(report)
+
+
+def test_restore_certification_before_latest_backup_blocks_launch() -> None:
+    environment = _healthy_env()
+    environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] = (
+        NOW - timedelta(hours=2)
+    ).isoformat()
+
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert "predates" in check["detail"].casefold()
+
+
+def test_newer_backup_invalidates_previous_restore_certification() -> None:
+    environment = _healthy_env()
+    overview = _healthy_overview()
+
+    ready = build_launch_report(overview, env=environment, now=NOW)
+    ready_check = next(
+        item for item in ready["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+    assert ready_check["status"] == "ready"
+
+    overview["backup_recovery"]["age_seconds"] = 10 * 60
+    blocked = build_launch_report(overview, env=environment, now=NOW)
+    blocked_check = next(
+        item for item in blocked["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert blocked["status"] == "blocked"
+    assert blocked_check["status"] == "blocked"
+    assert "predates" in blocked_check["detail"].casefold()
+
+
 def test_provider_outage_blocks_launch_and_high_latency_warns() -> None:
     overview = _healthy_overview()
     overview["providers"]["groq"].update({"failure": 60, "success": 40, "circuit": "open"})
     overview["providers"]["whatsapp"]["latency_ms"]["p95"] = 20_000
-    report = build_launch_report(overview, env=_healthy_env(), now=datetime(2026, 7, 26, 12, tzinfo=UTC))
+    report = build_launch_report(overview, env=_healthy_env(), now=NOW)
     statuses = {item["code"]: item["status"] for item in report["checks"]}
     assert statuses["provider_groq"] == "blocked"
     assert statuses["provider_whatsapp"] == "warning"
@@ -137,7 +216,7 @@ def test_weak_reminder_or_enabled_support_secrets_block_launch() -> None:
     environment["HUMAN_SUPPORT_ENABLED"] = "true"
     environment["SUPPORT_ENCRYPTION_KEY"] = "weak"
     environment["SUPPORT_API_TOKEN"] = "weak"
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     statuses = {item["code"]: item["status"] for item in report["checks"]}
     assert statuses["reminder_encryption"] == "blocked"
     assert statuses["human_support_security"] == "blocked"
@@ -148,7 +227,7 @@ def test_enabled_reminder_worker_without_canary_allowlist_is_blocked() -> None:
     environment = _healthy_env()
     environment.pop("REMINDER_CANARY_SENDERS")
 
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     checks = {item["code"]: item for item in report["checks"]}
 
     assert checks["reminder_canary"]["status"] == "blocked"
@@ -159,7 +238,7 @@ def test_enabled_reminder_worker_without_canary_allowlist_is_blocked() -> None:
 def test_legacy_reminder_compatibility_is_visible_warning() -> None:
     environment = _healthy_env()
     environment["REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED"] = "true"
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     checks = {item["code"]: item for item in report["checks"]}
     assert checks["reminder_legacy_decryption"]["status"] == "warning"
     assert report["status"] == "warning"
@@ -170,7 +249,7 @@ def test_unsafe_brief_scanner_runtime_configuration_blocks_launch_without_leak()
     sensitive_value = "synthetic-sensitive-invalid-runtime-value"
     environment["BRIEF_SCANNER_RUNTIME_ENABLED"] = sensitive_value
 
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     checks = {item["code"]: item for item in report["checks"]}
 
     assert checks["brief_scanner_runtime"]["status"] == "blocked"
@@ -189,7 +268,7 @@ def test_supported_brief_scanner_runtime_configuration_is_launch_ready() -> None
         }
     )
 
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     checks = {item["code"]: item for item in report["checks"]}
 
     assert checks["brief_scanner_runtime"] == {
@@ -213,7 +292,7 @@ def test_unsupported_draft_runtime_configuration_blocks_launch() -> None:
         }
     )
 
-    report = build_launch_report(_healthy_overview(), env=environment)
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
     checks = {item["code"]: item for item in report["checks"]}
 
     assert checks["brief_scanner_runtime"]["status"] == "blocked"
@@ -224,7 +303,7 @@ def test_unsupported_draft_runtime_configuration_blocks_launch() -> None:
 
 
 def test_report_contains_no_user_content() -> None:
-    report = build_launch_report(_healthy_overview(), env=_healthy_env())
+    report = build_launch_report(_healthy_overview(), env=_healthy_env(), now=NOW)
     serialized = str(report)
     for forbidden in ("49123", "وسام", "first_name", "phone_hash", "message text"):
         assert forbidden not in serialized
