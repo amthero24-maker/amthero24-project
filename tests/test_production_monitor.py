@@ -23,6 +23,14 @@ def _healthy() -> list[SmokeCheck]:
     ]
 
 
+def _surface_healthy() -> list[SmokeCheck]:
+    return [
+        SmokeCheck("crawler_policy", "pass", "HTTP 200; disallow_all=yes"),
+        SmokeCheck("framework_discovery", "pass", "blocked=3/3"),
+        SmokeCheck("global_noindex", "pass", "HTTP 200; noindex=yes"),
+    ]
+
+
 def _outbound_warning() -> list[SmokeCheck]:
     return [
         SmokeCheck("health", "pass", "HTTP 200; status=ok"),
@@ -50,6 +58,7 @@ def test_monitor_retries_and_recovers_without_extra_attempts() -> None:
         delay_seconds=2,
         sleep=sleeps.append,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
 
     assert report.status == "healthy"
@@ -59,6 +68,31 @@ def test_monitor_retries_and_recovers_without_extra_attempts() -> None:
     assert len(calls) == 2
     assert all(call["require_postgresql"] is True for call in calls)
     assert all(call["require_signature"] is True for call in calls)
+
+
+def test_monitor_retries_when_only_live_surface_is_temporarily_unhealthy() -> None:
+    surface_calls = 0
+
+    def surface_runner(*args, **kwargs):
+        nonlocal surface_calls
+        surface_calls += 1
+        if surface_calls == 1:
+            return [SmokeCheck("framework_discovery", "fail", "blocked=2/3")]
+        return _surface_healthy()
+
+    report = run_monitor(
+        "https://production.example",
+        attempts=3,
+        delay_seconds=0,
+        smoke_runner=lambda *args, **kwargs: _healthy(),
+        surface_runner=surface_runner,
+    )
+
+    assert report.status == "healthy"
+    assert report.attempts_run == 2
+    assert report.recovered_after_retry is True
+    assert surface_calls == 2
+    assert any(item["name"] == "framework_discovery" for item in report.checks)
 
 
 def test_monitor_reports_final_failure_after_bounded_retries() -> None:
@@ -74,6 +108,7 @@ def test_monitor_reports_final_failure_after_bounded_retries() -> None:
         attempts=99,
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
 
     assert report.status == "unhealthy"
@@ -93,6 +128,7 @@ def test_monitor_converts_runner_exception_to_safe_failure() -> None:
         attempts=1,
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
     payload = write_report(report)
 
@@ -136,6 +172,7 @@ def test_outbound_warning_adds_only_aggregate_privacy_safe_diagnostics() -> None
             attempts=1,
             delay_seconds=0,
             smoke_runner=lambda *args, **kwargs: _outbound_warning(),
+            surface_runner=lambda *args, **kwargs: _surface_healthy(),
         )
 
     diagnostic = next(
@@ -174,6 +211,7 @@ def test_outbound_diagnostics_default_to_no_failure_codes_or_recovery() -> None:
             attempts=1,
             delay_seconds=0,
             smoke_runner=lambda *args, **kwargs: _outbound_warning(),
+            surface_runner=lambda *args, **kwargs: _surface_healthy(),
         )
     diagnostic = next(item for item in report.checks if item["name"] == "outbound_delivery_diagnostics")
     assert "failure_codes=none" in diagnostic["detail"]
@@ -190,6 +228,7 @@ def test_outbound_diagnostics_are_not_fetched_without_matching_launch_warning() 
             attempts=1,
             delay_seconds=0,
             smoke_runner=lambda *args, **kwargs: _failed(),
+            surface_runner=lambda *args, **kwargs: _surface_healthy(),
         )
 
     assert report.status == "unhealthy"

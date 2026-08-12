@@ -22,6 +22,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from production_smoke import SmokeCheck, run_smoke
+from production_surface import run_non_indexable_surface_checks
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ def run_stability_gate(
     timeout: float = 20.0,
     sleep: Callable[[float], None] = time.sleep,
     smoke_runner: Callable[..., list[SmokeCheck]] = run_smoke,
+    surface_runner: Callable[..., list[SmokeCheck]] = run_non_indexable_surface_checks,
 ) -> StabilityReport:
     """Require consecutive healthy samples; stop immediately on the first failure."""
     sample_count = _bounded_samples(samples)
@@ -87,17 +89,42 @@ def run_stability_gate(
     else:
         for number in range(1, sample_count + 1):
             try:
-                checks = smoke_runner(
-                    base_url,
-                    admin_token=admin_token,
-                    expected_version=expected_version,
-                    require_postgresql=True,
-                    require_signature=True,
-                    require_launch_ready=require_launch_ready,
-                    timeout=max(1.0, min(float(timeout), 60.0)),
+                smoke_checks = list(
+                    smoke_runner(
+                        base_url,
+                        admin_token=admin_token,
+                        expected_version=expected_version,
+                        require_postgresql=True,
+                        require_signature=True,
+                        require_launch_ready=require_launch_ready,
+                        timeout=max(1.0, min(float(timeout), 60.0)),
+                    )
                 )
             except Exception as exc:
-                checks = _safe_failure("stability_execution", f"smoke runner raised {type(exc).__name__}")
+                smoke_checks = _safe_failure(
+                    "stability_execution",
+                    f"smoke runner raised {type(exc).__name__}",
+                )
+
+            try:
+                surface_checks = list(
+                    surface_runner(
+                        base_url,
+                        timeout=max(1.0, min(float(timeout), 60.0)),
+                    )
+                )
+                if not surface_checks:
+                    surface_checks = _safe_failure(
+                        "production_surface",
+                        "surface runner returned no checks",
+                    )
+            except Exception as exc:
+                surface_checks = _safe_failure(
+                    "production_surface",
+                    f"surface runner raised {type(exc).__name__}",
+                )
+
+            checks = [*smoke_checks, *surface_checks]
             passed = bool(checks) and all(item.passed for item in checks)
             reports.append(StabilitySample(number, passed, [asdict(item) for item in checks]))
             if not passed:

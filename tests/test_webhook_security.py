@@ -104,3 +104,78 @@ def test_drain_middleware_keeps_read_only_routes_available(monkeypatch) -> None:
     monkeypatch.setattr(webhook_security, "lifecycle", process)
     client = TestClient(webhook_security.DeploymentDrainMiddleware(_echo_app))
     assert client.get("/health").status_code == 200
+
+
+def test_oversized_body_is_rejected_before_application() -> None:
+    body = b"x" * (webhook_security._MAX_WEBHOOK_BODY_BYTES + 1)
+    client = TestClient(webhook_security.MetaWebhookSignatureMiddleware(_echo_app))
+    with patch.dict("os.environ", {}, clear=True):
+        response = client.post("/webhook", content=body)
+    assert response.status_code == 413
+    assert response.json() == {"status": "rejected"}
+
+
+def test_public_surface_blocks_framework_discovery_paths() -> None:
+    client = TestClient(webhook_security.PublicSurfaceMiddleware(_echo_app))
+
+    for path in (
+        "/docs",
+        "/docs/",
+        "/docs/oauth2-redirect",
+        "/redoc",
+        "/redoc/",
+        "/openapi.json",
+        "/openapi.json/",
+    ):
+        response = client.get(path)
+        assert response.status_code == 404
+        assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive"
+        assert response.headers["cache-control"] == "no-store"
+
+
+def test_robots_disallows_all_crawling_without_reaching_application() -> None:
+    client = TestClient(webhook_security.PublicSurfaceMiddleware(_echo_app))
+
+    response = client.get("/robots.txt")
+
+    assert response.status_code == 200
+    assert response.text == "User-agent: *\nDisallow: /\n"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive"
+
+
+def test_public_responses_receive_noindex_header() -> None:
+    client = TestClient(webhook_security.PublicSurfaceMiddleware(_echo_app))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive"
+
+
+def test_signature_rejections_also_receive_noindex_header() -> None:
+    protected = webhook_security.PublicSurfaceMiddleware(
+        webhook_security.MetaWebhookSignatureMiddleware(_echo_app)
+    )
+    client = TestClient(protected)
+
+    with patch.dict(
+        "os.environ",
+        {"META_APP_SECRET": "synthetic-app-secret"},
+        clear=True,
+    ):
+        response = client.post("/webhook", content=b'{"entry":[]}')
+
+    assert response.status_code == 403
+    assert response.headers["x-robots-tag"] == "noindex, nofollow, noarchive"
+
+
+def test_production_entrypoint_installs_public_surface_outermost() -> None:
+    assert isinstance(
+        webhook_security.app,
+        webhook_security.PublicSurfaceMiddleware,
+    )
+    assert isinstance(
+        webhook_security.app.app,
+        webhook_security.DeploymentDrainMiddleware,
+    )

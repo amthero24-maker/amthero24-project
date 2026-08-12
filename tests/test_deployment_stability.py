@@ -15,6 +15,14 @@ def _healthy():
     ]
 
 
+def _surface_healthy():
+    return [
+        SmokeCheck("crawler_policy", "pass", "HTTP 200; disallow_all=yes"),
+        SmokeCheck("framework_discovery", "pass", "blocked=3/3"),
+        SmokeCheck("global_noindex", "pass", "HTTP 200; noindex=yes"),
+    ]
+
+
 def _failed():
     return [SmokeCheck("readiness", "fail", "HTTP 503; status=not_ready")]
 
@@ -35,6 +43,7 @@ def test_gate_requires_every_consecutive_sample() -> None:
         delay_seconds=2,
         sleep=sleeps.append,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
 
     assert report.status == "stable"
@@ -45,6 +54,10 @@ def test_gate_requires_every_consecutive_sample() -> None:
     assert all(call["require_postgresql"] is True for call in calls)
     assert all(call["require_signature"] is True for call in calls)
     assert all(call["require_launch_ready"] is True for call in calls)
+    assert all(
+        any(check["name"] == "framework_discovery" for check in sample.checks)
+        for sample in report.samples
+    )
 
 
 def test_gate_rejects_transient_failure_without_recovery_credit() -> None:
@@ -62,12 +75,32 @@ def test_gate_rejects_transient_failure_without_recovery_credit() -> None:
         samples=5,
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
 
     assert report.status == "unstable"
     assert report.samples_run == 2
     assert report.consecutive_passes == 1
     assert calls == 2
+
+
+def test_gate_rejects_exposed_framework_discovery_immediately() -> None:
+    report = run_stability_gate(
+        "https://production.example",
+        admin_token="secret",
+        expected_version="4.3.0",
+        samples=3,
+        delay_seconds=0,
+        smoke_runner=lambda *args, **kwargs: _healthy(),
+        surface_runner=lambda *args, **kwargs: [
+            SmokeCheck("framework_discovery", "fail", "blocked=2/3")
+        ],
+    )
+
+    assert report.status == "unstable"
+    assert report.samples_run == 1
+    assert report.consecutive_passes == 0
+    assert report.samples[0].checks[-1]["name"] == "framework_discovery"
 
 
 def test_gate_bounds_samples_and_stops_on_exception() -> None:
@@ -81,6 +114,7 @@ def test_gate_bounds_samples_and_stops_on_exception() -> None:
         samples=99,
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
     encoded = write_report(report)
 
@@ -107,6 +141,7 @@ def test_gate_requires_release_identity_without_network_calls() -> None:
         expected_version="4.3.0",
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
     missing_token = run_stability_gate(
         "https://production.example",
@@ -114,6 +149,7 @@ def test_gate_requires_release_identity_without_network_calls() -> None:
         expected_version="4.3.0",
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
     missing_version = run_stability_gate(
         "https://production.example",
@@ -121,6 +157,7 @@ def test_gate_requires_release_identity_without_network_calls() -> None:
         expected_version="",
         delay_seconds=0,
         smoke_runner=runner,
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
 
     assert called is False
@@ -137,6 +174,7 @@ def test_written_report_has_only_safe_schema(tmp_path) -> None:
         samples=2,
         delay_seconds=0,
         smoke_runner=lambda *args, **kwargs: _healthy(),
+        surface_runner=lambda *args, **kwargs: _surface_healthy(),
     )
     target = tmp_path / "deployment-stability.json"
     encoded = write_report(report, target)
