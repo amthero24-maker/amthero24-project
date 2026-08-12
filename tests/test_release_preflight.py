@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import production_smoke
@@ -15,6 +16,13 @@ SCHEMA_IDENTITY = expected_schema_identity()
 
 def _schema_fields() -> dict[str, object]:
     return SCHEMA_IDENTITY.manifest_fields()
+
+
+def _passing_smoke() -> list[production_smoke.SmokeCheck]:
+    return [
+        production_smoke.SmokeCheck("health", "pass", "ok"),
+        production_smoke.SmokeCheck("launch_decision", "pass", "ready"),
+    ]
 
 
 def test_gate_requires_explicit_release_identity() -> None:
@@ -37,6 +45,52 @@ def test_gate_requires_every_strict_smoke_check() -> None:
     assert run.call_args.kwargs["require_postgresql"] is True
     assert run.call_args.kwargs["require_signature"] is True
     assert run.call_args.kwargs["require_launch_ready"] is True
+
+
+def test_gate_requires_recent_backup_manifest_by_default() -> None:
+    with patch(
+        "scripts.release_preflight.production_smoke.run_smoke",
+        return_value=_passing_smoke(),
+    ):
+        checks = release_preflight.run_gate(
+            base_url="https://example.test",
+            admin_token="secret",
+            expected_version="4.7.0",
+        )
+
+    backup = next(item for item in checks if item.name == "backup_manifest")
+    assert backup.passed is False
+    assert backup.detail == "manifest path is required"
+
+
+def test_gate_rejects_disabled_backup_verification() -> None:
+    with patch(
+        "scripts.release_preflight.production_smoke.run_smoke",
+        return_value=_passing_smoke(),
+    ):
+        checks = release_preflight.run_gate(
+            base_url="https://example.test",
+            admin_token="secret",
+            expected_version="4.7.0",
+            require_backup=False,
+        )
+
+    backup = next(item for item in checks if item.name == "backup_requirement")
+    assert backup.passed is False
+    assert backup.detail == "recent encrypted backup verification cannot be disabled"
+
+
+def test_manual_release_workflow_cannot_disable_backup_requirement() -> None:
+    workflow = Path(".github/workflows/release-preflight.yml").read_text(
+        encoding="utf-8"
+    )
+    environment = Path(".env.example").read_text(encoding="utf-8")
+    script = Path("scripts/release_preflight.py").read_text(encoding="utf-8")
+
+    assert "require_recent_backup:" not in workflow
+    assert 'RELEASE_REQUIRE_RECENT_BACKUP: "true"' in workflow
+    assert "RELEASE_REQUIRE_RECENT_BACKUP=true" in environment
+    assert 'os.getenv("RELEASE_REQUIRE_RECENT_BACKUP", "true")' in script
 
 
 def test_recent_encrypted_schema_bound_backup_manifest_passes(tmp_path) -> None:
