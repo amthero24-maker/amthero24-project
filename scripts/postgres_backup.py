@@ -27,6 +27,10 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from postgres_cli_env import postgres_cli_environment
 from schema_recovery import inspect_database_schema
+from scripts.verify_backup_volume import (
+    BackupVolumeError,
+    verify_backup_volume_from_system,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -190,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        verify_backup_volume_from_system(
+            os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ""),
+            str(args.output_dir or ""),
+        )
         artifact, manifest, metadata = create_backup(
             args.database_url,
             Path(args.output_dir),
@@ -198,7 +206,13 @@ def main(argv: list[str] | None = None) -> int:
             keep=max(1, args.keep),
             pg_dump_binary=args.pg_dump,
         )
-    except (ValueError, RuntimeError, subprocess.SubprocessError, OSError) as exc:
+    except (
+        BackupVolumeError,
+        ValueError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        OSError,
+    ) as exc:
         print(f"Backup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

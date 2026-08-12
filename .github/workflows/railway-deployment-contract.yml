@@ -4,17 +4,31 @@ on:
   pull_request:
     paths:
       - railway.json
+      - railway.backup.json
+      - railway.backup.certification.json
+      - Dockerfile.backup
       - Procfile
       - railway_contract.py
+      - scripts/backup_entrypoint.sh
+      - scripts/postgres_backup.py
+      - scripts/verify_backup_volume.py
       - tests/test_railway_contract.py
+      - tests/test_railway_backup_service.py
       - .github/workflows/railway-deployment-contract.yml
   push:
     branches: [main]
     paths:
       - railway.json
+      - railway.backup.json
+      - railway.backup.certification.json
+      - Dockerfile.backup
       - Procfile
       - railway_contract.py
+      - scripts/backup_entrypoint.sh
+      - scripts/postgres_backup.py
+      - scripts/verify_backup_volume.py
       - tests/test_railway_contract.py
+      - tests/test_railway_backup_service.py
       - .github/workflows/railway-deployment-contract.yml
   schedule:
     - cron: "23 4 * * 1"
@@ -40,10 +54,13 @@ jobs:
         id: contract
         continue-on-error: true
         run: python railway_contract.py --output railway-contract.json
-      - name: Run Railway contract regression tests
+      - name: Run Railway and backup-volume contract regression tests
         id: tests
         continue-on-error: true
-        run: python -m pytest -q tests/test_railway_contract.py
+        run: >-
+          python -m pytest -q
+          tests/test_railway_contract.py
+          tests/test_railway_backup_service.py
       - name: Upload sanitized Railway contract evidence
         if: always()
         uses: actions/upload-artifact@v7
