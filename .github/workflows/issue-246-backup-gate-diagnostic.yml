@@ -1,0 +1,99 @@
+name: Issue 246 backup gate diagnostic
+
+on:
+  push:
+    branches:
+      - ops/issue-246-backup-gate-diagnostic
+    paths:
+      - .github/workflows/issue-246-backup-gate-diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-246-backup-gate-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  read-one-safe-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PRODUCTION_BASE_URL: https://amthero24-bot-production.up.railway.app
+      ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
+    steps:
+      - name: Read only the production backup recovery launch check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          token = os.environ.get("ADMIN_API_TOKEN", "").strip()
+          if not token:
+              raise SystemExit("diagnostic_failed:admin_token_missing")
+
+          base = os.environ["PRODUCTION_BASE_URL"].rstrip("/")
+          request = urllib.request.Request(
+              f"{base}/admin/launch-readiness",
+              headers={
+                  "X-Admin-Token": token,
+                  "Accept": "application/json",
+              },
+              method="GET",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  if response.status != 200:
+                      raise SystemExit(f"diagnostic_failed:http_{response.status}")
+                  payload = json.load(response)
+          except urllib.error.HTTPError as exc:
+              raise SystemExit(f"diagnostic_failed:http_{exc.code}") from None
+          except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+              raise SystemExit("diagnostic_failed:transport_or_json") from None
+
+          checks = payload.get("checks") if isinstance(payload, dict) else None
+          matches = [
+              item for item in checks or []
+              if isinstance(item, dict)
+              and item.get("code") == "production_backup_recovery"
+          ]
+          if len(matches) != 1:
+              raise SystemExit("diagnostic_failed:check_cardinality")
+
+          item = matches[0]
+          status = str(item.get("status") or "")
+          if status not in {"ready", "warning", "blocked"}:
+              raise SystemExit("diagnostic_failed:status_invalid")
+
+          def clean(value: object, limit: int = 500) -> str:
+              text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or "")).strip()
+              return text[:limit]
+
+          result = {
+              "code": "production_backup_recovery",
+              "status": status,
+              "detail": clean(item.get("detail")),
+              "action": clean(item.get("action")),
+          }
+          serialized = json.dumps(result, sort_keys=True)
+          forbidden = (token, "postgresql://", "postgres://", "/backups/", "@railway.internal")
+          if any(value and value in serialized for value in forbidden):
+              raise SystemExit("diagnostic_failed:sensitive_value_detected")
+
+          Path("issue-246-backup-gate.json").write_text(serialized + "\n", encoding="utf-8")
+          print(serialized)
+          PY
+      - name: Upload bounded diagnostic evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-246-backup-gate-diagnostic
+          path: issue-246-backup-gate.json
+          if-no-files-found: error
+          retention-days: 7
