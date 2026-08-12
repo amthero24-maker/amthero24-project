@@ -9,6 +9,12 @@ from launch_readiness import build_launch_report
 def _overview() -> dict:
     return {
         "storage_backend": "postgresql",
+        "backup_recovery": {
+            "receipt": "recent_success",
+            "latest_outcome": "success",
+            "age_seconds": 3600,
+            "max_age_hours": 30,
+        },
         "messages_24h": {"total": 0, "failed": 0},
         "providers": {
             "groq": {"total": 0, "failure": 0, "circuit": "closed", "latency_ms": {}},
@@ -32,16 +38,35 @@ def _env() -> dict[str, str]:
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "approved_template",
         "HUMAN_SUPPORT_ENABLED": "false",
+        "PRODUCTION_BACKUP_RESTORE_CERTIFIED": "true",
     }
 
 
-def test_fail_closed_database_policy_is_launch_ready() -> None:
+def test_fail_closed_database_and_backup_recovery_are_launch_ready() -> None:
     report = build_launch_report(
         _overview(), env=_env(), now=datetime(2026, 7, 26, 12, tzinfo=UTC)
     )
     checks = {item["code"]: item for item in report["checks"]}
     assert checks["database_fail_closed"]["status"] == "ready"
+    assert checks["production_backup_recovery"]["status"] == "ready"
     assert report["status"] == "ready"
+
+
+def test_fail_closed_database_alone_does_not_bypass_backup_recovery() -> None:
+    overview = _overview()
+    overview.pop("backup_recovery")
+
+    report = build_launch_report(
+        overview,
+        env=_env(),
+        now=datetime(2026, 7, 26, 12, tzinfo=UTC),
+    )
+    checks = {item["code"]: item for item in report["checks"]}
+
+    assert checks["database_fail_closed"]["status"] == "ready"
+    assert checks["production_backup_recovery"]["status"] == "blocked"
+    assert "missing" in checks["production_backup_recovery"]["detail"]
+    assert report["status"] == "blocked"
 
 
 def test_explicit_json_fallback_blocks_controlled_beta() -> None:
