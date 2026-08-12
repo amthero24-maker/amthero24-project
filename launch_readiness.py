@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Mapping
 
 from brief_scanner_runtime_readiness import (
@@ -36,6 +36,20 @@ class LaunchCheck:
 def _flag(env: Mapping[str, str], name: str, default: bool = False) -> bool:
     fallback = "true" if default else "false"
     return str(env.get(name, fallback)).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _utc_timestamp(value: Any) -> datetime | None:
+    """Parse one explicit timezone-aware timestamp without reflecting its value."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _count(mapping: Any, key: str) -> int:
@@ -112,6 +126,7 @@ def _brief_scanner_runtime_check(environment: Mapping[str, str]) -> LaunchCheck:
 def _backup_recovery_check(
     overview: dict[str, Any],
     environment: Mapping[str, str],
+    current: datetime,
 ) -> LaunchCheck:
     payload = overview.get("backup_recovery")
     metrics = payload if isinstance(payload, dict) else {}
@@ -135,6 +150,9 @@ def _backup_recovery_check(
         "PRODUCTION_BACKUP_RESTORE_CERTIFIED",
         False,
     )
+    restore_certified_at = _utc_timestamp(
+        environment.get("PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT", "")
+    )
 
     if safe_receipt != "recent_success":
         return LaunchCheck(
@@ -143,17 +161,51 @@ def _backup_recovery_check(
             f"Persistent encrypted production backup receipt is {safe_receipt}.",
             "Attach the dedicated Railway backup volume, complete a successful encrypted backup, prove persistence across restart, and restore the actual artifact into an isolated PostgreSQL target.",
         )
+    try:
+        backup_age_seconds = int(metrics.get("age_seconds", -1))
+    except (TypeError, ValueError):
+        backup_age_seconds = -1
+    if backup_age_seconds < 0:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The latest successful backup receipt has an invalid age.",
+            "Repeat the persistent encrypted backup and verify the privacy-safe receipt before restore certification.",
+        )
     if not restore_certified:
         return LaunchCheck(
             "production_backup_recovery",
             "blocked",
             "A recent persistent encrypted backup exists, but isolated restore certification is not approved.",
-            "Complete the owner-authorized isolated restore of the actual persistent artifact, verify current schema and privacy-safe parity, then set PRODUCTION_BACKUP_RESTORE_CERTIFIED=true.",
+            "Complete the owner-authorized isolated restore of the actual persistent artifact, verify current schema and privacy-safe parity, then set PRODUCTION_BACKUP_RESTORE_CERTIFIED=true and record its UTC certification time.",
+        )
+    if restore_certified_at is None:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "Restore approval exists, but its UTC certification time is missing or invalid.",
+            "After restoring the actual latest persistent artifact, set PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT to the timezone-aware ISO 8601 completion time.",
+        )
+    if restore_certified_at > current:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The isolated restore certification time is in the future.",
+            "Correct the certification time only after the owner-authorized isolated restore has completed.",
+        )
+
+    latest_backup_at = current - timedelta(seconds=backup_age_seconds)
+    if restore_certified_at < latest_backup_at:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The isolated restore certification predates the latest successful production backup.",
+            "Restore the actual latest persistent artifact, verify current schema and privacy-safe parity, then update the restore certification and UTC completion time.",
         )
     return LaunchCheck(
         "production_backup_recovery",
         "ready",
-        "A recent persistent encrypted production backup and owner-approved isolated restore certification are present.",
+        "The latest persistent encrypted production backup has a time-bound owner-approved isolated restore certification.",
     )
 
 
@@ -190,7 +242,7 @@ def build_launch_report(
             "Set DATABASE_FALLBACK_ALLOWED=false before Beta to prevent split-brain user memory.",
         )
     )
-    checks.append(_backup_recovery_check(overview, environment))
+    checks.append(_backup_recovery_check(overview, environment, current))
 
     app_secret = bool(str(environment.get("META_APP_SECRET", "")).strip())
     signature_required = _flag(environment, "WEBHOOK_SIGNATURE_REQUIRED", False)
