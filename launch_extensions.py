@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any
 
 from fastapi import Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 import admin_extensions as admin_module
@@ -123,15 +125,25 @@ def _apply_controlled_canary_scope(report: dict[str, object]) -> dict[str, objec
     return payload
 
 
+def _build_launch_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Collect synchronous database aggregates outside the ASGI event loop."""
+    overview = admin_module.build_overview(
+        core.store,
+        version=APP_VERSION,
+        model=GROQ_MODEL,
+    )
+    beta_metrics = build_closed_beta_metrics(core.store)
+    overview["closed_beta_admission"] = beta_metrics
+    return overview, beta_metrics
+
+
 @core.app.get("/admin/launch-readiness", include_in_schema=False)
 async def launch_readiness(request: Request) -> JSONResponse:
     denied = admin_module._authorize(request)
     if denied is not None:
         return denied
     try:
-        overview = admin_module.build_overview(core.store, version=APP_VERSION, model=GROQ_MODEL)
-        beta_metrics = build_closed_beta_metrics(core.store)
-        overview["closed_beta_admission"] = beta_metrics
+        overview, beta_metrics = await run_in_threadpool(_build_launch_inputs)
     except Exception as exc:
         return _unavailable(_overview_failure_code(exc))
     try:
@@ -154,12 +166,14 @@ async def reminder_encryption_preflight(request: Request) -> JSONResponse:
     if denied is not None:
         return denied
     try:
-        report = migrate_reminder_ciphertexts(
+        migration = await run_in_threadpool(
+            migrate_reminder_ciphertexts,
             os.getenv("DATABASE_URL", ""),
             new_key=os.getenv("REMINDER_ENCRYPTION_KEY", ""),
             legacy_token=os.getenv("WHATSAPP_TOKEN", ""),
             apply=False,
-        ).as_dict()
+        )
+        report = migration.as_dict()
     except Exception as exc:
         name = re.sub(r"[^a-z0-9]", "", type(exc).__name__.casefold())[:40]
         return _unavailable(f"reminder_preflight_exception_{name or 'unknown'}")
