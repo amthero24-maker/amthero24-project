@@ -1,125 +1,46 @@
-# AmtHero24 Pre-Gewerbe Validation Scorecard
+# AmtHero24 Pre-Gewerbe Validation Scorecard — RETIRED
 
-Use this only for aggregate/sanitized research evidence. Never place participant names, phone numbers, email addresses, addresses, document contents, screenshots containing PII, or verbatim private stories in this file or in GitHub issues.
+Status: **RETIRED** by the latest owner decision.
 
-## Research batch
+This file is retained only to prevent the former workflow from being used accidentally. It does not authorize research participants, real-user contact, document processing, Beta onboarding, commercial availability, or any pre-registration operational test.
 
-- Batch label: `[YYYY-MM / short label]`
-- Number of voluntary research conversations: `[count]`
-- Languages represented: `[aggregate list]`
-- Demo version / PR head: `[commit SHA]`
-- Operational Beta admission during research: `DISABLED`
-- Real documents processed: `0 required`
-- Payments/orders/preorders collected: `0 required`
+## Superseding sequence
 
-## Comprehension
+`Full Product Audit → Gewerbeanmeldung → factual operator/legal completion → verified email/domain/site gates → fresh production preflight → explicit #181 GO → very small Wave 1 → first-week evidence → controlled expansion`
 
-Aggregate only:
+## Prohibited use
 
-- understood AmtHero24 without additional explanation: `[count]`
-- partly understood: `[count]`
-- did not understand: `[count]`
+No pre-Gewerbe real-user research may be run from this scorecard. In particular, do not:
 
-Sanitized repeated misunderstandings:
+- recruit or contact people as AmtHero24 test users;
+- process real administrative documents, audio, messages, missions or reminders;
+- collect Beta consent, Hero Memory consent, participant identities or contact details;
+- collect payments, preorders, subscriptions or commercial commitments;
+- describe AmtHero24 as registered, operationally available or legally publication-ready;
+- use this file to bypass Issue #181, admission controls, Smoke, Certification or the external legal gates.
 
-1. `[category only]`
-2. `[category only]`
-3. `[category only]`
+## What replaces it
 
-## Problem signal
+Before registration, use only the existing deterministic Full Product Audit evidence:
 
-Count how often each journey was independently selected as the most relevant problem:
+- synthetic CI and composition tests;
+- privacy/security/runtime reviews;
+- website build, accessibility, supply-chain and fail-closed legal checks;
+- current Railway/GitHub production observability without contacting users;
+- private Gewerbeanmeldung and legal preparation outside the public repository.
 
-- Brief Scanner: `[count]`
-- Termin Assistance: `[count]`
-- Kündigung: `[count]`
-- Vertrags-Check: `[count]`
-- Geld zurück: `[count]`
-- Nachrichten & E-Mails: `[count]`
-- none / different problem: `[count]`
+After Gewerbeanmeldung, factual legal/email/domain completion, a fresh healthy production preflight and explicit #181 GO, first-week evidence must be collected under the controlled Closed Beta runbook in #179. That evidence must remain aggregate and sanitized, with no phone numbers, addresses, document contents, raw messages, secrets or private stories in GitHub.
 
-Repeated pain-point themes, sanitized:
+## Current authority boundary
 
-- `[theme]`
-- `[theme]`
-- `[theme]`
+This retired file can never authorize:
 
-## Trust signal
+- public website publication or indexing;
+- live WhatsApp CTA activation;
+- Closed Beta admission;
+- Brief Scanner action runtime or Draft execution;
+- payments, entitlement enforcement or human support;
+- contacting real users;
+- expansion beyond the explicitly approved cohort.
 
-Count the strongest concern named by each participant where possible:
-
-- privacy / data handling: `[count]`
-- AI accuracy / hallucination: `[count]`
-- legal reliability / responsibility: `[count]`
-- WhatsApp / Meta concern: `[count]`
-- price / future pricing: `[count]`
-- unclear product scope: `[count]`
-- other: `[count]`
-
-Most repeated missing trust information:
-
-- `[sanitized category]`
-
-## Future trial intent
-
-This is a research statement, not Beta opt-in and not a commercial order.
-
-- likely to try after formal launch: `[count]`
-- maybe: `[count]`
-- unlikely: `[count]`
-
-Do not contact or admit a participant based on this field.
-
-## UX signal
-
-- participants who found the six-tool structure easy to understand: `[count]`
-- participants who found it too broad/confusing: `[count]`
-- participants who understood that Sam is AI, not a human/authority: `[count]`
-- participants who understood that important facts must be checked: `[count]`
-
-Top three UX changes requested:
-
-1. `[sanitized request]`
-2. `[sanitized request]`
-3. `[sanitized request]`
-
-## Decision memo
-
-Do not decide from one percentage or a tiny-sample conversion target. Write a short evidence-based conclusion.
-
-### Repeated positive signals
-
-- `[signal]`
-- `[signal]`
-
-### Repeated negative signals / unresolved risks
-
-- `[signal]`
-- `[signal]`
-
-### Decision
-
-Choose one:
-
-- `CONTINUE TO REGISTRATION / LEGAL READINESS`
-- `REVISE POSITIONING AND RUN ANOTHER RESEARCH BATCH`
-- `HOLD / RETHINK THE PRODUCT ASSUMPTION`
-
-Rationale:
-
-`[short sanitized explanation]`
-
-## Hard boundary
-
-This scorecard can never authorize:
-
-- Gewerbe/legal-status claims;
-- public commercial availability;
-- Beta admission;
-- WhatsApp operational onboarding;
-- processing real administrative documents as an ongoing service;
-- missions/reminders for research participants;
-- payments, preorders, subscriptions, or entitlements;
-- public testimonials without separate explicit permission.
-
-Operational Wave 1 remains governed by #209 → #181 and starts only after registration/legal/domain/email/fresh-production gates are complete and the owner gives a separate explicit GO.
+Only the owner's latest explicit decision, current production evidence and the controlled GO process govern operational launch.
