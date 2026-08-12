@@ -1,8 +1,12 @@
 """Tests for static runtime logging privacy policy."""
 from __future__ import annotations
 
+import io
+import json
+import logging
 from pathlib import Path
 
+from railway_logging import MaxLevelFilter
 from scripts.validate_logging_policy import validate_logging_policy
 
 
@@ -14,6 +18,81 @@ def _write(path: Path, content: str) -> None:
 def test_repository_logging_policy_passes() -> None:
     root = Path(__file__).resolve().parents[1]
     assert validate_logging_policy(root) == []
+
+
+def test_railway_logging_config_uses_stream_only_severity_routing() -> None:
+    config = json.loads(Path("logging.railway.json").read_text(encoding="utf-8"))
+    handlers = config["handlers"]
+
+    assert config["version"] == 1
+    assert config["disable_existing_loggers"] is False
+    assert handlers["stdout"]["stream"] == "ext://sys.stdout"
+    assert handlers["stdout"]["filters"] == ["max_info"]
+    assert handlers["access_stdout"]["stream"] == "ext://sys.stdout"
+    assert handlers["access_stdout"]["filters"] == ["max_info"]
+    assert handlers["stderr"]["stream"] == "ext://sys.stderr"
+    assert handlers["stderr"]["level"] == "WARNING"
+    assert all(
+        handler["class"] == "logging.StreamHandler"
+        for handler in handlers.values()
+    )
+    assert config["filters"]["max_info"] == {
+        "()": "railway_logging.MaxLevelFilter",
+        "max_level": "INFO",
+    }
+    assert config["root"]["handlers"] == ["stdout", "stderr"]
+    assert config["loggers"]["uvicorn"]["handlers"] == ["stdout", "stderr"]
+    assert config["loggers"]["uvicorn.access"]["handlers"] == [
+        "access_stdout",
+        "stderr",
+    ]
+
+    encoded_formatters = json.dumps(config["formatters"], sort_keys=True).casefold()
+    for forbidden in (
+        "authorization",
+        "headers",
+        "payload",
+        "body",
+        "phone",
+        "recipient",
+        "token",
+        "secret",
+        "password",
+        "cookie",
+        "database_url",
+        "document",
+        "ciphertext",
+    ):
+        assert forbidden not in encoded_formatters
+
+
+def test_max_level_filter_sends_info_to_stdout_and_errors_to_stderr() -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    stdout_handler = logging.StreamHandler(stdout)
+    stdout_handler.addFilter(MaxLevelFilter("INFO"))
+    stderr_handler = logging.StreamHandler(stderr)
+    stderr_handler.setLevel(logging.WARNING)
+    logger = logging.Logger("amthero24.synthetic", level=logging.DEBUG)
+    logger.propagate = False
+    logger.addHandler(stdout_handler)
+    logger.addHandler(stderr_handler)
+
+    logger.debug("synthetic-debug")
+    logger.info("synthetic-info")
+    logger.warning("synthetic-warning")
+    logger.error("synthetic-error")
+
+    stdout_value = stdout.getvalue()
+    stderr_value = stderr.getvalue()
+    assert "synthetic-debug" in stdout_value
+    assert "synthetic-info" in stdout_value
+    assert "synthetic-warning" not in stdout_value
+    assert "synthetic-error" not in stdout_value
+    assert "synthetic-debug" not in stderr_value
+    assert "synthetic-info" not in stderr_value
+    assert "synthetic-warning" in stderr_value
+    assert "synthetic-error" in stderr_value
 
 
 def test_detects_direct_sensitive_logging_arguments(tmp_path) -> None:
