@@ -19,6 +19,7 @@ def _healthy_overview() -> dict:
         "backup_recovery": {
             "receipt": "recent_success",
             "latest_outcome": "success",
+            "latest_event_at": (NOW - timedelta(hours=1)).isoformat(),
             "age_seconds": 3600,
             "max_age_hours": 30,
         },
@@ -95,6 +96,7 @@ def test_backup_receipt_must_be_recent_success(receipt: str) -> None:
     overview["backup_recovery"] = {
         "receipt": receipt,
         "latest_outcome": "failure",
+        "latest_event_at": (NOW - timedelta(minutes=2)).isoformat(),
         "age_seconds": 120,
         "max_age_hours": 30,
         "private_path": "/backups/must-not-leak.dump",
@@ -111,6 +113,42 @@ def test_backup_receipt_must_be_recent_success(receipt: str) -> None:
     assert receipt in check["detail"]
     assert "/backups" not in str(report)
     assert "must-not-leak" not in str(report)
+
+
+def test_recent_backup_without_exact_event_time_blocks_launch() -> None:
+    for value in ("", "not-a-time", "2026-07-26T11:00:00"):
+        overview = _healthy_overview()
+        overview["backup_recovery"]["latest_event_at"] = value
+
+        report = build_launch_report(overview, env=_healthy_env(), now=NOW)
+        check = next(
+            item for item in report["checks"]
+            if item["code"] == "production_backup_recovery"
+        )
+
+        assert report["status"] == "blocked"
+        assert check["status"] == "blocked"
+        assert "event time" in check["detail"].casefold()
+        if value:
+            assert value not in str(report)
+
+
+def test_future_backup_event_time_blocks_launch() -> None:
+    overview = _healthy_overview()
+    overview["backup_recovery"]["latest_event_at"] = (
+        NOW + timedelta(seconds=1)
+    ).isoformat()
+
+    report = build_launch_report(overview, env=_healthy_env(), now=NOW)
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert "future" in check["detail"].casefold()
+    assert overview["backup_recovery"]["latest_event_at"] not in str(report)
 
 
 def test_recent_backup_without_restore_certification_blocks_launch() -> None:
@@ -189,7 +227,12 @@ def test_newer_backup_invalidates_previous_restore_certification() -> None:
     )
     assert ready_check["status"] == "ready"
 
-    overview["backup_recovery"]["age_seconds"] = 10 * 60
+    overview["backup_recovery"].update(
+        {
+            "latest_event_at": (NOW - timedelta(minutes=10)).isoformat(),
+            "age_seconds": 10 * 60,
+        }
+    )
     blocked = build_launch_report(overview, env=environment, now=NOW)
     blocked_check = next(
         item for item in blocked["checks"]
@@ -199,6 +242,7 @@ def test_newer_backup_invalidates_previous_restore_certification() -> None:
     assert blocked["status"] == "blocked"
     assert blocked_check["status"] == "blocked"
     assert "predates" in blocked_check["detail"].casefold()
+    assert overview["backup_recovery"]["latest_event_at"] not in str(blocked)
 
 
 def test_provider_outage_blocks_launch_and_high_latency_warns() -> None:
@@ -304,7 +348,17 @@ def test_unsupported_draft_runtime_configuration_blocks_launch() -> None:
 
 
 def test_report_contains_no_user_content() -> None:
-    report = build_launch_report(_healthy_overview(), env=_healthy_env(), now=NOW)
+    overview = _healthy_overview()
+    environment = _healthy_env()
+    report = build_launch_report(overview, env=environment, now=NOW)
     serialized = str(report)
-    for forbidden in ("49123", "وسام", "first_name", "phone_hash", "message text"):
+    for forbidden in (
+        "49123",
+        "وسام",
+        "first_name",
+        "phone_hash",
+        "message text",
+        overview["backup_recovery"]["latest_event_at"],
+        environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"],
+    ):
         assert forbidden not in serialized
