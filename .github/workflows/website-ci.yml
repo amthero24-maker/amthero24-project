@@ -158,6 +158,11 @@ jobs:
           echo "Strict legal facts and safe actionable WhatsApp CTA contract confirmed."
       - name: Build noindex preview artifact
         run: npm run build
+      - name: Verify Next.js type configuration is stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- tsconfig.json next-env.d.ts
       - name: Verify Railway deployment contract
         shell: bash
         run: |
