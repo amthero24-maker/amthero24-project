@@ -1,0 +1,398 @@
+name: Issue 246 durable backup infrastructure phase 1
+
+on:
+  push:
+    branches:
+      - ops/issue-246-durable-backup-infrastructure
+    paths:
+      - .github/workflows/issue-246-durable-backup-infrastructure.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-246-durable-backup-infrastructure
+  cancel-in-progress: false
+
+jobs:
+  attach-and-configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PROJECT_ID: 022c1c37-69bd-4744-b255-f503391b0fd4
+      ENVIRONMENT_ID: 7706572e-714d-4593-9074-85b6943fd82a
+      BACKUP_SERVICE_ID: 9f61e86c-7026-45f7-8284-0803fee61798
+      BACKUP_SERVICE_NAME: amthero24-backup
+      EXPECTED_MOUNT_PATH: /backups
+      EXPECTED_CONFIG_FILE: /railway.backup.json
+      EXPECTED_CRON: "17 2 * * *"
+      EXPECTED_START_COMMAND: python -m scripts.postgres_backup
+      EXPECTED_DOCKERFILE: Dockerfile.backup
+      RAILWAY_CLI_VERSION: 5.37.7
+      RAILWAY_CLI_SHA256: 9aebfd69103b085a43a3e8755bbbfff9138428602b784b21f95ea5b291cb5ca3
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+    steps:
+      - name: Install pinned official Railway CLI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          archive="$RUNNER_TEMP/railway-cli.tar.gz"
+          install_dir="$RUNNER_TEMP/railway-cli"
+          mkdir -p "$install_dir"
+          curl --fail --silent --show-error --location \
+            "https://github.com/railwayapp/cli/releases/download/v${RAILWAY_CLI_VERSION}/railway-v${RAILWAY_CLI_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$RAILWAY_CLI_SHA256" "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$install_dir"
+          "$install_dir/railway" --version
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Attach dedicated volume and configure backup service
+        id: operation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          REPORT="$GITHUB_WORKSPACE/issue-246-phase1.json"
+          STATUS="failed"
+          REASON="unexpected_failure"
+          VOLUME_ID=""
+          VOLUME_NAME=""
+          VOLUME_STATUS=""
+          VOLUME_CREATED="false"
+          CONFIG_MUTATED="false"
+          CONFIG_VERIFIED="false"
+
+          write_report() {
+            STATUS="$STATUS" \
+            REASON="$REASON" \
+            VOLUME_ID="$VOLUME_ID" \
+            VOLUME_NAME="$VOLUME_NAME" \
+            VOLUME_STATUS="$VOLUME_STATUS" \
+            VOLUME_CREATED="$VOLUME_CREATED" \
+            CONFIG_MUTATED="$CONFIG_MUTATED" \
+            CONFIG_VERIFIED="$CONFIG_VERIFIED" \
+            REPORT="$REPORT" \
+            python - <<'PY'
+          import json
+          import os
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          payload = {
+              "status": os.environ.get("STATUS", "failed"),
+              "reason": os.environ.get("REASON", "unexpected_failure"),
+              "generated_at": datetime.now(UTC).isoformat(),
+              "project_id": os.environ["PROJECT_ID"],
+              "environment_id": os.environ["ENVIRONMENT_ID"],
+              "service": {
+                  "id": os.environ["BACKUP_SERVICE_ID"],
+                  "name": os.environ["BACKUP_SERVICE_NAME"],
+                  "config_file": os.environ["EXPECTED_CONFIG_FILE"],
+                  "cron_schedule": os.environ["EXPECTED_CRON"],
+                  "start_command": os.environ["EXPECTED_START_COMMAND"],
+                  "dockerfile_path": os.environ["EXPECTED_DOCKERFILE"],
+                  "restart_policy": "NEVER",
+                  "config_mutated": os.environ.get("CONFIG_MUTATED") == "true",
+                  "config_verified": os.environ.get("CONFIG_VERIFIED") == "true",
+              },
+              "volume": {
+                  "id": os.environ.get("VOLUME_ID") or None,
+                  "name": os.environ.get("VOLUME_NAME") or None,
+                  "mount_path": os.environ["EXPECTED_MOUNT_PATH"],
+                  "status": os.environ.get("VOLUME_STATUS") or None,
+                  "created_in_this_run": os.environ.get("VOLUME_CREATED") == "true",
+              },
+              "secrets_or_values_included": False,
+              "backup_executed": False,
+              "restore_executed": False,
+          }
+          Path(os.environ["REPORT"]).write_text(
+              json.dumps(payload, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          }
+          trap write_report EXIT
+
+          if [[ -n "${RAILWAY_API_TOKEN:-}" ]]; then
+            unset RAILWAY_TOKEN
+          elif [[ -n "${RAILWAY_TOKEN:-}" ]]; then
+            unset RAILWAY_API_TOKEN
+          else
+            REASON="railway_token_missing"
+            exit 1
+          fi
+
+          if ! railway whoami > /dev/null 2> "$RUNNER_TEMP/railway-auth.err"; then
+            REASON="railway_auth_failed"
+            rm -f "$RUNNER_TEMP/railway-auth.err"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/railway-auth.err"
+
+          before="$RUNNER_TEMP/volumes-before.json"
+          if ! railway volume list \
+            --project "$PROJECT_ID" \
+            --environment "$ENVIRONMENT_ID" \
+            --json > "$before" 2> "$RUNNER_TEMP/railway-volume-list.err"; then
+            REASON="volume_list_failed"
+            rm -f "$RUNNER_TEMP/railway-volume-list.err"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/railway-volume-list.err"
+
+          initial_state="$RUNNER_TEMP/initial-volume-state.json"
+          BEFORE="$before" OUTPUT="$initial_state" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["BEFORE"]).read_text(encoding="utf-8"))
+          matches = [
+              item for item in payload.get("volumes", [])
+              if item.get("serviceName") == os.environ["BACKUP_SERVICE_NAME"]
+          ]
+          if len(matches) > 1:
+              raise SystemExit("multiple_backup_service_volumes")
+          state = {"count": len(matches)}
+          if matches:
+              item = matches[0]
+              state.update({
+                  "id": str(item.get("id") or ""),
+                  "name": str(item.get("name") or ""),
+                  "mount_path": str(item.get("mountPath") or ""),
+                  "status": str(item.get("status") or ""),
+                  "pending_deletion": bool(item.get("isPendingDeletion")),
+              })
+          Path(os.environ["OUTPUT"]).write_text(json.dumps(state), encoding="utf-8")
+          PY
+
+          initial_count="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["count"])' "$initial_state")"
+          if [[ "$initial_count" == "1" ]]; then
+            VOLUME_ID="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id", ""))' "$initial_state")"
+            VOLUME_NAME="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$initial_state")"
+            existing_mount="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mount_path", ""))' "$initial_state")"
+            pending_deletion="$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1])).get("pending_deletion", False)).lower())' "$initial_state")"
+            if [[ "$existing_mount" != "$EXPECTED_MOUNT_PATH" ]]; then
+              REASON="existing_volume_wrong_mount"
+              exit 1
+            fi
+            if [[ "$pending_deletion" == "true" ]]; then
+              REASON="existing_volume_pending_deletion"
+              exit 1
+            fi
+          else
+            created="$RUNNER_TEMP/volume-created.json"
+            if ! railway volume add \
+              --project "$PROJECT_ID" \
+              --environment "$ENVIRONMENT_ID" \
+              --service "$BACKUP_SERVICE_ID" \
+              --mount-path "$EXPECTED_MOUNT_PATH" \
+              --json > "$created" 2> "$RUNNER_TEMP/railway-volume-add.err"; then
+              REASON="volume_create_failed"
+              rm -f "$RUNNER_TEMP/railway-volume-add.err"
+              exit 1
+            fi
+            rm -f "$RUNNER_TEMP/railway-volume-add.err"
+            VOLUME_ID="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id", ""))' "$created")"
+            VOLUME_NAME="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$created")"
+            if [[ -z "$VOLUME_ID" ]]; then
+              REASON="volume_create_response_invalid"
+              exit 1
+            fi
+            VOLUME_CREATED="true"
+          fi
+
+          volume_ready="false"
+          final_volumes="$RUNNER_TEMP/volumes-final.json"
+          for _ in $(seq 1 24); do
+            railway volume list \
+              --project "$PROJECT_ID" \
+              --environment "$ENVIRONMENT_ID" \
+              --json > "$final_volumes" 2> /dev/null || true
+            verification="$RUNNER_TEMP/volume-verification.json"
+            FINAL="$final_volumes" OUTPUT="$verification" python - <<'PY' || true
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["FINAL"]).read_text(encoding="utf-8"))
+          matches = [
+              item for item in payload.get("volumes", [])
+              if item.get("serviceName") == os.environ["BACKUP_SERVICE_NAME"]
+          ]
+          result = {"verified": False}
+          if len(matches) == 1:
+              item = matches[0]
+              result = {
+                  "verified": (
+                      str(item.get("id") or "") == os.environ.get("VOLUME_ID", "")
+                      and str(item.get("mountPath") or "") == os.environ["EXPECTED_MOUNT_PATH"]
+                      and not bool(item.get("isPendingDeletion"))
+                      and str(item.get("status") or "").casefold() == "ready"
+                  ),
+                  "id": str(item.get("id") or ""),
+                  "name": str(item.get("name") or ""),
+                  "status": str(item.get("status") or ""),
+              }
+          Path(os.environ["OUTPUT"]).write_text(json.dumps(result), encoding="utf-8")
+          PY
+            if [[ -f "$verification" ]] && [[ "$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1])).get("verified", False)).lower())' "$verification")" == "true" ]]; then
+              VOLUME_ID="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("id", ""))' "$verification")"
+              VOLUME_NAME="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name", ""))' "$verification")"
+              VOLUME_STATUS="$(python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status", ""))' "$verification")"
+              volume_ready="true"
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$volume_ready" != "true" ]]; then
+            REASON="volume_not_ready"
+            exit 1
+          fi
+
+          mutation="$RUNNER_TEMP/service-update.graphql"
+          variables="$RUNNER_TEMP/service-update-variables.json"
+          cat > "$mutation" <<'GRAPHQL'
+          mutation UpdateBackupService($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+            serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+          }
+          GRAPHQL
+          VARIABLES="$variables" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "serviceId": os.environ["BACKUP_SERVICE_ID"],
+              "environmentId": os.environ["ENVIRONMENT_ID"],
+              "input": {
+                  "railwayConfigFile": os.environ["EXPECTED_CONFIG_FILE"],
+                  "cronSchedule": os.environ["EXPECTED_CRON"],
+                  "startCommand": os.environ["EXPECTED_START_COMMAND"],
+                  "dockerfilePath": os.environ["EXPECTED_DOCKERFILE"],
+                  "restartPolicyType": "NEVER",
+              },
+          }
+          Path(os.environ["VARIABLES"]).write_text(json.dumps(payload), encoding="utf-8")
+          PY
+          update_result="$RUNNER_TEMP/service-update-result.json"
+          if ! railway api --file "$mutation" --variables "@$variables" --compact \
+            > "$update_result" 2> "$RUNNER_TEMP/railway-service-update.err"; then
+            REASON="service_config_update_failed"
+            rm -f "$RUNNER_TEMP/railway-service-update.err"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/railway-service-update.err"
+          CONFIG_MUTATED="true"
+
+          query="$RUNNER_TEMP/environment-config.graphql"
+          query_variables="$RUNNER_TEMP/environment-config-variables.json"
+          cat > "$query" <<'GRAPHQL'
+          query ReadEnvironmentConfig($id: String!, $decryptVariables: Boolean) {
+            environment(id: $id) {
+              id
+              name
+              config(decryptVariables: $decryptVariables)
+            }
+          }
+          GRAPHQL
+          QUERY_VARIABLES="$query_variables" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          Path(os.environ["QUERY_VARIABLES"]).write_text(
+              json.dumps({"id": os.environ["ENVIRONMENT_ID"], "decryptVariables": False}),
+              encoding="utf-8",
+          )
+          PY
+
+          readback_verified="false"
+          readback="$RUNNER_TEMP/environment-config-raw.json"
+          for _ in $(seq 1 18); do
+            railway api --file "$query" --variables "@$query_variables" --compact \
+              > "$readback" 2> /dev/null || true
+            safe_readback="$RUNNER_TEMP/service-readback.json"
+            RAW="$readback" OUTPUT="$safe_readback" python - <<'PY' || true
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["RAW"]).read_text(encoding="utf-8"))
+          config = payload.get("data", {}).get("environment", {}).get("config", {})
+          service = config.get("services", {}).get(os.environ["BACKUP_SERVICE_ID"], {})
+          deploy = service.get("deploy") or {}
+          build = service.get("build") or {}
+          mounts = service.get("volumeMounts") or {}
+          mount_paths = sorted(
+              str(item.get("mountPath") or "")
+              for item in mounts.values()
+              if isinstance(item, dict)
+          )
+          result = {
+              "config_file": str(service.get("configFile") or ""),
+              "cron_schedule": str(deploy.get("cronSchedule") or ""),
+              "start_command": str(deploy.get("startCommand") or ""),
+              "restart_policy": str(deploy.get("restartPolicyType") or ""),
+              "dockerfile_path": str(build.get("dockerfilePath") or ""),
+              "mount_paths": mount_paths,
+          }
+          result["verified"] = (
+              result["config_file"] == os.environ["EXPECTED_CONFIG_FILE"]
+              and result["cron_schedule"] == os.environ["EXPECTED_CRON"]
+              and result["start_command"] == os.environ["EXPECTED_START_COMMAND"]
+              and result["restart_policy"].upper() == "NEVER"
+              and result["dockerfile_path"] == os.environ["EXPECTED_DOCKERFILE"]
+              and mount_paths == [os.environ["EXPECTED_MOUNT_PATH"]]
+          )
+          Path(os.environ["OUTPUT"]).write_text(json.dumps(result), encoding="utf-8")
+          PY
+            if [[ -f "$safe_readback" ]] && [[ "$(python -c 'import json,sys; print(str(json.load(open(sys.argv[1])).get("verified", False)).lower())' "$safe_readback")" == "true" ]]; then
+              readback_verified="true"
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$readback_verified" != "true" ]]; then
+            REASON="service_config_readback_failed"
+            exit 1
+          fi
+          CONFIG_VERIFIED="true"
+
+          rm -f \
+            "$before" "$initial_state" "$created" "$final_volumes" "$verification" \
+            "$mutation" "$variables" "$update_result" "$query" "$query_variables" \
+            "$readback" "$safe_readback" 2> /dev/null || true
+
+          STATUS="pass"
+          REASON="none"
+          write_report
+          trap - EXIT
+
+      - name: Upload privacy-safe phase 1 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-246-durable-backup-infrastructure-phase1
+          path: issue-246-phase1.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce phase 1 result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("issue-246-phase1.json").read_text(encoding="utf-8"))
+          if payload.get("status") != "pass":
+              raise SystemExit(f"Issue #246 phase 1 failed: {payload.get('reason', 'unknown')}")
+          print("Issue #246 phase 1 passed with privacy-safe evidence.")
+          PY
