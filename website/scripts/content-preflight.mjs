@@ -9,6 +9,10 @@ const tools = ['Brief Scanner','Termin Assistance','Kündigung','Vertrags-Check'
 const routes = ['impressum','datenschutz','agb','widerruf','kontakt','beta','cookie-einstellungen','barrierefreiheit'];
 for (const item of tools) if (!page.includes(item)) throw new Error(`Missing MVP tool: ${item}`);
 for (const route of routes) if (!legal.includes(route)) throw new Error(`Missing legal route: ${route}`);
+if (!layout.includes('metadataBase:')) throw new Error('Root metadata base required for relative canonical URLs');
+if (!page.includes('canonical: "/"')) throw new Error('Landing-page canonical metadata missing');
+if (!legal.includes('canonical: `/${legal}`')) throw new Error('Legal-route canonical metadata missing');
+if (!beta.includes('canonical: "/beta"')) throw new Error('Beta canonical metadata missing');
 if (!layout.includes('href="#main"')) throw new Error('Global skip link must target main content');
 if (!page.includes('id="main"')) throw new Error('Home page main target missing');
 if (!legal.includes('id="main"')) throw new Error('Legal page main target missing');
@@ -35,4 +39,4 @@ if (/\bautoPlay\b/.test(demoVideoTag) || /\bloop\b/.test(demoVideoTag)) {
   throw new Error('MVP demo videos must not autoplay or loop');
 }
 if (!demoVideoTag.includes('preload="metadata"')) throw new Error('MVP demo videos must remain metadata-only before user playback');
-console.log('Content preflight PASS: 6 MVP journeys, legal routes, working skip links, truthful dynamic no-store health, shared actionable CTA validation, AI transparency, trust boundaries and accessible local demos present.');
+console.log('Content preflight PASS: canonical routes, 6 MVP journeys, legal routes, working skip links, truthful dynamic no-store health, shared actionable CTA validation, AI transparency, trust boundaries and accessible local demos present.');
