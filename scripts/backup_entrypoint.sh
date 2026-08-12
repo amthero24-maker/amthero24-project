@@ -1,13 +1,18 @@
 #!/bin/sh
 set -eu
 
-mount_path="${RAILWAY_VOLUME_MOUNT_PATH:-/backups}"
-output_dir="${BACKUP_OUTPUT_DIR:-$mount_path}"
+mount_path="${RAILWAY_VOLUME_MOUNT_PATH:-}"
+output_dir="${BACKUP_OUTPUT_DIR:-/backups}"
+
+if [ -z "$mount_path" ]; then
+    echo '{"reason":"missing_mount_variable","status":"failed"}' >&2
+    exit 1
+fi
 
 case "$mount_path" in
     /*) ;;
     *)
-        echo "Backup entrypoint failed: volume mount path must be absolute" >&2
+        echo '{"reason":"mount_not_absolute","status":"failed"}' >&2
         exit 1
         ;;
 esac
@@ -15,10 +20,14 @@ esac
 case "$output_dir" in
     "$mount_path"|"$mount_path"/*) ;;
     *)
-        echo "Backup entrypoint failed: output directory must remain inside the mounted volume" >&2
+        echo '{"reason":"output_outside_mount","status":"failed"}' >&2
         exit 1
         ;;
 esac
+
+python -m scripts.verify_backup_volume \
+    --mount-path "$mount_path" \
+    --output-dir "$output_dir"
 
 mkdir -p "$output_dir"
 chown amthero:amthero "$mount_path" "$output_dir"
