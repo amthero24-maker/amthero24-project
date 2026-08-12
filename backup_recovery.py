@@ -19,9 +19,46 @@ from provider_reliability import ProviderReliabilityRepository, telemetry_enable
 _BACKUP_PROVIDER = "postgres_backup"
 _BACKUP_OPERATION = "encrypted_backup"
 _ALLOWED_OUTCOMES = {"started", "success", "failure"}
-_SAFE_CODE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,79}$")
 _DEFAULT_MAX_AGE_HOURS = 30
 _FUTURE_TOLERANCE_SECONDS = 300
+_INTERNAL_CODE_TYPES = {
+    ("backup_recovery", "BackupRecoveryError"),
+    ("scripts.verify_backup_volume", "BackupVolumeError"),
+}
+_KNOWN_FAILURE_CODES = {
+    "backuprecoveryerror",
+    "backupvolumeerror",
+    "calledprocesserror",
+    "database_url_invalid",
+    "missing_mount_variable",
+    "missing_output_directory",
+    "mount_directory_missing",
+    "mount_not_absolute",
+    "mount_not_attached",
+    "mountinfo_unavailable",
+    "oserror",
+    "outcome_invalid",
+    "output_not_absolute",
+    "output_outside_mount",
+    "pg_dump_authentication_failed",
+    "pg_dump_connection_failed",
+    "pg_dump_database_error",
+    "pg_dump_failed",
+    "pg_dump_permission_denied",
+    "receipt_read_failed",
+    "receipt_verification_failed",
+    "receipt_write_failed",
+    "root_mount_forbidden",
+    "runtimeerror",
+    "telemetry_disabled",
+    "timeoutexpired",
+    "unexpected_mount_path",
+    "unknown_error",
+    "valueerror",
+}
+_PG_DUMP_VERSION_CODE = re.compile(
+    r"^pg_dump_version_mismatch_server_[0-9]+_client_[0-9]+$"
+)
 
 
 class BackupRecoveryError(RuntimeError):
@@ -104,14 +141,25 @@ def production_backup_restore_certified(
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _known_failure_code(value: Any) -> str:
+    clean = str(value or "").strip().casefold()
+    if clean in _KNOWN_FAILURE_CODES or _PG_DUMP_VERSION_CODE.fullmatch(clean):
+        return clean
+    return ""
+
+
 def safe_backup_error_code(exc: Exception) -> str:
     """Return a bounded operational category without reflecting exception details."""
-    code = str(getattr(exc, "code", "") or "").strip().casefold()
-    if code and _SAFE_CODE.fullmatch(code):
-        return code
-    message = str(exc or "").strip().casefold()
-    if message and _SAFE_CODE.fullmatch(message):
-        return message
+    identity = (type(exc).__module__, type(exc).__name__)
+    if identity in _INTERNAL_CODE_TYPES:
+        internal_code = _known_failure_code(getattr(exc, "code", ""))
+        if internal_code:
+            return internal_code
+
+    generated_code = _known_failure_code(str(exc or ""))
+    if generated_code:
+        return generated_code
+
     name = re.sub(r"[^a-z0-9_.-]", "", type(exc).__name__.casefold())[:80]
     return name or "unknown_error"
 
@@ -223,6 +271,10 @@ def record_backup_event(
     if not telemetry_enabled():
         raise BackupRecoveryError("telemetry_disabled")
 
+    clean_error_code = ""
+    if clean_outcome == "failure":
+        clean_error_code = _known_failure_code(error_code) or "unknown_error"
+
     store: PostgresDataStore | None = None
     current = _now(now)
     try:
@@ -233,7 +285,7 @@ def record_backup_event(
             _BACKUP_OPERATION,
             clean_outcome,
             max(0, min(int(latency_ms), 1_800_000)),
-            error_code=(str(error_code or "").strip().casefold()[:80]),
+            error_code=clean_error_code,
             now=current,
         )
         metrics = build_backup_recovery_metrics(

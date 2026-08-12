@@ -204,3 +204,36 @@ def test_error_sanitizer_never_reflects_private_exception_text() -> None:
     assert safe_backup_error_code(error) == "runtimeerror"
     assert "private.invalid" not in safe_backup_error_code(error)
     assert "customer.dump" not in safe_backup_error_code(error)
+
+
+def test_error_sanitizer_rejects_simple_secret_shaped_messages_and_codes() -> None:
+    secret = "syntheticsecretvalue1234567890"
+
+    class ExternalCodedError(RuntimeError):
+        code = secret
+
+    assert safe_backup_error_code(RuntimeError(secret)) == "runtimeerror"
+    assert safe_backup_error_code(ExternalCodedError("ignored")) == "externalcodederror"
+    assert secret not in safe_backup_error_code(RuntimeError(secret))
+    assert secret not in safe_backup_error_code(ExternalCodedError("ignored"))
+
+
+def test_record_backup_event_sanitizes_direct_failure_codes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = _store(tmp_path, monkeypatch)
+    monkeypatch.setattr(backup_recovery, "PostgresDataStore", lambda _url: store)
+    secret = "syntheticsecretvalue1234567890"
+
+    metrics = record_backup_event(
+        "postgresql://synthetic.invalid/database",
+        "failure",
+        error_code=secret,
+        now=datetime(2026, 8, 12, 12, tzinfo=UTC),
+    )
+
+    assert metrics["receipt"] == "latest_failure"
+    event = store.snapshot()["provider_events"][-1]
+    assert event["error_code"] == "unknown_error"
+    assert secret not in str(event)
