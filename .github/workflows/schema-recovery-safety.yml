@@ -6,11 +6,17 @@ on:
       - schema_recovery.py
       - postgres_cli_env.py
       - database_migrations.py
+      - Dockerfile.backup
+      - railway.backup.json
+      - railway.backup.certification.json
+      - scripts/backup_entrypoint.sh
       - scripts/postgres_backup.py
       - scripts/postgres_restore.py
+      - scripts/verify_backup_volume.py
       - scripts/release_preflight.py
       - tests/test_schema_recovery.py
       - tests/test_postgres_operations.py
+      - tests/test_railway_backup_service.py
       - tests/test_release_preflight.py
       - tests/test_postgresql_recovery_drill.py
       - .github/workflows/schema-recovery-safety.yml
@@ -20,11 +26,17 @@ on:
       - schema_recovery.py
       - postgres_cli_env.py
       - database_migrations.py
+      - Dockerfile.backup
+      - railway.backup.json
+      - railway.backup.certification.json
+      - scripts/backup_entrypoint.sh
       - scripts/postgres_backup.py
       - scripts/postgres_restore.py
+      - scripts/verify_backup_volume.py
       - scripts/release_preflight.py
       - tests/test_schema_recovery.py
       - tests/test_postgres_operations.py
+      - tests/test_railway_backup_service.py
       - tests/test_release_preflight.py
       - tests/test_postgresql_recovery_drill.py
       - .github/workflows/schema-recovery-safety.yml
@@ -102,8 +114,15 @@ jobs:
           pg_restore --version
           psql --version
       - name: Compile recovery modules
-        run: python -m py_compile schema_recovery.py postgres_cli_env.py scripts/postgres_backup.py scripts/postgres_restore.py scripts/release_preflight.py
-      - name: Run schema identity and operation policy tests
+        run: >-
+          python -m py_compile
+          schema_recovery.py
+          postgres_cli_env.py
+          scripts/postgres_backup.py
+          scripts/postgres_restore.py
+          scripts/verify_backup_volume.py
+          scripts/release_preflight.py
+      - name: Run schema identity, backup-volume, and operation policy tests
         id: unit_tests
         continue-on-error: true
         shell: bash
@@ -112,6 +131,7 @@ jobs:
           python -m pytest -vv --tb=short --junitxml=schema-recovery-unit-junit.xml \
             tests/test_schema_recovery.py \
             tests/test_postgres_operations.py \
+            tests/test_railway_backup_service.py \
             tests/test_release_preflight.py 2>&1 | tee schema-recovery-unit.log
       - name: Run real encrypted PostgreSQL recovery drill in a fresh process
         id: recovery_drill
