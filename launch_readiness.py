@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from brief_scanner_runtime_readiness import (
@@ -172,6 +172,22 @@ def _backup_recovery_check(
             "The latest successful backup receipt has an invalid age.",
             "Repeat the persistent encrypted backup and verify the privacy-safe receipt before restore certification.",
         )
+
+    latest_backup_at = _utc_timestamp(metrics.get("latest_event_at", ""))
+    if latest_backup_at is None:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The latest successful backup receipt is missing its exact UTC event time.",
+            "Repeat the persistent encrypted backup and verify its privacy-safe operational receipt before restore certification.",
+        )
+    if latest_backup_at > current:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The latest successful backup event time is in the future.",
+            "Correct the backup service clock and repeat the persistent encrypted backup before restore certification.",
+        )
     if not restore_certified:
         return LaunchCheck(
             "production_backup_recovery",
@@ -193,8 +209,6 @@ def _backup_recovery_check(
             "The isolated restore certification time is in the future.",
             "Correct the certification time only after the owner-authorized isolated restore has completed.",
         )
-
-    latest_backup_at = current - timedelta(seconds=backup_age_seconds)
     if restore_certified_at < latest_backup_at:
         return LaunchCheck(
             "production_backup_recovery",
