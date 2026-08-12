@@ -66,6 +66,7 @@ const notices = [
 export const metadata = {
   title: "Closed Beta Hinweis | AmtHero24",
   description: "Closed-Beta-Hinweis von AmtHero24 in fünf unterstützten Sprachen.",
+  alternates: { canonical: "/beta" },
 };
 
 export default function BetaNoticePage() {

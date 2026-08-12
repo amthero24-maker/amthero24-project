@@ -27,6 +27,10 @@ const legalLinks = [
   ["/cookie-einstellungen", "Cookies"], ["/barrierefreiheit", "Barrierefreiheit"],
 ];
 
+export const metadata = {
+  alternates: { canonical: "/" },
+};
+
 export default function Home() {
   const betaCtaUrl = resolveBetaCtaUrl();
   return <>

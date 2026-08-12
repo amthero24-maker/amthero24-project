@@ -294,6 +294,75 @@ jobs:
 
           print("Runtime security, non-disclosure and anti-cache headers verified.")
           PY
+      - name: Verify runtime canonical routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --publish 127.0.0.1:3000:3000 amthero24-website:ci)"
+          cleanup() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if test "$ready" != "true"; then
+            docker logs "$container_id" >&2 || true
+            exit 1
+          fi
+
+          curl --fail --silent --show-error --output /tmp/canonical-home.html http://127.0.0.1:3000/
+          curl --fail --silent --show-error --output /tmp/canonical-impressum.html http://127.0.0.1:3000/impressum
+          curl --fail --silent --show-error --output /tmp/canonical-beta.html http://127.0.0.1:3000/beta
+
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          class CanonicalParser(HTMLParser):
+              def __init__(self) -> None:
+                  super().__init__()
+                  self.urls: list[str] = []
+
+              def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                  if tag.casefold() != "link":
+                      return
+                  values = {key.casefold(): value or "" for key, value in attrs}
+                  rel = {item.casefold() for item in values.get("rel", "").split()}
+                  href = values.get("href", "").strip()
+                  if "canonical" in rel and href:
+                      self.urls.append(href)
+
+          def assert_canonical(path: str, expected_path: str) -> None:
+              parser = CanonicalParser()
+              parser.feed(Path(path).read_text(encoding="utf-8"))
+              if len(parser.urls) != 1:
+                  raise SystemExit(f"Expected one canonical URL in {path}, found {parser.urls!r}")
+              parsed = urlsplit(parser.urls[0])
+              actual_path = parsed.path or "/"
+              if (
+                  parsed.scheme != "https"
+                  or parsed.netloc != "amthero24.de"
+                  or actual_path != expected_path
+                  or parsed.query
+                  or parsed.fragment
+              ):
+                  raise SystemExit(
+                      f"Canonical mismatch for {path}: {parser.urls[0]!r}; expected https://amthero24.de{expected_path}"
+                  )
+
+          assert_canonical("/tmp/canonical-home.html", "/")
+          assert_canonical("/tmp/canonical-impressum.html", "/impressum")
+          assert_canonical("/tmp/canonical-beta.html", "/beta")
+          print("Runtime canonical routes verified for home, legal and Beta pages.")
+          PY
       - name: Verify no backend admission activation was introduced
         shell: bash
         run: |
