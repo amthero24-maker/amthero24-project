@@ -187,12 +187,6 @@ class MetaWebhookSignatureMiddleware:
 
         app_secret = os.getenv("META_APP_SECRET", "").strip()
         required = signature_required()
-        if not app_secret:
-            if required:
-                await _json_response(send, 503, {"status": "unavailable"})
-                return
-            await self.app(scope, receive, send)
-            return
 
         chunks: list[bytes] = []
         size = 0
@@ -210,14 +204,19 @@ class MetaWebhookSignatureMiddleware:
                 break
         body = b"".join(chunks)
 
-        headers = {
-            key.decode("latin-1").casefold(): value.decode("latin-1")
-            for key, value in scope.get("headers", [])
-        }
-        signature = headers.get("x-hub-signature-256", "")
-        if not verify_meta_signature(body, signature, app_secret):
-            await _json_response(send, 403, {"status": "rejected"})
+        if not app_secret and required:
+            await _json_response(send, 503, {"status": "unavailable"})
             return
+
+        if app_secret:
+            headers = {
+                key.decode("latin-1").casefold(): value.decode("latin-1")
+                for key, value in scope.get("headers", [])
+            }
+            signature = headers.get("x-hub-signature-256", "")
+            if not verify_meta_signature(body, signature, app_secret):
+                await _json_response(send, 403, {"status": "rejected"})
+                return
 
         replayed = False
 
