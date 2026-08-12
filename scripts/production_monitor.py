@@ -21,6 +21,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from production_smoke import SmokeCheck, SmokeError, fetch_json, run_smoke
+from production_surface import run_non_indexable_surface_checks
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,10 @@ def _bounded_delay(value: float) -> float:
 
 def _safe_failure(detail: str) -> list[SmokeCheck]:
     return [SmokeCheck("monitor_execution", "fail", detail[:240])]
+
+
+def _safe_surface_failure(detail: str) -> list[SmokeCheck]:
+    return [SmokeCheck("production_surface", "fail", detail[:240])]
 
 
 def _safe_nonnegative_int(value: Any) -> int:
@@ -162,28 +167,42 @@ def run_monitor(
     require_launch_ready: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     smoke_runner: Callable[..., list[SmokeCheck]] = run_smoke,
+    surface_runner: Callable[..., list[SmokeCheck]] = run_non_indexable_surface_checks,
 ) -> MonitorReport:
     """Run bounded retries and return only sanitized aggregate check details."""
     total_attempts = _bounded_attempts(attempts)
     delay = _bounded_delay(delay_seconds)
     final_checks: Sequence[SmokeCheck] = ()
     attempts_run = 0
+    timeout = float(os.getenv("SMOKE_TIMEOUT_SECONDS", "15"))
 
     for attempt in range(1, total_attempts + 1):
         attempts_run = attempt
         try:
-            final_checks = smoke_runner(
-                base_url,
-                admin_token=admin_token,
-                expected_version=expected_version,
-                require_postgresql=True,
-                require_signature=True,
-                require_launch_ready=require_launch_ready,
-                timeout=float(os.getenv("SMOKE_TIMEOUT_SECONDS", "15")),
+            smoke_checks = list(
+                smoke_runner(
+                    base_url,
+                    admin_token=admin_token,
+                    expected_version=expected_version,
+                    require_postgresql=True,
+                    require_signature=True,
+                    require_launch_ready=require_launch_ready,
+                    timeout=timeout,
+                )
             )
         except Exception as exc:  # The report must still exist for incident automation.
-            final_checks = _safe_failure(f"monitor raised {type(exc).__name__}")
+            smoke_checks = _safe_failure(f"monitor raised {type(exc).__name__}")
 
+        try:
+            surface_checks = list(surface_runner(base_url, timeout=timeout))
+            if not surface_checks:
+                surface_checks = _safe_surface_failure("surface runner returned no checks")
+        except Exception as exc:  # Keep the incident report available without leaking details.
+            surface_checks = _safe_surface_failure(
+                f"surface runner raised {type(exc).__name__}"
+            )
+
+        final_checks = [*smoke_checks, *surface_checks]
         if final_checks and all(check.passed for check in final_checks):
             break
         if attempt < total_attempts and delay:
