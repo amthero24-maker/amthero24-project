@@ -139,7 +139,8 @@ def test_restore_certification_requires_valid_utc_completion_time() -> None:
         assert report["status"] == "blocked"
         assert check["status"] == "blocked"
         assert "time" in check["detail"].casefold()
-        assert value not in str(report)
+        if value:
+            assert value not in str(report)
 
 
 def test_future_restore_certification_time_blocks_launch() -> None:
