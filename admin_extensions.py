@@ -5,6 +5,7 @@ import hmac
 import os
 
 from fastapi import Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 import document_action_extensions as composed
@@ -55,7 +56,7 @@ async def admin_overview(request: Request) -> JSONResponse:
     denied = _authorize(request)
     if denied is not None:
         return denied
-    payload = build_operator_overview()
+    payload = await run_in_threadpool(build_operator_overview)
     if contains_personal_fields(payload) or contains_closed_beta_identifiers(payload):
         return JSONResponse(
             {"status": "unavailable"},
