@@ -34,6 +34,8 @@ closed_beta_runtime_layer.install(
 )
 
 _MAX_WEBHOOK_BODY_BYTES = 2 * 1024 * 1024
+_NOINDEX_HEADER = b"noindex, nofollow, noarchive"
+_ROBOTS_BODY = b"User-agent: *\nDisallow: /\n"
 
 
 def signature_required() -> bool:
@@ -67,6 +69,80 @@ async def _json_response(
         headers.append((b"retry-after", retry_after.encode("ascii")))
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
+
+
+async def _plain_response(
+    send: Callable[[dict[str, Any]], Awaitable[None]],
+    status: int,
+    body: bytes,
+    *,
+    head_only: bool = False,
+) -> None:
+    headers = [
+        (b"content-type", b"text/plain; charset=utf-8"),
+        (b"content-length", str(len(body)).encode("ascii")),
+        (b"cache-control", b"no-store"),
+        (b"x-robots-tag", _NOINDEX_HEADER),
+    ]
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": b"" if head_only else body})
+
+
+class PublicSurfaceMiddleware:
+    """Keep the production bot API out of indexes and hide framework discovery."""
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    @staticmethod
+    def _is_discovery_path(path: str) -> bool:
+        normalized = (path or "/").rstrip("/") or "/"
+        return (
+            normalized == "/openapi.json"
+            or normalized == "/docs"
+            or normalized.startswith("/docs/")
+            or normalized == "/redoc"
+            or normalized.startswith("/redoc/")
+        )
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[..., Awaitable[dict[str, Any]]],
+        send: Callable[..., Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = str(scope.get("method") or "GET").upper()
+        path = str(scope.get("path") or "/")
+        if method in {"GET", "HEAD"} and path == "/robots.txt":
+            await _plain_response(
+                send,
+                200,
+                _ROBOTS_BODY,
+                head_only=method == "HEAD",
+            )
+            return
+        if self._is_discovery_path(path):
+            await _plain_response(
+                send,
+                404,
+                b"Not Found\n",
+                head_only=method == "HEAD",
+            )
+            return
+
+        async def send_with_noindex(message: dict[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                if not any(bytes(key).lower() == b"x-robots-tag" for key, _ in headers):
+                    headers.append((b"x-robots-tag", _NOINDEX_HEADER))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_noindex)
 
 
 class DeploymentDrainMiddleware:
@@ -155,4 +231,8 @@ class MetaWebhookSignatureMiddleware:
         await self.app(scope, replay_receive, send)
 
 
-app = DeploymentDrainMiddleware(MetaWebhookSignatureMiddleware(runtime_health.app))
+app = PublicSurfaceMiddleware(
+    DeploymentDrainMiddleware(
+        MetaWebhookSignatureMiddleware(runtime_health.app)
+    )
+)
