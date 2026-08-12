@@ -7,11 +7,6 @@ on:
         description: Exact application version expected from production /health
         required: true
         type: string
-      require_recent_backup:
-        description: Require a recent backup manifest available to the runner
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -24,7 +19,7 @@ jobs:
       PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
       ADMIN_API_TOKEN: ${{ secrets.ADMIN_API_TOKEN }}
       EXPECTED_APP_VERSION: ${{ inputs.expected_version }}
-      RELEASE_REQUIRE_RECENT_BACKUP: ${{ inputs.require_recent_backup }}
+      RELEASE_REQUIRE_RECENT_BACKUP: "true"
       BACKUP_MANIFEST_PATH: ${{ vars.BACKUP_MANIFEST_PATH }}
       SMOKE_TIMEOUT_SECONDS: "20"
     steps:
