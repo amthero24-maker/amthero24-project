@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import production_smoke
+import production_surface
 
 
 def _healthy(path: str) -> tuple[int, dict]:
@@ -272,3 +273,106 @@ def test_launch_warning_is_allowed_unless_strict_gate_requested() -> None:
         )
     assert next(item for item in relaxed if item.name == "launch_decision").passed is True
     assert next(item for item in strict if item.name == "launch_decision").passed is False
+
+
+def test_non_indexable_surface_contract_passes_without_report_leakage() -> None:
+    responses = {
+        "/robots.txt": production_surface.SurfaceResponse(
+            200,
+            b"User-agent: *\nDisallow: /\n",
+            "no-store",
+            "noindex, nofollow, noarchive",
+        ),
+        "/docs": production_surface.SurfaceResponse(
+            404,
+            b"private body",
+            "no-store",
+            "noindex, nofollow, noarchive",
+        ),
+        "/redoc": production_surface.SurfaceResponse(
+            404,
+            b"private body",
+            "no-store",
+            "noindex, nofollow, noarchive",
+        ),
+        "/openapi.json": production_surface.SurfaceResponse(
+            404,
+            b"private body",
+            "no-store",
+            "noindex, nofollow, noarchive",
+        ),
+        "/health": production_surface.SurfaceResponse(
+            200,
+            b'{"status":"ok"}',
+            "",
+            "noindex, nofollow, noarchive",
+        ),
+    }
+
+    checks = production_surface.run_non_indexable_surface_checks(
+        "https://private.example",
+        fetcher=lambda base, path, **kwargs: responses[path],
+    )
+    encoded = " ".join(item.detail for item in checks)
+
+    assert [item.name for item in checks] == [
+        "crawler_policy",
+        "framework_discovery",
+        "global_noindex",
+    ]
+    assert all(item.passed for item in checks)
+    assert "private.example" not in encoded
+    assert "private body" not in encoded
+    assert "status\":\"ok" not in encoded
+
+
+def test_non_indexable_surface_contract_fails_when_discovery_is_exposed() -> None:
+    def fetcher(base: str, path: str, **kwargs):
+        if path == "/robots.txt":
+            return production_surface.SurfaceResponse(
+                200,
+                b"User-agent: *\nDisallow: /\n",
+                "no-store",
+                "noindex, nofollow, noarchive",
+            )
+        if path == "/health":
+            return production_surface.SurfaceResponse(
+                200,
+                b"{}",
+                "",
+                "noindex, nofollow, noarchive",
+            )
+        return production_surface.SurfaceResponse(
+            200,
+            b"framework discovery must remain private",
+            "public, max-age=3600",
+            "",
+        )
+
+    checks = production_surface.run_non_indexable_surface_checks(
+        "https://private.example",
+        fetcher=fetcher,
+    )
+
+    discovery = next(item for item in checks if item.name == "framework_discovery")
+    assert discovery.passed is False
+    assert discovery.detail == "blocked=0/3; no_store=0/3; noindex=0/3; errors=0"
+    assert "framework discovery must remain private" not in discovery.detail
+
+
+def test_surface_network_errors_are_reduced_to_safe_error_types() -> None:
+    def fetcher(base: str, path: str, **kwargs):
+        raise production_surface.SurfaceError(
+            "https://private.example?token=must-not-appear"
+        )
+
+    checks = production_surface.run_non_indexable_surface_checks(
+        "https://private.example",
+        fetcher=fetcher,
+    )
+    encoded = " ".join(item.detail for item in checks)
+
+    assert all(not item.passed for item in checks)
+    assert "private.example" not in encoded
+    assert "must-not-appear" not in encoded
+    assert "SurfaceError" in encoded
