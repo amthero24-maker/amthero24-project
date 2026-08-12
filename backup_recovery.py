@@ -85,8 +85,23 @@ def _bounded_hours(value: Any) -> int:
 def backup_recovery_max_age_hours(
     environment: Mapping[str, str] | None = None,
 ) -> int:
-    env = os.environ if environment is None else environment
-    return _bounded_hours(env.get("BACKUP_RECOVERY_MAX_AGE_HOURS", _DEFAULT_MAX_AGE_HOURS))
+    value = (
+        os.getenv("BACKUP_RECOVERY_MAX_AGE_HOURS", str(_DEFAULT_MAX_AGE_HOURS))
+        if environment is None
+        else environment.get("BACKUP_RECOVERY_MAX_AGE_HOURS", str(_DEFAULT_MAX_AGE_HOURS))
+    )
+    return _bounded_hours(value)
+
+
+def production_backup_restore_certified(
+    environment: Mapping[str, str] | None = None,
+) -> bool:
+    value = (
+        os.getenv("PRODUCTION_BACKUP_RESTORE_CERTIFIED", "false")
+        if environment is None
+        else environment.get("PRODUCTION_BACKUP_RESTORE_CERTIFIED", "false")
+    )
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def safe_backup_error_code(exc: Exception) -> str:
