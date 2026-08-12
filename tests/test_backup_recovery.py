@@ -50,18 +50,20 @@ def test_missing_receipt_is_fail_closed(tmp_path, monkeypatch) -> None:
     assert metrics == {
         "receipt": "missing",
         "latest_outcome": "none",
+        "latest_event_at": "",
         "age_seconds": 0,
         "max_age_hours": 30,
     }
 
 
-def test_recent_success_is_ready_and_contains_no_operational_values(
+def test_recent_success_is_ready_and_contains_no_private_values(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = _store(tmp_path, monkeypatch)
     now = datetime(2026, 8, 12, 12, tzinfo=UTC)
-    _record(store, "success", now - timedelta(hours=2))
+    event_at = now - timedelta(hours=2)
+    _record(store, "success", event_at)
 
     metrics = build_backup_recovery_metrics(
         store,
@@ -72,6 +74,7 @@ def test_recent_success_is_ready_and_contains_no_operational_values(
     assert metrics == {
         "receipt": "recent_success",
         "latest_outcome": "success",
+        "latest_event_at": event_at.isoformat(),
         "age_seconds": 7200,
         "max_age_hours": 30,
     }
@@ -84,48 +87,56 @@ def test_recent_success_is_ready_and_contains_no_operational_values(
 def test_latest_started_attempt_blocks_an_older_success(tmp_path, monkeypatch) -> None:
     store = _store(tmp_path, monkeypatch)
     now = datetime(2026, 8, 12, 12, tzinfo=UTC)
+    started_at = now - timedelta(minutes=5)
     _record(store, "success", now - timedelta(hours=3))
-    _record(store, "started", now - timedelta(minutes=5))
+    _record(store, "started", started_at)
 
     metrics = build_backup_recovery_metrics(store, now=now, max_age_hours=30)
 
     assert metrics["receipt"] == "latest_started"
     assert metrics["latest_outcome"] == "started"
+    assert metrics["latest_event_at"] == started_at.isoformat()
     assert metrics["age_seconds"] == 300
 
 
 def test_latest_failure_blocks_an_older_success(tmp_path, monkeypatch) -> None:
     store = _store(tmp_path, monkeypatch)
     now = datetime(2026, 8, 12, 12, tzinfo=UTC)
+    failed_at = now - timedelta(minutes=2)
     _record(store, "success", now - timedelta(hours=3))
-    _record(store, "failure", now - timedelta(minutes=2), error_code="pg_dump_failed")
+    _record(store, "failure", failed_at, error_code="pg_dump_failed")
 
     metrics = build_backup_recovery_metrics(store, now=now, max_age_hours=30)
 
     assert metrics["receipt"] == "latest_failure"
     assert metrics["latest_outcome"] == "failure"
+    assert metrics["latest_event_at"] == failed_at.isoformat()
     assert "pg_dump_failed" not in str(metrics)
 
 
 def test_stale_success_is_not_launch_evidence(tmp_path, monkeypatch) -> None:
     store = _store(tmp_path, monkeypatch)
     now = datetime(2026, 8, 12, 12, tzinfo=UTC)
-    _record(store, "success", now - timedelta(hours=31))
+    event_at = now - timedelta(hours=31)
+    _record(store, "success", event_at)
 
     metrics = build_backup_recovery_metrics(store, now=now, max_age_hours=30)
 
     assert metrics["receipt"] == "stale_success"
+    assert metrics["latest_event_at"] == event_at.isoformat()
     assert metrics["age_seconds"] == 31 * 3600
 
 
 def test_material_future_timestamp_is_invalid(tmp_path, monkeypatch) -> None:
     store = _store(tmp_path, monkeypatch)
     now = datetime(2026, 8, 12, 12, tzinfo=UTC)
-    _record(store, "success", now + timedelta(minutes=10))
+    event_at = now + timedelta(minutes=10)
+    _record(store, "success", event_at)
 
     metrics = build_backup_recovery_metrics(store, now=now, max_age_hours=30)
 
     assert metrics["receipt"] == "future_timestamp"
+    assert metrics["latest_event_at"] == event_at.isoformat()
     assert metrics["age_seconds"] == 0
 
 
@@ -158,6 +169,7 @@ def test_record_backup_event_persists_and_verifies_receipt(
 
     assert metrics["receipt"] == "recent_success"
     assert metrics["latest_outcome"] == "success"
+    assert metrics["latest_event_at"] == now.isoformat()
     event = store.snapshot()["provider_events"][-1]
     assert event["provider"] == "postgres_backup"
     assert event["operation"] == "encrypted_backup"
@@ -225,15 +237,17 @@ def test_record_backup_event_sanitizes_direct_failure_codes(
     store = _store(tmp_path, monkeypatch)
     monkeypatch.setattr(backup_recovery, "PostgresDataStore", lambda _url: store)
     secret = "syntheticsecretvalue1234567890"
+    now = datetime(2026, 8, 12, 12, tzinfo=UTC)
 
     metrics = record_backup_event(
         "postgresql://synthetic.invalid/database",
         "failure",
         error_code=secret,
-        now=datetime(2026, 8, 12, 12, tzinfo=UTC),
+        now=now,
     )
 
     assert metrics["receipt"] == "latest_failure"
+    assert metrics["latest_event_at"] == now.isoformat()
     event = store.snapshot()["provider_events"][-1]
     assert event["error_code"] == "unknown_error"
     assert secret not in str(event)

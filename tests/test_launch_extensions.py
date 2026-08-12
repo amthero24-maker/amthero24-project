@@ -56,6 +56,7 @@ def _env() -> dict[str, str]:
         "WHATSAPP_REMINDER_TEMPLATE": "utility_template",
         "HUMAN_SUPPORT_ENABLED": "false",
         "PRODUCTION_BACKUP_RESTORE_CERTIFIED": "true",
+        "PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT": datetime.now(UTC).isoformat(),
     }
 
 
@@ -79,7 +80,8 @@ def test_launch_endpoint_rejects_wrong_token(tmp_path) -> None:
 def test_launch_endpoint_returns_actionable_report_without_personal_data(tmp_path) -> None:
     _install_store(tmp_path)
     client = TestClient(launch_extensions.core.app)
-    with patch.dict("os.environ", _env(), clear=True), patch.object(
+    environment = _env()
+    with patch.dict("os.environ", environment, clear=True), patch.object(
         launch_extensions.admin_module, "build_overview", return_value=_overview()
     ):
         response = client.get("/admin/launch-readiness", headers={"X-Admin-Token": ADMIN_TOKEN})
@@ -92,6 +94,7 @@ def test_launch_endpoint_returns_actionable_report_without_personal_data(tmp_pat
     assert checks["production_backup_recovery"]["status"] == "ready"
     assert "49123" not in response.text
     assert "first_name" not in response.text
+    assert environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] not in response.text
 
 
 def test_launch_endpoint_blocks_without_backup_receipt(tmp_path) -> None:

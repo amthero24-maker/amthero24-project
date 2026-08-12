@@ -73,6 +73,7 @@ class BackupRecoveryError(RuntimeError):
 class BackupRecoveryReceipt:
     receipt: str
     latest_outcome: str
+    latest_event_at: str
     age_seconds: int
     max_age_hours: int
 
@@ -80,6 +81,7 @@ class BackupRecoveryReceipt:
         return {
             "receipt": self.receipt,
             "latest_outcome": self.latest_outcome,
+            "latest_event_at": self.latest_event_at,
             "age_seconds": self.age_seconds,
             "max_age_hours": self.max_age_hours,
         }
@@ -139,6 +141,17 @@ def production_backup_restore_certified(
         else environment.get("PRODUCTION_BACKUP_RESTORE_CERTIFIED", "false")
     )
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def production_backup_restore_certified_at(
+    environment: Mapping[str, str] | None = None,
+) -> str:
+    value = (
+        os.getenv("PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT", "")
+        if environment is None
+        else environment.get("PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT", "")
+    )
+    return str(value or "").strip()
 
 
 def _known_failure_code(value: Any) -> str:
@@ -215,7 +228,7 @@ def build_backup_recovery_metrics(
     now: datetime | None = None,
     max_age_hours: int | None = None,
 ) -> dict[str, str | int]:
-    """Return only bounded backup receipt state and age for launch decisions."""
+    """Return bounded backup receipt state, exact event time, and age."""
     current = _now(now)
     maximum = _bounded_hours(
         backup_recovery_max_age_hours() if max_age_hours is None else max_age_hours
@@ -225,15 +238,22 @@ def build_backup_recovery_metrics(
     except Exception as exc:
         raise BackupRecoveryError("receipt_read_failed") from exc
     if latest is None:
-        return BackupRecoveryReceipt("missing", "none", 0, maximum).as_dict()
+        return BackupRecoveryReceipt(
+            "missing", "none", "", 0, maximum
+        ).as_dict()
 
     outcome, created = latest
     if created == datetime.min.replace(tzinfo=UTC):
-        return BackupRecoveryReceipt("invalid_timestamp", outcome[:30], 0, maximum).as_dict()
+        return BackupRecoveryReceipt(
+            "invalid_timestamp", outcome[:30], "", 0, maximum
+        ).as_dict()
 
+    event_at = created.isoformat()
     raw_age = int((current - created).total_seconds())
     if raw_age < -_FUTURE_TOLERANCE_SECONDS:
-        return BackupRecoveryReceipt("future_timestamp", outcome[:30], 0, maximum).as_dict()
+        return BackupRecoveryReceipt(
+            "future_timestamp", outcome[:30], event_at, 0, maximum
+        ).as_dict()
     age = max(0, raw_age)
     recent = age <= maximum * 3600
     clean_outcome = outcome if outcome in _ALLOWED_OUTCOMES else "unknown"
@@ -253,7 +273,9 @@ def build_backup_recovery_metrics(
         receipt = "stale_failure"
     else:
         receipt = "stale_unknown"
-    return BackupRecoveryReceipt(receipt, clean_outcome, age, maximum).as_dict()
+    return BackupRecoveryReceipt(
+        receipt, clean_outcome, event_at, age, maximum
+    ).as_dict()
 
 
 def record_backup_event(
@@ -293,7 +315,10 @@ def record_backup_event(
             now=current,
             max_age_hours=1,
         )
-        if metrics.get("latest_outcome") != clean_outcome:
+        if (
+            metrics.get("latest_outcome") != clean_outcome
+            or not str(metrics.get("latest_event_at") or "").strip()
+        ):
             raise BackupRecoveryError("receipt_verification_failed")
         return metrics
     except BackupRecoveryError:
