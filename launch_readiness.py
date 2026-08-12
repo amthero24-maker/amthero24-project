@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
+from backup_recovery import (
+    production_backup_restore_certified,
+    production_backup_restore_certified_at,
+)
 from brief_scanner_runtime_readiness import (
     BriefScannerRuntimeReadinessStatus,
     assess_brief_scanner_runtime_readiness,
@@ -145,13 +149,9 @@ def _backup_recovery_check(
         "future_timestamp",
     }
     safe_receipt = receipt if receipt in safe_receipts else "invalid"
-    restore_certified = _flag(
-        environment,
-        "PRODUCTION_BACKUP_RESTORE_CERTIFIED",
-        False,
-    )
+    restore_certified = production_backup_restore_certified(environment)
     restore_certified_at = _utc_timestamp(
-        environment.get("PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT", "")
+        production_backup_restore_certified_at(environment)
     )
 
     if safe_receipt != "recent_success":
