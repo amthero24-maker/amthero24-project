@@ -1,4 +1,5 @@
 name: Issue 246 backup gate diagnostic v2
+# Re-run marker: final backup restored and certified at 2026-08-12T22:34:25Z.
 
 on:
   push:
