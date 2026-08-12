@@ -109,6 +109,54 @@ def _brief_scanner_runtime_check(environment: Mapping[str, str]) -> LaunchCheck:
     )
 
 
+def _backup_recovery_check(
+    overview: dict[str, Any],
+    environment: Mapping[str, str],
+) -> LaunchCheck:
+    payload = overview.get("backup_recovery")
+    metrics = payload if isinstance(payload, dict) else {}
+    receipt = str(metrics.get("receipt") or "missing")
+    safe_receipts = {
+        "missing",
+        "recent_success",
+        "latest_started",
+        "latest_failure",
+        "latest_unknown",
+        "stale_success",
+        "stale_started",
+        "stale_failure",
+        "stale_unknown",
+        "invalid_timestamp",
+        "future_timestamp",
+    }
+    safe_receipt = receipt if receipt in safe_receipts else "invalid"
+    restore_certified = _flag(
+        environment,
+        "PRODUCTION_BACKUP_RESTORE_CERTIFIED",
+        False,
+    )
+
+    if safe_receipt != "recent_success":
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            f"Persistent encrypted production backup receipt is {safe_receipt}.",
+            "Attach the dedicated Railway backup volume, complete a successful encrypted backup, prove persistence across restart, and restore the actual artifact into an isolated PostgreSQL target.",
+        )
+    if not restore_certified:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "A recent persistent encrypted backup exists, but isolated restore certification is not approved.",
+            "Complete the owner-authorized isolated restore of the actual persistent artifact, verify current schema and privacy-safe parity, then set PRODUCTION_BACKUP_RESTORE_CERTIFIED=true.",
+        )
+    return LaunchCheck(
+        "production_backup_recovery",
+        "ready",
+        "A recent persistent encrypted production backup and owner-approved isolated restore certification are present.",
+    )
+
+
 def build_launch_report(
     overview: dict[str, Any],
     *,
@@ -142,6 +190,7 @@ def build_launch_report(
             "Set DATABASE_FALLBACK_ALLOWED=false before Beta to prevent split-brain user memory.",
         )
     )
+    checks.append(_backup_recovery_check(overview, environment))
 
     app_secret = bool(str(environment.get("META_APP_SECRET", "")).strip())
     signature_required = _flag(environment, "WEBHOOK_SIGNATURE_REQUIRED", False)
