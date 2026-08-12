@@ -143,6 +143,17 @@ def production_backup_restore_certified(
     return str(value or "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def production_backup_restore_certified_at(
+    environment: Mapping[str, str] | None = None,
+) -> str:
+    value = (
+        os.getenv("PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT", "")
+        if environment is None
+        else environment.get("PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT", "")
+    )
+    return str(value or "").strip()
+
+
 def _known_failure_code(value: Any) -> str:
     clean = str(value or "").strip().casefold()
     if clean in _KNOWN_FAILURE_CODES or _PG_DUMP_VERSION_CODE.fullmatch(clean):
