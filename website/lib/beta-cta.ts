@@ -1,7 +1,4 @@
-type BetaCtaEnvironment = {
-  NEXT_PUBLIC_BETA_CTA_ENABLED?: string;
-  NEXT_PUBLIC_BETA_CTA_URL?: string;
-};
+type BetaCtaEnvironment = Readonly<Record<string, string | undefined>>;
 
 export function resolveBetaCtaUrl(
   environment: BetaCtaEnvironment = process.env,
