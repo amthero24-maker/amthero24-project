@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 from railway_logging import MaxLevelFilter
@@ -46,6 +48,9 @@ def test_railway_logging_config_uses_stream_only_severity_routing() -> None:
         "access_stdout",
         "stderr",
     ]
+    assert config["formatters"]["access"]["fmt"] == (
+        "%(levelprefix)s HTTP %(status_code)s"
+    )
 
     encoded_formatters = json.dumps(config["formatters"], sort_keys=True).casefold()
     for forbidden in (
@@ -62,8 +67,47 @@ def test_railway_logging_config_uses_stream_only_severity_routing() -> None:
         "database_url",
         "document",
         "ciphertext",
+        "client_addr",
+        "request_line",
     ):
         assert forbidden not in encoded_formatters
+
+
+def test_railway_logging_config_loads_and_routes_real_records() -> None:
+    script = """
+import json
+import logging
+from logging.config import dictConfig
+from pathlib import Path
+
+config = json.loads(Path('logging.railway.json').read_text(encoding='utf-8'))
+dictConfig(config)
+logging.getLogger('amthero24.synthetic').info('synthetic-info')
+logging.getLogger('amthero24.synthetic').error('synthetic-error')
+logging.getLogger('uvicorn.access').info(
+    '%s - \"%s %s HTTP/%s\" %d',
+    '198.51.100.25',
+    'GET',
+    '/private?token=synthetic-secret',
+    '1.1',
+    200,
+)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "synthetic-info" in completed.stdout
+    assert "synthetic-error" not in completed.stdout
+    assert "HTTP 200" in completed.stdout
+    assert "198.51.100.25" not in completed.stdout
+    assert "/private" not in completed.stdout
+    assert "synthetic-secret" not in completed.stdout
+    assert "synthetic-info" not in completed.stderr
+    assert "synthetic-error" in completed.stderr
 
 
 def test_max_level_filter_sends_info_to_stdout_and_errors_to_stderr() -> None:
