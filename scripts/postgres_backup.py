@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,11 @@ if str(_ROOT) not in sys.path:
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from backup_recovery import (
+    BackupRecoveryError,
+    record_backup_event,
+    safe_backup_error_code,
+)
 from postgres_cli_env import postgres_cli_environment
 from schema_recovery import inspect_database_schema
 from scripts.verify_backup_volume import (
@@ -183,6 +189,10 @@ def decrypt_backup(artifact: Path, destination: Path, *, encryption_key: str) ->
         raise ValueError("Backup decryption failed") from exc
 
 
+def _latency_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create an encrypted AmtHero24 PostgreSQL backup.")
     parser.add_argument("--database-url", default=os.getenv("DATABASE_URL", ""))
@@ -193,11 +203,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pg-dump", default=os.getenv("PG_DUMP_BINARY", "pg_dump"))
     args = parser.parse_args(argv)
 
+    receipt_started = False
+    operation_started = time.perf_counter()
     try:
         verify_backup_volume_from_system(
             os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ""),
             str(args.output_dir or ""),
         )
+        record_backup_event(
+            args.database_url,
+            "started",
+            latency_ms=0,
+        )
+        receipt_started = True
         artifact, manifest, metadata = create_backup(
             args.database_url,
             Path(args.output_dir),
@@ -206,14 +224,33 @@ def main(argv: list[str] | None = None) -> int:
             keep=max(1, args.keep),
             pg_dump_binary=args.pg_dump,
         )
+        record_backup_event(
+            args.database_url,
+            "success",
+            latency_ms=_latency_ms(operation_started),
+        )
     except (
+        BackupRecoveryError,
         BackupVolumeError,
         ValueError,
         RuntimeError,
         subprocess.SubprocessError,
         OSError,
     ) as exc:
-        print(f"Backup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if receipt_started:
+            try:
+                record_backup_event(
+                    args.database_url,
+                    "failure",
+                    latency_ms=_latency_ms(operation_started),
+                    error_code=safe_backup_error_code(exc),
+                )
+            except BackupRecoveryError:
+                pass
+        print(
+            f"Backup failed: {type(exc).__name__}: {safe_backup_error_code(exc)}",
+            file=sys.stderr,
+        )
         return 1
 
     print(json.dumps({"status": "created", "artifact": str(artifact), "manifest": str(manifest), "size_bytes": metadata["artifact_size_bytes"], "schema_version": metadata["schema_version"]}))

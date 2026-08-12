@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from backup_recovery import BackupRecoveryError
 from scripts.postgres_backup import main as backup_main
 from scripts.verify_backup_volume import (
     BackupVolumeError,
@@ -170,7 +171,9 @@ def test_backup_cli_checks_volume_before_database_or_dump(
     with patch(
         "scripts.postgres_backup.verify_backup_volume_from_system",
         side_effect=BackupVolumeError("mount_not_attached"),
-    ), patch("scripts.postgres_backup.create_backup") as create:
+    ), patch("scripts.postgres_backup.create_backup") as create, patch(
+        "scripts.postgres_backup.record_backup_event"
+    ) as record:
         exit_code = backup_main(
             [
                 "--database-url",
@@ -186,6 +189,124 @@ def test_backup_cli_checks_volume_before_database_or_dump(
     assert "private.invalid" not in captured.err
     assert "not-inspected-before-volume-check" not in captured.err
     create.assert_not_called()
+    record.assert_not_called()
+
+
+def test_backup_cli_records_started_then_success_after_artifact(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = tmp_path / "amthero24.dump.fernet"
+    manifest = tmp_path / "amthero24.dump.fernet.manifest.json"
+    artifact.write_bytes(b"encrypted")
+    manifest.write_text("{}", encoding="utf-8")
+    metadata = {"artifact_size_bytes": 9, "schema_version": 2}
+
+    with patch(
+        "scripts.postgres_backup.verify_backup_volume_from_system"
+    ), patch(
+        "scripts.postgres_backup.create_backup",
+        return_value=(artifact, manifest, metadata),
+    ), patch(
+        "scripts.postgres_backup.record_backup_event",
+        return_value={"receipt": "recent_success"},
+    ) as record:
+        exit_code = backup_main(
+            [
+                "--database-url",
+                "postgresql://synthetic.invalid/database",
+                "--output-dir",
+                str(tmp_path),
+                "--encryption-key",
+                "synthetic-key-not-used-by-mock",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert json.loads(captured.out)["status"] == "created"
+    assert [call.args[1] for call in record.call_args_list] == ["started", "success"]
+    assert record.call_args_list[0].kwargs["latency_ms"] == 0
+    assert record.call_args_list[1].kwargs["latency_ms"] >= 0
+
+
+def test_backup_cli_records_failure_after_started_attempt(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch(
+        "scripts.postgres_backup.verify_backup_volume_from_system"
+    ), patch(
+        "scripts.postgres_backup.create_backup",
+        side_effect=RuntimeError("pg_dump_failed"),
+    ), patch(
+        "scripts.postgres_backup.record_backup_event",
+        return_value={"receipt": "latest_failure"},
+    ) as record:
+        exit_code = backup_main(
+            [
+                "--database-url",
+                "postgresql://private.invalid/database",
+                "--output-dir",
+                str(tmp_path),
+                "--encryption-key",
+                "private-encryption-value",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert [call.args[1] for call in record.call_args_list] == ["started", "failure"]
+    assert record.call_args_list[1].kwargs["error_code"] == "pg_dump_failed"
+    assert "RuntimeError: pg_dump_failed" in captured.err
+    assert "private.invalid" not in captured.err
+    assert "private-encryption-value" not in captured.err
+
+
+def test_backup_cli_fails_when_success_receipt_cannot_be_persisted(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = tmp_path / "amthero24.dump.fernet"
+    manifest = tmp_path / "amthero24.dump.fernet.manifest.json"
+    metadata = {"artifact_size_bytes": 9, "schema_version": 2}
+
+    with patch(
+        "scripts.postgres_backup.verify_backup_volume_from_system"
+    ), patch(
+        "scripts.postgres_backup.create_backup",
+        return_value=(artifact, manifest, metadata),
+    ), patch(
+        "scripts.postgres_backup.record_backup_event",
+        side_effect=(
+            {"receipt": "latest_started"},
+            BackupRecoveryError("receipt_write_failed"),
+            {"receipt": "latest_failure"},
+        ),
+    ) as record:
+        exit_code = backup_main(
+            [
+                "--database-url",
+                "postgresql://private.invalid/database",
+                "--output-dir",
+                str(tmp_path),
+                "--encryption-key",
+                "private-encryption-value",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert record.call_count == 3
+    assert [call.args[1] for call in record.call_args_list] == [
+        "started",
+        "success",
+        "failure",
+    ]
+    assert "BackupRecoveryError: receipt_write_failed" in captured.err
+    assert "private.invalid" not in captured.err
+    assert "private-encryption-value" not in captured.err
+    assert '"status": "created"' not in captured.out
 
 
 def test_backup_module_entrypoint_loads_repository_dependencies() -> None:
