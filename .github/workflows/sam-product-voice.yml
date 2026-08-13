@@ -1,0 +1,67 @@
+name: Sam Product Voice
+
+on:
+  pull_request:
+    paths:
+      - "product_knowledge.py"
+      - "sam_product_voice.py"
+      - "sam_conversation_voice.py"
+      - "reminder_language_extensions.py"
+      - "tests/test_product_knowledge.py"
+      - "tests/test_sam_product_voice.py"
+      - "tests/test_sam_conversation_voice.py"
+      - "tests/test_reminder_language_extensions.py"
+      - ".github/workflows/sam-product-voice.yml"
+  push:
+    branches: [main]
+    paths:
+      - "product_knowledge.py"
+      - "sam_product_voice.py"
+      - "sam_conversation_voice.py"
+      - "reminder_language_extensions.py"
+      - "tests/test_product_knowledge.py"
+      - "tests/test_sam_product_voice.py"
+      - "tests/test_sam_conversation_voice.py"
+      - "tests/test_reminder_language_extensions.py"
+      - ".github/workflows/sam-product-voice.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sam-product-voice-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  product-voice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install development dependencies
+        run: python -m pip install --quiet -r requirements-dev.txt
+      - name: Compile product voice composition
+        run: >-
+          python -m compileall -q
+          product_knowledge.py
+          sam_product_voice.py
+          sam_conversation_voice.py
+          reminder_language_extensions.py
+          tests/test_product_knowledge.py
+          tests/test_sam_product_voice.py
+          tests/test_sam_conversation_voice.py
+          tests/test_reminder_language_extensions.py
+      - name: Prove localized identity, capability, and safety boundaries
+        run: >-
+          python -m pytest -q
+          tests/test_product_knowledge.py
+          tests/test_sam_product_voice.py
+          tests/test_sam_conversation_voice.py
+          tests/test_reminder_language_extensions.py
