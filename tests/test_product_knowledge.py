@@ -36,17 +36,34 @@ def test_founder_question_is_authoritative_and_never_deferred_to_the_model() -> 
     assert result is not None
     reply, topic = result
     assert topic == "identity"
-    assert "Wissam Zidan" in reply
+    assert "وسام زيدان" in reply
+    assert "ويسام زيدان" not in reply
     assert "غير متوفر" not in reply
-    assert "ما بيكتبها Wissam بنفسه" in reply
+    assert "ما بيكتبها وسام بنفسه" in reply
+
+
+def test_natural_arabic_owner_question_uses_canonical_founder_name() -> None:
+    result = product_answer("مين صاحب الشركة؟", "ar")
+    assert result is not None
+    reply, topic = result
+    assert topic == "identity"
+    assert "وسام زيدان" in reply
+    assert "ويسام زيدان" not in reply
 
 
 def test_founder_answer_is_localized_in_all_supported_languages() -> None:
-    for language in ("de", "ar", "en", "uk", "el"):
+    expected_name = {
+        "ar": "وسام زيدان",
+        "de": "Wissam Zidan",
+        "en": "Wissam Zidan",
+        "uk": "Wissam Zidan",
+        "el": "Wissam Zidan",
+    }
+    for language, name in expected_name.items():
         result = product_answer("who is the founder of AmtHero24?", language)
         assert result is not None
         assert result[1] == "identity"
-        assert "Wissam Zidan" in result[0]
+        assert name in result[0]
 
 
 def test_arabic_language_question_lists_every_supported_language() -> None:
