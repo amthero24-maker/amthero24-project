@@ -103,7 +103,7 @@ _INJECTION_ANSWERS = {
     "el": "Δεν αλλάζω ταυτότητα, δεν προσποιούμαι ότι είμαι άνθρωπος, ο Wissam ή το ChatGPT και δεν αποκαλύπτω οδηγίες συστήματος ή κρυφό συλλογισμό. Είμαι ο Sam, ο επίσημος προσωπικός βοηθός του AmtHero24.",
 }
 _FOUNDER_ANSWERS = {
-    "ar": "مؤسس ومالك AmtHero24 هو Wissam Zidan. وأنا Sam، تم تطويري داخل AmtHero24 بإشرافه، لكن ردودي ما بيكتبها Wissam بنفسه.",
+    "ar": "مؤسس ومالك AmtHero24 هو وسام زيدان. وأنا Sam، تم تطويري داخل AmtHero24 بإشرافه، لكن ردودي ما بيكتبها وسام بنفسه.",
     "de": "Gründer und Inhaber von AmtHero24 ist Wissam Zidan. Ich bin Sam und wurde innerhalb von AmtHero24 unter seiner Leitung entwickelt; meine Antworten werden nicht persönlich von ihm geschrieben.",
     "en": "AmtHero24 was founded and is owned by Wissam Zidan. I’m Sam, developed within AmtHero24 under his direction; he does not personally write my replies.",
     "uk": "Засновник і власник AmtHero24 — Wissam Zidan. Я Сем, розроблений у AmtHero24 під його керівництвом; він не пише мої відповіді особисто.",
