@@ -12,7 +12,6 @@ from conversation_intelligence import detect_language
 from data_store import JsonDataStore
 from official_draft_delivery import (
     DRAFT_MARKER,
-    DRAFT_OUTPUT_KIND,
     END_MARKER,
     EXPLANATION_MARKER,
     CopySafeDraftFormatError,
@@ -119,9 +118,12 @@ async def test_runtime_delivers_draft_and_explanation_as_two_messages(tmp_path) 
     assert explanation.startswith("المسودة منفصلة")
 
     profile = store.get_user("49123")
-    assert profile["session_output_kind"] == DRAFT_OUTPUT_KIND
     assert profile["session_last_reply"] == draft
     assert profile["last_assistant_reply"] == draft
+    assert is_official_draft_turn(
+        "عدّل المسودة وخليها أقصر.",
+        profile,
+    ) is True
     assert store.snapshot()["messages"]["cancel-1"]["status"] == "sent"
 
 
@@ -144,9 +146,12 @@ async def test_secondary_explanation_failure_does_not_fail_primary_draft(tmp_pat
     await core.process_incoming(message)
 
     assert send.await_count == 2
-    assert "Sehr geehrte Damen und Herren" in send.await_args_list[0].args[1]
+    draft = send.await_args_list[0].args[1]
+    assert "Sehr geehrte Damen und Herren" in draft
     assert store.snapshot()["messages"]["cancel-2"]["status"] == "sent"
-    assert store.get_user("49123")["session_output_kind"] == DRAFT_OUTPUT_KIND
+    profile = store.get_user("49123")
+    assert profile["session_last_reply"] == draft
+    assert profile["last_assistant_reply"] == draft
 
 
 @pytest.mark.anyio
@@ -169,7 +174,9 @@ async def test_focused_clarification_remains_one_ordinary_message(tmp_path) -> N
     await core.process_incoming(message)
 
     send.assert_awaited_once_with("49123", clarification)
-    assert store.get_user("49123")["session_output_kind"] == "ordinary"
+    profile = store.get_user("49123")
+    assert profile["session_last_reply"] == clarification
+    assert is_official_draft_turn("عدّل المسودة.", profile) is False
 
 
 @pytest.mark.anyio
