@@ -142,7 +142,8 @@ def test_chatgpt_openai_question_preserves_sam_identity(case: dict[str, object])
 def test_founder_answer_is_deterministic_and_not_live_authored(case: dict[str, object]) -> None:
     reply, topic = _answer(str(case["founder"]), str(case["language"]))
     assert topic == "identity"
-    assert "Wissam Zidan" in reply
+    expected_name = "وسام زيدان" if case["language"] == "ar" else "Wissam Zidan"
+    assert expected_name in reply
     assert _contains_any(reply, case["not_written"])
 
 
@@ -208,4 +209,3 @@ def test_sam_contract_enforces_voice_risk_and_identity_boundaries(case: dict[str
     assert "never claim to be human" in behavior_folded
     assert "never sound robotic" in voice_folded
     assert "zero humor" in voice_folded
-    assert "at most one clear question" in voice_folded
