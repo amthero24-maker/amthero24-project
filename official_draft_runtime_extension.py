@@ -12,8 +12,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from official_draft_delivery import (
-    DRAFT_OUTPUT_KIND,
-    ORDINARY_OUTPUT_KIND,
     CopySafeDraftFormatError,
     CopySafeDraftReply,
     activate_official_draft_turn,
@@ -56,19 +54,20 @@ def _conversation_language(core: Any, message: Any, profile: dict[str, Any]) -> 
     return language if language in {"de", "ar", "en", "uk", "el"} else "de"
 
 
-def _update_output_context(
+def _retain_clean_draft_context(
     core: Any,
     message: Any,
     profile: dict[str, Any],
     parsed: CopySafeDraftReply | None,
 ) -> None:
+    """Replace any raw marker/mixed reply retained by the existing app path."""
+    if parsed is None:
+        return
     updates: dict[str, Any] = {
-        "session_output_kind": DRAFT_OUTPUT_KIND if parsed is not None else ORDINARY_OUTPUT_KIND,
+        "session_last_reply": parsed.draft,
     }
-    if parsed is not None:
-        updates["session_last_reply"] = parsed.draft
-        if profile.get("memory_consent") == "granted":
-            updates["last_assistant_reply"] = parsed.draft
+    if profile.get("memory_consent") == "granted":
+        updates["last_assistant_reply"] = parsed.draft
     core.store.update_user(message.sender, updates)
 
 
@@ -124,12 +123,7 @@ def install(core: Any) -> None:
         )
 
         if not active:
-            previous_kind = str(profile.get("session_output_kind") or "")
             await original_process(message)
-            if previous_kind == DRAFT_OUTPUT_KIND:
-                core.store.update_user(message.sender, {
-                    "session_output_kind": ORDINARY_OUTPUT_KIND,
-                })
             return
 
         state = _DeliveryState(
@@ -145,7 +139,7 @@ def install(core: Any) -> None:
             reset_official_draft_turn(draft_token)
             _ACTIVE_DELIVERY.reset(delivery_token)
 
-        _update_output_context(core, message, profile, state.parsed)
+        _retain_clean_draft_context(core, message, profile, state.parsed)
 
     core.send_whatsapp_message = send_whatsapp_message
     core.process_incoming = process_incoming
