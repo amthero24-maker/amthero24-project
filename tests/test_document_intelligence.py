@@ -1,9 +1,32 @@
 """Structured document intelligence tests."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
+from unittest.mock import AsyncMock, patch
 
+import pytest
+
+import reminder_language_extensions as language_layer
+from data_store import JsonDataStore
 from document_intelligence import analyze_document_text, prompt_facts
+from pasted_document_grounding import (
+    extract_pasted_invoice_facts,
+    grounded_pasted_invoice_reply,
+)
+
+
+_PASTED_INVOICE = """وصلتني هالرسالة، اشرحلي بالعربي شو المطلوب مني:
+
+Musterstadt Energie GmbH
+Datum: 14.08.2026
+Betreff: Offene Rechnung
+Kundennummer: TEST-4821
+Betrag: 48,50 EUR
+Zahlungsfrist: 28.08.2026
+
+Bitte überweisen Sie den offenen Betrag bis zum genannten Datum.
+Falls Sie bereits bezahlt haben, senden Sie uns bitte einen Zahlungsnachweis.
+"""
 
 
 def test_extracts_deadline_amount_reference_and_category() -> None:
@@ -57,3 +80,159 @@ def test_prompt_exposes_verified_hints_but_pending_action_excludes_sensitive_det
     assert pending is not None
     assert "amounts" not in pending
     assert "references" not in pending
+
+
+def test_pasted_invoice_grounding_keeps_customer_number_identifier_only() -> None:
+    facts = extract_pasted_invoice_facts(_PASTED_INVOICE)
+    assert facts is not None
+    assert facts.sender == "Musterstadt Energie GmbH"
+    assert facts.amount == "48,50 EUR"
+    assert facts.deadline == "28.08.2026"
+    assert facts.customer_number == "TEST-4821"
+    assert facts.payment_purpose == ""
+    assert facts.customer_number_explicitly_assigned_as_purpose is False
+
+    reply = grounded_pasted_invoice_reply(_PASTED_INVOICE, language="ar")
+    assert reply is not None
+    assert "Musterstadt Energie GmbH" in reply
+    assert "48,50 EUR" in reply
+    assert "28.08.2026" in reply
+    assert "TEST-4821 ظاهر كرقم عميل فقط" in reply
+    assert "النص ما بيطلب استخدامه كمرجع أو غرض للتحويل" in reply
+    assert "بيانات الحساب وغرض التحويل غير ظاهرين" in reply
+    assert "اكتب رقم العميل" not in reply
+    assert "في أقرب وقت" not in reply
+
+
+def test_pasted_invoice_grounding_allows_only_explicit_payment_purpose() -> None:
+    text = _PASTED_INVOICE.replace(
+        "Betrag: 48,50 EUR",
+        "Betrag: 48,50 EUR\nVerwendungszweck: RE-2026-48",
+    )
+    reply = grounded_pasted_invoice_reply(text, language="de")
+    assert reply is not None
+    assert "Angegebener Verwendungszweck: RE-2026-48" in reply
+    assert "nur als Kundennummer bezeichnet" not in reply
+    assert "Die Bankverbindung fehlt" in reply
+
+
+def test_pasted_invoice_grounding_fails_closed_for_unstructured_chat() -> None:
+    assert grounded_pasted_invoice_reply(
+        "Ich brauche Hilfe mit einer Rechnung.",
+        language="de",
+    ) is None
+
+
+def test_grounded_document_language_keeps_profile_language_for_bare_german_text() -> None:
+    bare_document = _PASTED_INVOICE.split("\n\n", 1)[1]
+    profile = {
+        "memory_consent": "granted",
+        "onboarding_stage": "complete",
+        "preferred_language": "ar",
+        "session_language": "ar",
+    }
+    assert language_layer._grounded_document_language(bare_document, profile) == "ar"
+
+
+def test_explicit_document_draft_request_is_not_taken_over_by_grounding() -> None:
+    draft_request = _PASTED_INVOICE.replace(
+        "وصلتني هالرسالة، اشرحلي بالعربي شو المطلوب مني:",
+        "اكتبلي رد بالألماني على هالرسالة:",
+    )
+    assert language_layer._explicit_document_draft_request(draft_request) is True
+
+
+def _seed_complete_user(store: JsonDataStore) -> None:
+    store.update_user("49123", {
+        "memory_consent": "granted",
+        "memory_consent_at": datetime.now(UTC).isoformat(),
+        "memory_consent_version": "test-v1",
+        "onboarding_stage": "complete",
+        "preferred_language": "ar",
+        "session_language": "ar",
+    })
+
+
+@pytest.mark.anyio
+async def test_final_language_layer_skips_model_for_grounded_pasted_invoice(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_complete_user(store)
+    monkeypatch.setattr(language_layer.core, "store", store)
+
+    message = language_layer.core.IncomingMessage(
+        "invoice-text-1",
+        "49123",
+        _PASTED_INVOICE,
+        "text",
+    )
+    store.claim_message(message.message_id, message.sender, message.text)
+
+    blocked_delegate = AsyncMock(
+        side_effect=AssertionError("grounded invoice must not reach model path")
+    )
+    with patch.object(
+        language_layer,
+        "_ORIGINAL_PROCESS_INCOMING",
+        new=blocked_delegate,
+    ), patch.object(
+        language_layer.core,
+        "send_whatsapp_message",
+        new=AsyncMock(),
+    ) as send:
+        await language_layer.process_incoming(message)
+
+    blocked_delegate.assert_not_awaited()
+    send.assert_awaited_once()
+    reply = send.await_args.args[1]
+    assert "TEST-4821 ظاهر كرقم عميل فقط" in reply
+    assert "اكتب رقم العميل" not in reply
+
+    profile = store.get_user("49123")
+    assert profile["session_topic"] == "document"
+    assert profile["current_topic"] == "document"
+    assert profile["last_message"] == "Pasted document text processed transiently"
+    assert "last_assistant_reply" not in profile
+    assert "Musterstadt Energie GmbH\nDatum" not in profile["conversation_summary"]
+    assert store.snapshot()["messages"]["invoice-text-1"]["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_final_language_layer_yields_explicit_draft_request_to_existing_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_complete_user(store)
+    monkeypatch.setattr(language_layer.core, "store", store)
+
+    draft_text = _PASTED_INVOICE.replace(
+        "وصلتني هالرسالة، اشرحلي بالعربي شو المطلوب مني:",
+        "اكتبلي رد بالألماني على هالرسالة:",
+    )
+    message = language_layer.core.IncomingMessage(
+        "invoice-draft-1",
+        "49123",
+        draft_text,
+        "text",
+    )
+    store.claim_message(message.message_id, message.sender, message.text)
+
+    delegate = AsyncMock()
+    with patch.object(
+        language_layer,
+        "_ORIGINAL_PROCESS_INCOMING",
+        new=delegate,
+    ), patch.object(
+        language_layer.core,
+        "send_whatsapp_message",
+        new=AsyncMock(),
+    ) as send:
+        await language_layer.process_incoming(message)
+
+    delegate.assert_awaited_once_with(message)
+    send.assert_not_awaited()

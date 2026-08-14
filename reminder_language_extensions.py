@@ -13,6 +13,7 @@ import onboarding as onboarding_rules
 import reminder_conversation_extensions as reminders
 import sam_product_voice as sam_voice
 import sam_conversation_voice as sam_conversation
+from pasted_document_grounding import grounded_pasted_invoice_reply
 
 core = reminders.core
 base = reminders.base
@@ -20,6 +21,27 @@ _ORIGINAL_PROCESS_INCOMING = reminders.process_incoming
 _ORIGINAL_EXTRACT_TITLE = reminders._extract_title
 _ORIGINAL_IS_NAME_QUESTION = core.is_name_question
 _INSTALLED = False
+
+_DOCUMENT_DRAFT_PREFIX = re.compile(
+    r"(?:"
+    r"(?:اكتب(?:لي)?|صيغ(?:لي)?|صغ|جهز(?:لي)?|اعمل(?:لي)?)\s+(?:رد|جواب|اعتراض)"
+    r"|(?:اكتب|قدم|جهز)\s+(?:اعتراض|إلغاء|الغاء)"
+    r"|\b(?:schreib|formuliere|antworte|widerspruch|kündig|draft|write|reply|appeal|cancel)\w*\b"
+    r"|(?:напиши|сформулюй|відповідь|оскарження)"
+    r"|(?:γράψε|σύνταξε|απάντηση|ένσταση)"
+    r")",
+    re.IGNORECASE,
+)
+_DOCUMENT_EXPLANATION_PREFIX = re.compile(
+    r"(?:"
+    r"اشرح|فهمني|شو\s+المطلوب|شو\s+يعني"
+    r"|\b(?:erklär|erklaer|was\s+bedeutet|was\s+soll|explain|what\s+does|what\s+do\s+i\s+need)\w*\b"
+    r"|(?:поясни|що\s+потрібно)"
+    r"|(?:εξήγησε|τι\s+χρειάζεται)"
+    r")",
+    re.IGNORECASE,
+)
+_NON_LATIN_SCRIPT = re.compile(r"[\u0370-\u03ff\u0400-\u04ff\u0600-\u06ff]")
 
 
 def _normalize_name_question(text: str) -> str:
@@ -103,12 +125,88 @@ def should_clarify_implicit_snooze(intent: Any, recent_count: int) -> bool:
     )
 
 
+def _first_nonempty_line(text: str) -> str:
+    return next(
+        (line.strip() for line in str(text or "").splitlines() if line.strip()),
+        "",
+    )[:240]
+
+
+def _explicit_document_draft_request(text: str) -> bool:
+    """Keep drafting/appeal/cancellation requests on the existing writing path."""
+    first_line = _first_nonempty_line(text)
+    return bool(first_line and _DOCUMENT_DRAFT_PREFIX.search(first_line))
+
+
+def _grounded_document_language(text: str, profile: dict[str, Any]) -> str:
+    """Do not let the German body of a pasted document overwrite user language."""
+    fallback = base._language(profile)
+    first_line = _first_nonempty_line(text)
+    if not first_line:
+        return fallback
+    if (
+        _DOCUMENT_EXPLANATION_PREFIX.search(first_line)
+        or _NON_LATIN_SCRIPT.search(first_line)
+    ):
+        return detect_turn_language(first_line, profile)
+    return fallback
+
+
+async def _finish_grounded_document_turn(
+    message: Any,
+    *,
+    language: str,
+    reply: str,
+    profile: dict[str, Any],
+) -> None:
+    """Persist only bounded context for a deterministic pasted-document reply."""
+    updates: dict[str, Any] = {
+        "session_language": language,
+        "session_topic": "document",
+        "session_last_reply": reply,
+        "session_expires_at": core._session_expiry(),
+        "last_seen": core._now().isoformat(),
+    }
+    if profile.get("memory_consent") == "granted":
+        updates.update({
+            "preferred_language": language,
+            "current_topic": "document",
+            "last_message": "Pasted document text processed transiently",
+            "last_message_type": "document",
+            "conversation_summary": (
+                f"Language={language}; topic=document; "
+                "pasted document content processed transiently and not retained"
+            ),
+        })
+    core.store.update_user(message.sender, updates)
+    await core._finish(message.message_id, reply, message.sender)
+
+
 async def process_incoming(message: Any) -> None:
     if message.message_type == "text" and str(message.text or "").strip():
+        profile = core.store.get_user(message.sender)
+        stage = str(profile.get("onboarding_stage") or "")
+
+        if stage == "complete" and not _explicit_document_draft_request(message.text):
+            grounded_language = _grounded_document_language(message.text, profile)
+            grounded_reply = grounded_pasted_invoice_reply(
+                message.text,
+                language=grounded_language,
+            )
+            if grounded_reply is not None:
+                await _finish_grounded_document_turn(
+                    message,
+                    language=grounded_language,
+                    reply=grounded_reply,
+                    profile=profile,
+                )
+                return
+
         language = prepare_turn_language(message)
         profile = core.store.get_user(message.sender)
+        stage = str(profile.get("onboarding_stage") or "")
         if (
-            str(profile.get("onboarding_stage") or "") == "complete"
+            stage == "complete"
             and profile.get("memory_consent") == "granted"
             and base.reminder_delivery_ready(message.sender)
         ):
