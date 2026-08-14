@@ -19,6 +19,7 @@ def test_all_backup_profiles_pin_the_dockerfile_builder() -> None:
         "railway.backup.json",
         "railway.backup.certification.json",
         "railway.backup.retention-probe.json",
+        "railway.restore.certification.json",
     ):
         config = json.loads(Path(path).read_text(encoding="utf-8"))
         assert config["build"] == {
