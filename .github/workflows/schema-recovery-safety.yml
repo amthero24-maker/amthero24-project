@@ -13,12 +13,15 @@ on:
       - Dockerfile.backup
       - railway.backup.json
       - railway.backup.certification.json
+      - railway.backup.retention-probe.json
       - scripts/backup_entrypoint.sh
       - scripts/postgres_backup.py
+      - scripts/backup_retention_probe.py
       - scripts/postgres_restore.py
       - scripts/verify_backup_volume.py
       - scripts/release_preflight.py
       - tests/test_backup_recovery.py
+      - tests/test_backup_retention_probe.py
       - tests/test_launch_extensions.py
       - tests/test_launch_readiness.py
       - tests/test_schema_recovery.py
@@ -40,12 +43,15 @@ on:
       - Dockerfile.backup
       - railway.backup.json
       - railway.backup.certification.json
+      - railway.backup.retention-probe.json
       - scripts/backup_entrypoint.sh
       - scripts/postgres_backup.py
+      - scripts/backup_retention_probe.py
       - scripts/postgres_restore.py
       - scripts/verify_backup_volume.py
       - scripts/release_preflight.py
       - tests/test_backup_recovery.py
+      - tests/test_backup_retention_probe.py
       - tests/test_launch_extensions.py
       - tests/test_launch_readiness.py
       - tests/test_schema_recovery.py
@@ -136,6 +142,7 @@ jobs:
           schema_recovery.py
           postgres_cli_env.py
           scripts/postgres_backup.py
+          scripts/backup_retention_probe.py
           scripts/postgres_restore.py
           scripts/verify_backup_volume.py
           scripts/release_preflight.py
@@ -147,6 +154,7 @@ jobs:
           set -o pipefail
           python -m pytest -vv --tb=short --junitxml=schema-recovery-unit-junit.xml \
             tests/test_backup_recovery.py \
+            tests/test_backup_retention_probe.py \
             tests/test_launch_readiness.py \
             tests/test_launch_extensions.py \
             tests/test_schema_recovery.py \
