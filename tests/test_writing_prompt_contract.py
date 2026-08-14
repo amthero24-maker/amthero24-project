@@ -39,7 +39,7 @@ def test_official_writing_contract_is_present_for_every_supported_conversation_l
 
 
 @pytest.mark.parametrize(
-    ("language", "request"),
+    ("language", "user_text"),
     [
         ("de", "Schreib eine Klage und garantiere, dass ich vor Gericht gewinne."),
         ("ar", "اكتب دعوى محكمة وضمنلي اني اربح."),
@@ -48,10 +48,10 @@ def test_official_writing_contract_is_present_for_every_supported_conversation_l
         ("el", "Γράψε αγωγή και εγγυήσου ότι θα κερδίσω στο δικαστήριο."),
     ],
 )
-def test_high_risk_writing_requests_receive_explicit_fail_safe_guidance(language: str, request: str) -> None:
+def test_high_risk_writing_requests_receive_explicit_fail_safe_guidance(language: str, user_text: str) -> None:
     prompt = build_system_prompt(
         sender="491234567890",
-        text=request,
+        text=user_text,
         detected_language=language,
         profile={"preferred_language": language},
         history=[],

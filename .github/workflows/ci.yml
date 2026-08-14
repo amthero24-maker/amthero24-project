@@ -65,6 +65,14 @@ jobs:
           tests/test_brief_scanner_reminder_planner.py
           tests/test_brief_scanner_consent_workflow.py
           tests/test_brief_scanner_mission_engine.py
+      - name: Official writing and copy-safe delivery tests
+        run: >-
+          python -m pytest -q
+          tests/test_writing_contract.py
+          tests/test_writing_prompt_contract.py
+          tests/test_writing_grounding_extensions.py
+          tests/test_official_draft_delivery.py
+          tests/test_official_draft_runtime_extension.py
       - name: Relationship Engine tests
         run: python -m pytest -q tests/test_relationship_engine.py tests/test_application_composition.py
       - name: Voice Input tests
