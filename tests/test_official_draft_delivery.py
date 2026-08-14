@@ -15,7 +15,7 @@ from official_draft_delivery import (
 
 
 @pytest.mark.parametrize(
-    "request",
+    "user_text",
     (
         "اكتبلي رسالة رسمية بالألماني إلى شركة التأمين.",
         "Kündige meinen Fitnessstudio-Vertrag zum nächstmöglichen Zeitpunkt.",
@@ -24,8 +24,8 @@ from official_draft_delivery import (
         "Γράψε απάντηση για τον έλεγχο του συμβολαίου.",
     ),
 )
-def test_detects_official_draft_requests_across_languages_and_mvp_journeys(request: str) -> None:
-    assert is_official_draft_turn(request, {}) is True
+def test_detects_official_draft_requests_across_languages_and_mvp_journeys(user_text: str) -> None:
+    assert is_official_draft_turn(user_text, {}) is True
 
 
 def test_document_explanation_is_not_misclassified_as_a_draft() -> None:
@@ -34,10 +34,10 @@ def test_document_explanation_is_not_misclassified_as_a_draft() -> None:
 
 
 def test_bounded_revision_requires_previous_draft_state() -> None:
-    request = "عدّل المسودة وخلي تاريخ العقد صحيح."
-    assert is_official_draft_turn(request, {}) is False
+    user_text = "عدّل المسودة وخلي تاريخ العقد صحيح."
+    assert is_official_draft_turn(user_text, {}) is False
     assert is_official_draft_turn(
-        request,
+        user_text,
         {"session_output_kind": DRAFT_OUTPUT_KIND},
     ) is True
     assert is_official_draft_turn(
