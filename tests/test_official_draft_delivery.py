@@ -5,13 +5,22 @@ import pytest
 
 from official_draft_delivery import (
     DRAFT_MARKER,
-    DRAFT_OUTPUT_KIND,
     END_MARKER,
     EXPLANATION_MARKER,
     build_copy_safe_prompt_contract,
     is_official_draft_turn,
     parse_copy_safe_draft_reply,
 )
+
+
+_PREVIOUS_DRAFT = """Betreff: Kündigung
+
+Sehr geehrte Damen und Herren,
+
+hiermit kündige ich meinen Vertrag zum nächstmöglichen Zeitpunkt.
+
+Mit freundlichen Grüßen
+[Ihr Name]"""
 
 
 @pytest.mark.parametrize(
@@ -33,17 +42,21 @@ def test_document_explanation_is_not_misclassified_as_a_draft() -> None:
     assert is_official_draft_turn("Explain what this cancellation letter means.", {}) is False
 
 
-def test_bounded_revision_requires_previous_draft_state() -> None:
+def test_bounded_revision_requires_a_clean_previous_draft() -> None:
     user_text = "عدّل المسودة وخلي تاريخ العقد صحيح."
     assert is_official_draft_turn(user_text, {}) is False
     assert is_official_draft_turn(
         user_text,
-        {"session_output_kind": DRAFT_OUTPUT_KIND},
+        {"session_last_reply": _PREVIOUS_DRAFT},
     ) is True
     assert is_official_draft_turn(
         "بالألماني",
-        {"session_output_kind": DRAFT_OUTPUT_KIND},
+        {"session_last_reply": _PREVIOUS_DRAFT},
     ) is True
+    assert is_official_draft_turn(
+        user_text,
+        {"session_last_reply": "شو بتحب تعدّل؟"},
+    ) is False
 
 
 def test_active_prompt_contract_requires_private_routing_markers() -> None:
@@ -126,6 +139,27 @@ Mit freundlichen Grüßen
     assert parsed.draft == value
     assert "الرسالة السابقة" in parsed.explanation
     assert "لم يتم إرسالها" in parsed.explanation
+
+
+def test_outer_code_fence_is_removed_before_envelope_routing() -> None:
+    value = f"""```
+{DRAFT_MARKER}
+Betreff: Rückfrage
+
+Sehr geehrte Damen und Herren,
+
+bitte bestätigen Sie mir den Termin schriftlich.
+
+Mit freundlichen Grüßen
+[Ihr Name]
+{EXPLANATION_MARKER}
+المسودة لم تُرسل.
+{END_MARKER}
+```"""
+    parsed = parse_copy_safe_draft_reply(value, conversation_language="ar")
+    assert parsed is not None
+    assert parsed.draft.startswith("Betreff: Rückfrage")
+    assert "```" not in parsed.draft
 
 
 def test_partial_or_ambiguous_envelope_fails_closed() -> None:
