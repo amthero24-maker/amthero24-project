@@ -22,6 +22,27 @@ _ORIGINAL_EXTRACT_TITLE = reminders._extract_title
 _ORIGINAL_IS_NAME_QUESTION = core.is_name_question
 _INSTALLED = False
 
+_DOCUMENT_DRAFT_PREFIX = re.compile(
+    r"(?:"
+    r"(?:اكتب(?:لي)?|صيغ(?:لي)?|صغ|جهز(?:لي)?|اعمل(?:لي)?)\s+(?:رد|جواب|اعتراض)"
+    r"|(?:اكتب|قدم|جهز)\s+(?:اعتراض|إلغاء|الغاء)"
+    r"|\b(?:schreib|formuliere|antworte|widerspruch|kündig|draft|write|reply|appeal|cancel)\w*\b"
+    r"|(?:напиши|сформулюй|відповідь|оскарження)"
+    r"|(?:γράψε|σύνταξε|απάντηση|ένσταση)"
+    r")",
+    re.IGNORECASE,
+)
+_DOCUMENT_EXPLANATION_PREFIX = re.compile(
+    r"(?:"
+    r"اشرح|فهمني|شو\s+المطلوب|شو\s+يعني"
+    r"|\b(?:erklär|erklaer|was\s+bedeutet|was\s+soll|explain|what\s+does|what\s+do\s+i\s+need)\w*\b"
+    r"|(?:поясни|що\s+потрібно)"
+    r"|(?:εξήγησε|τι\s+χρειάζεται)"
+    r")",
+    re.IGNORECASE,
+)
+_NON_LATIN_SCRIPT = re.compile(r"[\u0370-\u03ff\u0400-\u04ff\u0600-\u06ff]")
+
 
 def _normalize_name_question(text: str) -> str:
     value = onboarding_rules._normalize(text)
@@ -104,6 +125,33 @@ def should_clarify_implicit_snooze(intent: Any, recent_count: int) -> bool:
     )
 
 
+def _first_nonempty_line(text: str) -> str:
+    return next(
+        (line.strip() for line in str(text or "").splitlines() if line.strip()),
+        "",
+    )[:240]
+
+
+def _explicit_document_draft_request(text: str) -> bool:
+    """Keep drafting/appeal/cancellation requests on the existing writing path."""
+    first_line = _first_nonempty_line(text)
+    return bool(first_line and _DOCUMENT_DRAFT_PREFIX.search(first_line))
+
+
+def _grounded_document_language(text: str, profile: dict[str, Any]) -> str:
+    """Do not let the German body of a pasted document overwrite user language."""
+    fallback = base._language(profile)
+    first_line = _first_nonempty_line(text)
+    if not first_line:
+        return fallback
+    if (
+        _DOCUMENT_EXPLANATION_PREFIX.search(first_line)
+        or _NON_LATIN_SCRIPT.search(first_line)
+    ):
+        return detect_turn_language(first_line, profile)
+    return fallback
+
+
 async def _finish_grounded_document_turn(
     message: Any,
     *,
@@ -125,7 +173,6 @@ async def _finish_grounded_document_turn(
             "current_topic": "document",
             "last_message": "Pasted document text processed transiently",
             "last_message_type": "document",
-            "last_assistant_reply": reply,
             "conversation_summary": (
                 f"Language={language}; topic=document; "
                 "pasted document content processed transiently and not retained"
@@ -137,23 +184,27 @@ async def _finish_grounded_document_turn(
 
 async def process_incoming(message: Any) -> None:
     if message.message_type == "text" and str(message.text or "").strip():
-        language = prepare_turn_language(message)
         profile = core.store.get_user(message.sender)
         stage = str(profile.get("onboarding_stage") or "")
 
-        grounded_reply = grounded_pasted_invoice_reply(
-            message.text,
-            language=language,
-        )
-        if grounded_reply is not None and stage == "complete":
-            await _finish_grounded_document_turn(
-                message,
-                language=language,
-                reply=grounded_reply,
-                profile=profile,
+        if stage == "complete" and not _explicit_document_draft_request(message.text):
+            grounded_language = _grounded_document_language(message.text, profile)
+            grounded_reply = grounded_pasted_invoice_reply(
+                message.text,
+                language=grounded_language,
             )
-            return
+            if grounded_reply is not None:
+                await _finish_grounded_document_turn(
+                    message,
+                    language=grounded_language,
+                    reply=grounded_reply,
+                    profile=profile,
+                )
+                return
 
+        language = prepare_turn_language(message)
+        profile = core.store.get_user(message.sender)
+        stage = str(profile.get("onboarding_stage") or "")
         if (
             stage == "complete"
             and profile.get("memory_consent") == "granted"
