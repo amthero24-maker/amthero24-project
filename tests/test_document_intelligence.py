@@ -123,13 +123,26 @@ def test_pasted_invoice_grounding_fails_closed_for_unstructured_chat() -> None:
     ) is None
 
 
-@pytest.mark.anyio
-async def test_final_language_layer_skips_model_for_grounded_pasted_invoice(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    store = JsonDataStore(tmp_path / "store.json")
+def test_grounded_document_language_keeps_profile_language_for_bare_german_text() -> None:
+    bare_document = _PASTED_INVOICE.split("\n\n", 1)[1]
+    profile = {
+        "memory_consent": "granted",
+        "onboarding_stage": "complete",
+        "preferred_language": "ar",
+        "session_language": "ar",
+    }
+    assert language_layer._grounded_document_language(bare_document, profile) == "ar"
+
+
+def test_explicit_document_draft_request_is_not_taken_over_by_grounding() -> None:
+    draft_request = _PASTED_INVOICE.replace(
+        "وصلتني هالرسالة، اشرحلي بالعربي شو المطلوب مني:",
+        "اكتبلي رد بالألماني على هالرسالة:",
+    )
+    assert language_layer._explicit_document_draft_request(draft_request) is True
+
+
+def _seed_complete_user(store: JsonDataStore) -> None:
     store.update_user("49123", {
         "memory_consent": "granted",
         "memory_consent_at": datetime.now(UTC).isoformat(),
@@ -138,6 +151,16 @@ async def test_final_language_layer_skips_model_for_grounded_pasted_invoice(
         "preferred_language": "ar",
         "session_language": "ar",
     })
+
+
+@pytest.mark.anyio
+async def test_final_language_layer_skips_model_for_grounded_pasted_invoice(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_complete_user(store)
     monkeypatch.setattr(language_layer.core, "store", store)
 
     message = language_layer.core.IncomingMessage(
@@ -172,5 +195,44 @@ async def test_final_language_layer_skips_model_for_grounded_pasted_invoice(
     assert profile["session_topic"] == "document"
     assert profile["current_topic"] == "document"
     assert profile["last_message"] == "Pasted document text processed transiently"
+    assert "last_assistant_reply" not in profile
     assert "Musterstadt Energie GmbH\nDatum" not in profile["conversation_summary"]
     assert store.snapshot()["messages"]["invoice-text-1"]["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_final_language_layer_yields_explicit_draft_request_to_existing_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_complete_user(store)
+    monkeypatch.setattr(language_layer.core, "store", store)
+
+    draft_text = _PASTED_INVOICE.replace(
+        "وصلتني هالرسالة، اشرحلي بالعربي شو المطلوب مني:",
+        "اكتبلي رد بالألماني على هالرسالة:",
+    )
+    message = language_layer.core.IncomingMessage(
+        "invoice-draft-1",
+        "49123",
+        draft_text,
+        "text",
+    )
+    store.claim_message(message.message_id, message.sender, message.text)
+
+    delegate = AsyncMock()
+    with patch.object(
+        language_layer,
+        "_ORIGINAL_PROCESS_INCOMING",
+        new=delegate,
+    ), patch.object(
+        language_layer.core,
+        "send_whatsapp_message",
+        new=AsyncMock(),
+    ) as send:
+        await language_layer.process_incoming(message)
+
+    delegate.assert_awaited_once_with(message)
+    send.assert_not_awaited()
