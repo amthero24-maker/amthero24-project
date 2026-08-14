@@ -14,10 +14,24 @@ from scripts.backup_retention_probe import (
 )
 
 
+def test_all_backup_profiles_pin_the_dockerfile_builder() -> None:
+    for path in (
+        "railway.backup.json",
+        "railway.backup.certification.json",
+        "railway.backup.retention-probe.json",
+    ):
+        config = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert config["build"] == {
+            "builder": "DOCKERFILE",
+            "dockerfilePath": "Dockerfile.backup",
+        }
+
+
 def test_retention_probe_profile_is_explicit_one_shot() -> None:
     config = json.loads(
         Path("railway.backup.retention-probe.json").read_text(encoding="utf-8")
     )
+    assert config["build"]["builder"] == "DOCKERFILE"
     assert config["build"]["dockerfilePath"] == "Dockerfile.backup"
     deploy = config["deploy"]
     assert deploy["startCommand"] == (
