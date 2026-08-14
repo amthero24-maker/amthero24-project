@@ -13,6 +13,7 @@ import onboarding as onboarding_rules
 import reminder_conversation_extensions as reminders
 import sam_product_voice as sam_voice
 import sam_conversation_voice as sam_conversation
+from pasted_document_grounding import grounded_pasted_invoice_reply
 
 core = reminders.core
 base = reminders.base
@@ -103,12 +104,58 @@ def should_clarify_implicit_snooze(intent: Any, recent_count: int) -> bool:
     )
 
 
+async def _finish_grounded_document_turn(
+    message: Any,
+    *,
+    language: str,
+    reply: str,
+    profile: dict[str, Any],
+) -> None:
+    """Persist only bounded context for a deterministic pasted-document reply."""
+    updates: dict[str, Any] = {
+        "session_language": language,
+        "session_topic": "document",
+        "session_last_reply": reply,
+        "session_expires_at": core._session_expiry(),
+        "last_seen": core._now().isoformat(),
+    }
+    if profile.get("memory_consent") == "granted":
+        updates.update({
+            "preferred_language": language,
+            "current_topic": "document",
+            "last_message": "Pasted document text processed transiently",
+            "last_message_type": "document",
+            "last_assistant_reply": reply,
+            "conversation_summary": (
+                f"Language={language}; topic=document; "
+                "pasted document content processed transiently and not retained"
+            ),
+        })
+    core.store.update_user(message.sender, updates)
+    await core._finish(message.message_id, reply, message.sender)
+
+
 async def process_incoming(message: Any) -> None:
     if message.message_type == "text" and str(message.text or "").strip():
         language = prepare_turn_language(message)
         profile = core.store.get_user(message.sender)
+        stage = str(profile.get("onboarding_stage") or "")
+
+        grounded_reply = grounded_pasted_invoice_reply(
+            message.text,
+            language=language,
+        )
+        if grounded_reply is not None and stage == "complete":
+            await _finish_grounded_document_turn(
+                message,
+                language=language,
+                reply=grounded_reply,
+                profile=profile,
+            )
+            return
+
         if (
-            str(profile.get("onboarding_stage") or "") == "complete"
+            stage == "complete"
             and profile.get("memory_consent") == "granted"
             and base.reminder_delivery_ready(message.sender)
         ):
