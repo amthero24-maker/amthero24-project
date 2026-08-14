@@ -36,9 +36,9 @@ _DRAFT_REQUEST_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"\b(?:write|draft|compose|prepare|formulate|reply)\b"
-        r"|\b(?:cancellation|termination|appeal|complaint|refund)\s+"
-        r"(?:letter|email|message|request)\b",
+        r"\b(?:write|draft|compose|prepare|formulate|reply|cancel|terminate)\b"
+        r"|\b(?:i\s+(?:need|want|would\s+like)|please)\b.{0,80}"
+        r"\b(?:letter|email|message|reply|request|cancellation|termination|appeal|complaint|refund)\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -159,7 +159,10 @@ def is_official_draft_turn(text: str, profile: dict[str, Any] | None = None) -> 
     if prefix and any(pattern.search(prefix) for pattern in _DRAFT_REQUEST_PATTERNS):
         return True
 
-    if str(context.get("session_output_kind") or "") != DRAFT_OUTPUT_KIND:
+    previous_reply = _strip_meta_heading(
+        str(context.get("session_last_reply") or context.get("last_assistant_reply") or "")
+    )
+    if not _looks_like_official_draft(previous_reply):
         return False
     command = _normalized_command(prefix)
     if command in _LANGUAGE_ONLY_REVISIONS:
@@ -241,14 +244,14 @@ def _strip_first_explanation_heading(text: str) -> str:
 
 def _looks_like_official_draft(text: str) -> bool:
     lowered = text.casefold()
-    salutations = (
+    salutations = tuple(marker.casefold() for marker in (
         "sehr geehrte", "guten tag", "dear ", "to whom it may concern",
         "السادة", "السيد", "السيدة", "шановн", "αξιότιμ",
-    )
-    closings = (
-        "mit freundlichen grüßen", "mit freundlichen gruessen", "freundliche grüße",
+    ))
+    closings = tuple(marker.casefold() for marker in (
+        "mit freundlichen Grüßen", "mit freundlichen Gruessen", "freundliche Grüße",
         "sincerely", "kind regards", "مع خالص التحية", "مع الاحترام", "з повагою", "με εκτίμηση",
-    )
+    ))
     return (
         any(marker in lowered for marker in salutations)
         and any(marker in lowered for marker in closings)
@@ -260,7 +263,7 @@ def _looks_like_official_draft(text: str) -> bool:
 
 def draft_reply_requires_fail_closed(value: str) -> bool:
     """Identify malformed marker or draft-like output that must never be sent mixed."""
-    text = _normalize_text(value)
+    text = _strip_outer_code_fence(_normalize_text(value))
     if not text:
         return False
     if any(marker.casefold() in text.casefold() for marker in (
@@ -303,7 +306,7 @@ def parse_copy_safe_draft_reply(
     conversation_language: str,
 ) -> CopySafeDraftReply | None:
     """Validate and split one official-draft model reply, failing closed on ambiguity."""
-    text = _normalize_text(value)
+    text = _strip_outer_code_fence(_normalize_text(value))
     if not text:
         return None
 
