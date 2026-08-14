@@ -50,3 +50,33 @@ def test_contract_preserves_user_corrections_and_high_risk_boundary():
     assert "court litigation" in contract
     assert "asylum/deportation strategy" in contract
     assert "medical emergencies" in contract
+
+
+def test_brief_scanner_contract_preserves_exact_sender_and_identifier_meaning():
+    contract = build_mvp_runtime_contract()
+    assert "exact visible sender organization" in contract
+    assert "do not replace its business/legal name with a generic category" in contract
+    assert "Treat every customer number, contract number, invoice number, case number and reference number as an identifier only" in contract
+    assert "Never instruct the user to use one as a bank-transfer reference or payment purpose unless the document explicitly assigns that use" in contract
+
+
+def test_brief_scanner_contract_does_not_invent_payment_details_or_urgency(monkeypatch):
+    monkeypatch.delenv("BRIEF_SCANNER_CANARY_SENDERS", raising=False)
+    prompt = build_system_prompt(
+        sender="491000000000",
+        text=(
+            "Musterstadt Energie GmbH\n"
+            "Betreff: Offene Rechnung\n"
+            "Kundennummer: TEST-4821\n"
+            "Betrag: 48,50 EUR\n"
+            "Zahlungsfrist: 28.08.2026"
+        ),
+        detected_language="ar",
+        profile={"preferred_language": "ar"},
+        history=[],
+        has_image=False,
+    )
+    assert "Preserve the exact stated deadline" in prompt
+    assert "do not add urgency such as immediately or as soon as possible unless the document states it" in prompt
+    assert "does not contain bank details or an explicit payment purpose" in prompt
+    assert "request the missing page, instead of inventing them" in prompt
