@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -18,10 +19,14 @@ DRAFT_MARKER: Final[str] = "<<<AMTHERO24_DRAFT>>>"
 EXPLANATION_MARKER: Final[str] = "<<<AMTHERO24_EXPLANATION>>>"
 END_MARKER: Final[str] = "<<<AMTHERO24_END>>>"
 _SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset({"de", "ar", "en", "uk", "el"})
+_ACTIVE_DRAFT_TURN: ContextVar[bool] = ContextVar(
+    "amthero24_official_draft_turn_active",
+    default=False,
+)
 
 _DRAFT_REQUEST_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(
-        r"(?:اكتب(?:لي)?|اكتبي|صيغ(?:لي)?|صغ|جهز(?:لي)?|حض[ّرر](?:لي)?|اعمل(?:لي)?)"
+        r"(?:اكتب(?:لي)?|اكتبي|صيغ(?:لي)?|صغ|جهز(?:لي)?|حض(?:ّ?ر)(?:لي)?|اعمل(?:لي)?)"
         r"\s+(?:لي\s+)?(?:رسالة|ايميل|إيميل|رد|جواب|اعتراض|شكوى|طلب|إلغاء|الغاء|فسخ|مطالبة)"
         r"|(?:بدي|أريد|اريد)\s+(?:رسالة|ايميل|إيميل|رد|اعتراض|شكوى|إلغاء|الغاء|فسخ)",
         re.IGNORECASE,
@@ -100,11 +105,24 @@ _EXPLANATION_HEADING = re.compile(
 )
 
 
+class CopySafeDraftFormatError(RuntimeError):
+    """Raised when a draft-like reply cannot be separated without ambiguity."""
+
+
 @dataclass(frozen=True)
 class CopySafeDraftReply:
     draft: str
     explanation: str
     conversation_language: str
+
+
+def activate_official_draft_turn() -> Token[bool]:
+    """Activate the prompt/delivery contract in the current async context only."""
+    return _ACTIVE_DRAFT_TURN.set(True)
+
+
+def reset_official_draft_turn(token: Token[bool]) -> None:
+    _ACTIVE_DRAFT_TURN.reset(token)
 
 
 def _normalize_text(value: str) -> str:
@@ -131,6 +149,8 @@ def _normalized_command(text: str) -> str:
 
 def is_official_draft_turn(text: str, profile: dict[str, Any] | None = None) -> bool:
     """Return true only for an explicit draft request or a bounded draft revision."""
+    if _ACTIVE_DRAFT_TURN.get():
+        return True
     context = profile or {}
     if context.get("_official_draft_delivery_active") is True:
         return True
@@ -236,6 +256,21 @@ def _looks_like_official_draft(text: str) -> bool:
         "betreff:" in lowered
         and any(marker in lowered for marker in closings)
     )
+
+
+def draft_reply_requires_fail_closed(value: str) -> bool:
+    """Identify malformed marker or draft-like output that must never be sent mixed."""
+    text = _normalize_text(value)
+    if not text:
+        return False
+    if any(marker.casefold() in text.casefold() for marker in (
+        DRAFT_MARKER,
+        EXPLANATION_MARKER,
+        END_MARKER,
+    )):
+        return True
+    cleaned = _strip_meta_heading(text)
+    return bool(_EXPLANATION_HEADING.search(text) or _looks_like_official_draft(cleaned))
 
 
 def _marker_split(text: str) -> tuple[str, str] | None:
