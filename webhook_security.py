@@ -25,9 +25,11 @@ install_encryption_policy()
 
 import runtime_health  # noqa: E402
 import reminder_language_extensions as reminder_language_layer  # noqa: E402
+import writing_grounding_extensions as writing_grounding_layer  # noqa: E402
 import closed_beta_runtime_extension as closed_beta_runtime_layer  # noqa: E402
 from deployment_lifecycle import lifecycle  # noqa: E402
 
+writing_grounding_layer.install(reminder_language_layer.core)
 closed_beta_runtime_layer.install(
     reminder_language_layer.core,
     runtime_health=runtime_health,
