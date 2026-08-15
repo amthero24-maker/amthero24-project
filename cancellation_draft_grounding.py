@@ -1,9 +1,9 @@
 """Deterministic grounding for copy-safe cancellation drafts and assistance.
 
-The module is read-only. It does not call a model, persist data, send WhatsApp
+This module is read-only. It does not call a model, persist data, send WhatsApp
 messages, execute cancellations, or activate any action runtime. It narrows generated
-cancellation text to verified user/draft facts and produces localized assistance that
-does not reinterpret placeholders or invent payment/timing instructions.
+cancellation text to verified user facts and produces localized assistance without
+reinterpreting placeholders or inventing payment, timing, or legal instructions.
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from typing import Final
 from cancellation_contract import NEXT_POSSIBLE_DATE_WORDING
 
 _SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset({"de", "ar", "en", "uk", "el"})
-
 _DATE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?<!\w)\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?!\w)"
 )
@@ -35,7 +34,7 @@ _COMPANY_PATTERN: Final[re.Pattern[str]] = re.compile(
 _PLACEHOLDER_PATTERN: Final[re.Pattern[str]] = re.compile(r"\[([^\[\]\n]{2,100})\]")
 
 _CANCELLATION_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(r"\b(?:kündig|kuendig|kündigung|kuendigung)\w*\b", re.IGNORECASE),
+    re.compile(r"(?:kündig|kuendig)", re.IGNORECASE),
     re.compile(r"(?:إلغاء|الغاء|ألغي|الغي|إلغي|فسخ)", re.IGNORECASE),
     re.compile(r"\b(?:cancel|cancellation|terminate|termination)\b", re.IGNORECASE),
     re.compile(r"(?:скасув|розірв|припинен)", re.IGNORECASE),
@@ -72,8 +71,16 @@ _UNSUPPORTED_PAYMENT_SENTENCE: Final[re.Pattern[str]] = re.compile(
     r"списан|банківськ.*рахун|πάγια\s+εντολή|παγια\s+εντολη|τραπεζικ.*λογαριασ)",
     re.IGNORECASE,
 )
-_CONFIRMATION_PATTERN: Final[re.Pattern[str]] = re.compile(
+_CONFIRMATION_VERB_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?:bestätig|bestaetig|confirmation|confirm|تأكيد|أكد|підтвер|επιβεβαί|επιβεβαι)",
+    re.IGNORECASE,
+)
+_CONFIRMATION_CONTEXT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:kündig|kuendig|vertrag|vertragsende|eingang|wirksam|end(?:e|datum)|"
+    r"cancellation|termination|contract|receipt|effective|end\s+date|"
+    r"إلغاء|الغاء|العقد|انتهاء|استلام|تاريخ|"
+    r"розірв|договор|отриман|закінчен|дат|"
+    r"καταγγελ|σύμβασ|συμβασ|παραλαβ|λήξ|ληξ|ημερομην)",
     re.IGNORECASE,
 )
 _UNKNOWN_TIMING_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
@@ -141,6 +148,11 @@ def _selected_language(value: str) -> str:
     return value if value in _SUPPORTED_LANGUAGES else "de"
 
 
+def _contains_any(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    text = _normalize(value)
+    return any(pattern.search(text) for pattern in patterns)
+
+
 def is_cancellation_request(value: str) -> bool:
     text = _normalize(value)
     return bool(text and any(pattern.search(text) for pattern in _CANCELLATION_PATTERNS))
@@ -148,33 +160,44 @@ def is_cancellation_request(value: str) -> bool:
 
 def is_cancellation_draft(value: str) -> bool:
     text = _normalize(value)
-    lowered = text.casefold()
-    has_shape = (
-        ("betreff:" in lowered or "subject:" in lowered or "الموضوع:" in lowered)
-        and any(
-            marker in lowered
-            for marker in (
-                "mit freundlichen grüßen",
-                "mit freundlichen gruessen",
-                "kind regards",
-                "sincerely",
-                "مع خالص التحية",
-                "з повагою",
-                "με εκτίμηση",
-                "με εκτιμηση",
-            )
+    if not text:
+        return False
+    folded = text.casefold()
+    subject_present = any(
+        marker in folded
+        for marker in ("betreff:", "subject:", "الموضوع:", "тема:", "θέμα:", "θεμα:")
+    )
+    closing_present = any(
+        marker.casefold() in folded
+        for marker in (
+            "Mit freundlichen Grüßen",
+            "Mit freundlichen Gruessen",
+            "Kind regards",
+            "Sincerely",
+            "مع خالص التحية",
+            "З повагою",
+            "Με εκτίμηση",
+            "Με εκτιμηση",
         )
     )
-    return bool(has_shape and any(pattern.search(text) for pattern in _CANCELLATION_PATTERNS))
-
-
-def _contains_any(value: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
-    text = _normalize(value)
-    return any(pattern.search(text) for pattern in patterns)
+    cancellation_present = any(pattern.search(text) for pattern in _CANCELLATION_PATTERNS)
+    return subject_present and closing_present and cancellation_present
 
 
 def _has_next_possible_wording(value: str) -> bool:
     return _contains_any(value, _NEXT_POSSIBLE_PATTERNS)
+
+
+def _is_confirmation_sentence(value: str) -> bool:
+    text = _normalize(value)
+    if not text:
+        return False
+    if re.match(r"^(?:betreff|subject|الموضوع|тема|θέμα|θεμα)\s*:", text, re.IGNORECASE):
+        return False
+    return bool(
+        _CONFIRMATION_VERB_PATTERN.search(text)
+        and _CONFIRMATION_CONTEXT_PATTERN.search(text)
+    )
 
 
 def _detect_draft_language(draft: str, fallback: str) -> str:
@@ -231,7 +254,7 @@ def ground_cancellation_draft(
     previous_draft: str = "",
     conversation_language: str,
 ) -> CancellationDraftGroundingResult:
-    """Apply a narrow post-generation trust boundary to a cancellation draft."""
+    """Apply a fail-closed post-generation boundary to one cancellation draft."""
     request = _normalize(request_text)
     clean = _normalize(draft)
     baseline = _normalize(previous_draft) if is_cancellation_draft(previous_draft) else ""
@@ -269,16 +292,23 @@ def ground_cancellation_draft(
             rejection_reason="unknown-timing-not-preserved",
         )
 
-    if _EXTRAORDINARY_PATTERN.search(clean) and not _EXTRAORDINARY_PATTERN.search(source_context):
+    if _EXTRAORDINARY_PATTERN.search(clean) and not _EXTRAORDINARY_PATTERN.search(request):
         return CancellationDraftGroundingResult(
             applicable=True,
             draft=clean,
             rejection_reason="unsupported-extraordinary-termination",
         )
 
-    payment_allowed = _contains_any(source_context, _PAYMENT_REQUEST_PATTERNS)
-    confirmation_present = bool(_CONFIRMATION_PATTERN.search(clean))
-    confirmation_expected = confirmation_present or bool(_CONFIRMATION_PATTERN.search(source_context))
+    payment_allowed = _contains_any(request, _PAYMENT_REQUEST_PATTERNS)
+    draft_sentences = [
+        sentence
+        for paragraph in re.split(r"\n\s*\n+", clean)
+        for sentence in _split_sentences(paragraph)
+    ]
+    confirmation_expected = any(_is_confirmation_sentence(sentence) for sentence in draft_sentences) or any(
+        _is_confirmation_sentence(sentence)
+        for sentence in _split_sentences(request)
+    )
     language = _detect_draft_language(clean, conversation_language)
     safe_confirmation = _SAFE_CONFIRMATION[language]
 
@@ -288,7 +318,7 @@ def ground_cancellation_draft(
     for paragraph in paragraphs:
         kept_sentences: list[str] = []
         for sentence in _split_sentences(paragraph):
-            if _CONFIRMATION_PATTERN.search(sentence):
+            if _is_confirmation_sentence(sentence):
                 if confirmation_expected and not confirmation_added:
                     kept_sentences.append(safe_confirmation)
                     confirmation_added = True
@@ -322,7 +352,7 @@ def ground_cancellation_draft(
             draft=clean,
             rejection_reason="confirmation-normalization-failed",
         )
-    if timing_unknown and NEXT_POSSIBLE_DATE_WORDING.casefold() not in result.casefold() and language == "de":
+    if timing_unknown and language == "de" and NEXT_POSSIBLE_DATE_WORDING.casefold() not in result.casefold():
         return CancellationDraftGroundingResult(
             applicable=True,
             draft=clean,
@@ -426,7 +456,11 @@ def _placeholder_roles(draft: str) -> tuple[str, ...]:
         elif value in {"datum", "date", "التاريخ", "дата", "ημερομηνία"} or "ort, datum" in value or "ort und datum" in value:
             role = "letter_date"
         elif any(marker in value for marker in ("postleitzahl", "plz", "postal code", "zip code")):
-            role = "sender_postal" if sender_started or any(marker in value for marker in ("ihr", "ihre", "your")) else "recipient_postal"
+            role = (
+                "sender_postal"
+                if sender_started or any(marker in value for marker in ("ihr", "ihre", "your"))
+                else "recipient_postal"
+            )
         elif any(marker in value for marker in ("adresse", "anschrift", "straße", "strasse", "street", "address", "العنوان", "адрес", "διεύθυν")):
             recipient_marker = any(
                 marker in value
@@ -441,7 +475,11 @@ def _placeholder_roles(draft: str) -> tuple[str, ...]:
                     "παραλήπτ",
                 )
             )
-            role = "recipient_address" if recipient_marker or (not sender_started and "ihr" not in value and "your" not in value) else "sender_address"
+            role = (
+                "recipient_address"
+                if recipient_marker or (not sender_started and "ihr" not in value and "your" not in value)
+                else "sender_address"
+            )
             if role == "sender_address":
                 sender_started = True
 
