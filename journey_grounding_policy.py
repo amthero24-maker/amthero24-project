@@ -107,6 +107,13 @@ _REFUND_EXTERNAL_ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"повернення|επιστροφή|επιστροφη)"
             r".{0,35}(?:beantragt|eingereicht|gesendet|requested|submitted|sent|"
             r"طلبت|قدمت|أرسلت|ارسلت|попросив|подал|надіслав|ζήτησα|ζητησα|υπέβαλα|υπεβαλα)"
+            r"|"
+            r"(?:ich\s+habe|i\s+have|لقد|я\s+вже|έχω|εχω)"
+            r".{0,25}(?:beantragt|eingereicht|gesendet|requested|submitted|sent|"
+            r"طلبت|قدمت|أرسلت|ارسلت|попросив|подал|надіслав|ζήτησα|ζητησα|υπέβαλα|υπεβαλα)"
+            r".{0,45}(?:rückerstattung|erstattung|refund|reimbursement|"
+            r"طلب\s+الاسترداد|طلب\s+التعويض|استرداد|تعويض|повернення|"
+            r"επιστροφή|επιστροφη)"
             r")",
             re.IGNORECASE,
         ),
