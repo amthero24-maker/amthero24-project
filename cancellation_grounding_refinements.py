@@ -2,7 +2,7 @@
 
 The core grounder owns validation and safety. This module keeps the production-facing
 wording backward compatible with the shared official-draft contract and improves
-contract-start recognition without weakening any fail-closed check.
+explicit contract-start presentation without replacing or mutating core validators.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import cancellation_draft_grounding as _base
 
 def _contract_start_date(draft: str) -> str:
     """Return an explicitly labelled contract start date, never an arbitrary date."""
-    text = _base._normalize(draft)  # noqa: SLF001 - narrow same-package refinement
+    text = _base._normalize(draft)  # noqa: SLF001 - same-package read-only helper
     patterns = (
         re.compile(
             r"(?:Vertragsbeginn|Vertrag\s+begann(?:en)?|Der\s+Vertrag\s+begann|"
@@ -37,12 +37,6 @@ def _contract_start_date(draft: str) -> str:
     return ""
 
 
-# Public explanation functions defined in the core module resolve this private helper
-# at call time. Patching only this narrow parser keeps already-imported function aliases
-# consistent in production and tests without replacing the core validation logic.
-_base._contract_start_date = _contract_start_date  # type: ignore[attr-defined]  # noqa: SLF001
-
-
 def _arabic_companion_prefix(value: str | None, language: str) -> str | None:
     if value is None or language != "ar":
         return value
@@ -51,6 +45,44 @@ def _arabic_companion_prefix(value: str | None, language: str) -> str | None:
         "المسودة تطلب إلغاء الاشتراك مع",
         1,
     )
+
+
+def _insert_contract_start(
+    value: str | None,
+    *,
+    date_value: str,
+    language: str,
+) -> str | None:
+    if value is None or not date_value or date_value in value:
+        return value
+
+    labels = {
+        "ar": f"• تاريخ بدء العقد المذكور في النص: {date_value}.",
+        "de": f"• Genannter Vertragsbeginn: {date_value}.",
+        "en": f"• Stated contract start date: {date_value}.",
+        "uk": f"• Зазначена дата початку договору: {date_value}.",
+        "el": f"• Αναφερόμενη ημερομηνία έναρξης: {date_value}.",
+    }
+    anchors = {
+        "ar": ("• رقم العقد أو المرجع المذكور:", "• تطلب المسودة"),
+        "de": ("• Genannte Vertrags- oder Referenznummer:", "• Der Entwurf"),
+        "en": ("• Stated contract or reference number:", "• The draft"),
+        "uk": ("• Зазначений номер договору або посилання:", "• Чернетка"),
+        "el": ("• Αναφερόμενος αριθμός σύμβασης ή αναφοράς:", "• Το προσχέδιο"),
+    }
+    selected = language if language in labels else "de"
+    lines = value.splitlines()
+    insert_at = 1 if len(lines) > 1 else len(lines)
+    for anchor in anchors[selected]:
+        matched = next(
+            (index for index, line in enumerate(lines) if line.startswith(anchor)),
+            None,
+        )
+        if matched is not None:
+            insert_at = matched + 1
+            break
+    lines.insert(insert_at, labels[selected])
+    return "\n".join(lines)
 
 
 def build_cancellation_companion_summary(
@@ -88,9 +120,13 @@ def build_cancellation_plain_explanation(
     *,
     conversation_language: str,
 ) -> str | None:
-    return _base.build_cancellation_plain_explanation(
-        draft,
-        conversation_language=conversation_language,
+    return _insert_contract_start(
+        _base.build_cancellation_plain_explanation(
+            draft,
+            conversation_language=conversation_language,
+        ),
+        date_value=_contract_start_date(draft),
+        language=conversation_language,
     )
 
 
