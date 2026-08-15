@@ -179,13 +179,13 @@ def _install(core: SimpleNamespace) -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("journey", "request", "draft", "summary_marker", "boundary_marker"),
+    ("journey", "user_text", "draft", "summary_marker", "boundary_marker"),
     _CASES,
 )
 async def test_runtime_delivers_grounded_draft_and_deterministic_companion(
     tmp_path,
     journey: str,
-    request: str,
+    user_text: str,
     draft: str,
     summary_marker: str,
     boundary_marker: str,
@@ -193,7 +193,7 @@ async def test_runtime_delivers_grounded_draft_and_deterministic_companion(
     store = JsonDataStore(tmp_path / f"{journey}.json")
     _seed(store)
     message_id = f"journey-{journey}-1"
-    store.claim_message(message_id, "49123", request)
+    store.claim_message(message_id, "49123", user_text)
     send = AsyncMock()
     core = _core(store, reply=_model_envelope(draft), send=send)
     _install(core)
@@ -201,7 +201,7 @@ async def test_runtime_delivers_grounded_draft_and_deterministic_companion(
     message = SimpleNamespace(
         message_id=message_id,
         sender="49123",
-        text=request,
+        text=user_text,
         message_type="text",
         internal_context="",
     )
