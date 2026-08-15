@@ -8,6 +8,7 @@ from typing import Any
 from conversation_intelligence import LANGUAGE_NAMES
 from mvp_runtime_contract import build_mvp_runtime_contract
 from draft_assistance import build_draft_assistance_prompt_contract
+from draft_translation_protocol import build_translation_prompt_contract
 from official_draft_delivery import (
     build_copy_safe_prompt_contract,
     is_official_draft_turn,
@@ -69,7 +70,8 @@ def build_system_prompt(*, sender: str, text: str, detected_language: str, profi
         active=copy_safe_draft_active,
         reply_language=reply_language,
     )
-    draft_assistance_contract = build_draft_assistance_prompt_contract()
+    translation_contract = build_translation_prompt_contract()
+    draft_assistance_contract = translation_contract or build_draft_assistance_prompt_contract()
     personality_contract = build_sam_personality_contract(
         language_code=detected_language,
         returning_user=returning_user,
