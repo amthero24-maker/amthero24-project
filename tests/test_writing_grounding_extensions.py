@@ -102,7 +102,7 @@ def _core(
 
 
 @pytest.mark.anyio
-async def test_runtime_sends_the_german_draft_as_its_own_whatsapp_message(
+async def test_runtime_sends_the_german_draft_then_understanding_companion(
     tmp_path,
 ) -> None:
     store = JsonDataStore(tmp_path / "store.json")
@@ -125,11 +125,17 @@ async def test_runtime_sends_the_german_draft_as_its_own_whatsapp_message(
     delegate.assert_not_awaited()
     assert send.await_count == 2
     draft = send.await_args_list[0].args[1]
-    explanation = send.await_args_list[1].args[1]
+    companion = send.await_args_list[1].args[1]
     assert "Sehr geehrte Damen und Herren" in draft
     assert "Mahnung" not in draft
     assert "المسودة" not in draft
-    assert explanation.startswith("المسودة بالرسالة السابقة منفصلة")
+    assert companion.startswith("المسودة بالرسالة السابقة منفصلة")
+    assert "الاسم الكامل" in companion
+    assert "1️⃣ ترجمة كاملة للعربية للفهم فقط" in companion
+    assert "2️⃣ شرح مبسّط للمحتوى" in companion
+    assert "3️⃣ مساعدتك في تعبئة الحقول الناقصة" in companion
+    assert "4️⃣ خطوات الإرسال والمتابعة" in companion
+    assert "Musterstadt Energie GmbH\nDatum" not in companion
 
     profile = store.get_user("49123")
     assert profile["session_last_reply"] == draft
@@ -142,7 +148,7 @@ async def test_runtime_sends_the_german_draft_as_its_own_whatsapp_message(
 
 
 @pytest.mark.anyio
-async def test_secondary_explanation_failure_does_not_replay_or_fail_primary_draft(
+async def test_secondary_companion_failure_does_not_replay_or_fail_primary_draft(
     tmp_path,
 ) -> None:
     store = JsonDataStore(tmp_path / "store.json")
