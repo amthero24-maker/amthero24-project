@@ -59,6 +59,72 @@ _ACTIVE_DRAFT_ASSISTANCE: ContextVar[DraftAssistanceContext | None] = ContextVar
 )
 
 _PLACEHOLDER_PATTERN = re.compile(r"\[([^\[\]\n]{2,100})\]")
+_DATE_ANCHOR_PATTERN = re.compile(
+    r"(?<!\w)\d{1,2}[./-]\d{1,2}[./-]\d{2,4}(?!\w)"
+)
+_PRESERVED_ANCHOR_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"\b(?:https?://|www\.)[^\s<>]+", re.IGNORECASE),
+    re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE),
+    _DATE_ANCHOR_PATTERN,
+    re.compile(
+        r"(?<![\w@])"
+        r"(?=[A-Za-z0-9ÄÖÜäöüß._/-]{4,50}(?![\w@]))"
+        r"(?=[A-Za-z0-9ÄÖÜäöüß._/-]*[A-Za-zÄÖÜäöüß])"
+        r"(?=[A-Za-z0-9ÄÖÜäöüß._/-]*\d)"
+        r"[A-Za-z0-9ÄÖÜäöüß][A-Za-z0-9ÄÖÜäöüß._/-]{3,49}"
+        r"(?![\w@])"
+    ),
+    re.compile(
+        r"(?<!\w)\d+(?:[.,]\d{1,2})?\s?(?:€|EUR|USD|CHF|GBP)(?!\w)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9&.'/-]*"
+        r"(?:\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß0-9&.'/-]*){0,5}\s+"
+        r"(?:GmbH|AG|UG(?:\s*\(haftungsbeschränkt\))?|KG|OHG|GbR|e\.V\.)\b"
+    ),
+)
+_TRANSLATION_META_PATTERNS: Final[dict[str, tuple[re.Pattern[str], ...]]] = {
+    "ar": (
+        re.compile(r"(?:الخطوة\s+التالية|المطلوب\s+منك|هذه\s+الرسالة\s+(?:هي|عبارة\s+عن)\s+نموذج)", re.IGNORECASE),
+    ),
+    "de": (
+        re.compile(r"(?:nächster\s+schritt|naechster\s+schritt|du\s+musst\s+nur|diese\s+nachricht\s+ist\s+eine\s+vorlage)", re.IGNORECASE),
+    ),
+    "en": (
+        re.compile(r"(?:next\s+step|you\s+only\s+need\s+to|this\s+message\s+is\s+a\s+template)", re.IGNORECASE),
+    ),
+    "uk": (
+        re.compile(r"(?:наступний\s+крок|вам\s+потрібно\s+лише|це\s+шаблон\s+листа)", re.IGNORECASE),
+    ),
+    "el": (
+        re.compile(r"(?:επόμενο\s+βήμα|επομενο\s+βημα|χρειάζεται\s+μόνο\s+να|χρειαζεται\s+μονο\s+να|αυτό\s+το\s+μήνυμα\s+είναι\s+πρότυπο)", re.IGNORECASE),
+    ),
+}
+_EXPLICIT_DURATION_PATTERN = re.compile(
+    r"(?<!\w)(?:\d+\s*)?(?:"
+    r"days?|weeks?|months?|hours?|"
+    r"tage?|tagen|wochen?|monate?|monaten|stunden?|"
+    r"يومين|يومان|أيام|ايام|يومًا|يوما|يوم|"
+    r"أسبوعين|اسبوعين|أسبوعان|اسبوعان|أسابيع|اسابيع|أسبوع|اسبوع|"
+    r"شهرين|شهران|أشهر|اشهر|شهر|ساعتين|ساعتان|ساعات|ساعة|"
+    r"днів|дні|день|тижнів|тижні|тиждень|місяців|місяці|місяць|годин|години|година|"
+    r"ημέρες|ημερες|ημέρα|ημερα|εβδομάδες|εβδομαδες|εβδομάδα|εβδομαδα|"
+    r"μήνες|μηνες|μήνας|μηνας|ώρες|ωρες|ώρα|ωρα"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
+_NUMERIC_DURATION_PATTERN = re.compile(
+    r"(?<!\w)(\d+)\s*(?:"
+    r"days?|weeks?|months?|hours?|"
+    r"tage?|tagen|wochen?|monate?|monaten|stunden?|"
+    r"أيام|ايام|يومًا|يوما|يوم|أسابيع|اسابيع|أسبوع|اسبوع|أشهر|اشهر|شهر|ساعات|ساعة|"
+    r"днів|дні|день|тижнів|тижні|тиждень|місяців|місяці|місяць|годин|години|година|"
+    r"ημέρες|ημερες|ημέρα|ημερα|εβδομάδες|εβδομαδες|εβδομάδα|εβδομαδα|"
+    r"μήνες|μηνες|μήνας|μηνας|ώρες|ωρες|ώρα|ωρα"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
 
 _ASSISTANCE_PATTERNS: Final[dict[str, tuple[re.Pattern[str], ...]]] = {
     ASSISTANCE_TRANSLATE: (
@@ -108,9 +174,23 @@ _PLACEHOLDER_LABELS: Final[dict[str, dict[str, str]]] = {
         "ar": "العنوان", "de": "Anschrift", "en": "address",
         "uk": "адреса", "el": "διεύθυνση",
     },
+    "sender_address": {
+        "ar": "عنوانك البريدي (الشارع ورقم المنزل)", "de": "deine Absenderanschrift",
+        "en": "your sender address", "uk": "твоя адреса відправника",
+        "el": "η διεύθυνση αποστολέα σου",
+    },
     "recipient_address": {
-        "ar": "عنوان الجهة المستلمة", "de": "Adresse des Empfängers", "en": "recipient address",
+        "ar": "العنوان البريدي للجهة المستلمة", "de": "Adresse des Empfängers", "en": "recipient address",
         "uk": "адреса одержувача", "el": "διεύθυνση παραλήπτη",
+    },
+    "postal_place": {
+        "ar": "الرمز البريدي والمدينة", "de": "Postleitzahl und Ort",
+        "en": "postal code and city", "uk": "поштовий індекс і місто",
+        "el": "ταχυδρομικός κώδικας και πόλη",
+    },
+    "place_date": {
+        "ar": "المكان والتاريخ", "de": "Ort und Datum", "en": "place and date",
+        "uk": "місце і дата", "el": "τόπος και ημερομηνία",
     },
     "phone": {
         "ar": "رقم الهاتف", "de": "Telefonnummer", "en": "phone number",
@@ -177,8 +257,10 @@ def _instruction_prefix(text: str) -> str:
     return re.split(r"\n\s*\n", normalized, maxsplit=1)[0][:900].strip()
 
 _OPTION_DIGIT_TRANSLATION = str.maketrans({
-    "١": "1", "٢": "2", "٣": "3", "٤": "4",
-    "۱": "1", "۲": "2", "۳": "3", "۴": "4",
+    "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
+    "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
+    "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
+    "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9",
 })
 
 def _normalized_command(text: str) -> str:
@@ -206,9 +288,12 @@ def build_draft_assistance_prompt_contract() -> str:
     action_rules = {
         ASSISTANCE_TRANSLATE: (
             f"Translate the complete source draft faithfully into {language_name} for understanding only. "
-            "Preserve every verified name, reference, amount, date, qualification, request, and uncertainty. "
-            "Translate bracket placeholders so the user understands what belongs there. Do not add advice, "
-            "legal claims, deadlines, contact details, or a statement that anything was sent."
+            "Translate every source-draft line in the same order and preserve the same paragraph and line "
+            "structure. This is a full translation, never a "
+            "summary or explanation. Preserve every verified name, reference, amount, date, qualification, "
+            "request, and uncertainty. Translate every bracket placeholder and keep each one exactly once inside "
+            "square brackets. Do not add advice, next steps, user instructions, legal claims, deadlines, contact "
+            "details, or a statement that anything was sent."
         ),
         ASSISTANCE_EXPLAIN: (
             f"Explain the source draft in plain {language_name} using three to six short, easy-to-scan points. "
@@ -219,7 +304,10 @@ def build_draft_assistance_prompt_contract() -> str:
             f"Give three to five practical next steps in {language_name} based only on the source draft. "
             "Include completing placeholders, checking facts, using an official recipient channel, keeping a copy "
             "and proof of sending, and following up only when appropriate. If an address, channel, or deadline is "
-            "unknown, say it must be verified instead of inventing it. Never claim an external action occurred."
+            "unknown, say it must be verified instead of inventing it. Never invent a fixed waiting period: when "
+            "the source contains no verified timing, say to follow up after a reasonable period and before any "
+            "known deadline without choosing a number of days, weeks, or months. Never claim an external action "
+            "occurred."
         ),
     }[context.action]
 
@@ -267,8 +355,27 @@ def _placeholder_category(placeholder: str) -> str:
         "versicherungsnummer", "insurance number", "passport", "ausweisnummer", "tax id", "steuer-id",
     )):
         return "sensitive"
-    if "adresse von" in value or "anschrift von" in value or "recipient address" in value:
+    if any(marker in value for marker in (
+        "adresse von", "anschrift von", "adresse des anbieters", "adresse der anbieterin",
+        "anbieteradresse", "adresse des empfängers", "adresse des empfaengers",
+        "empfängeradresse", "empfaengeradresse", "recipient address", "provider address",
+    )):
         return "recipient_address"
+    if any(marker in value for marker in (
+        "postleitzahl und ort", "plz und ort", "postal code and city", "zip code and city",
+    )):
+        return "postal_place"
+    if any(marker in value for marker in (
+        "ort, datum", "ort und datum", "place and date", "المكان والتاريخ",
+        "місце і дата", "τόπος και ημερομηνία",
+    )):
+        return "place_date"
+    if any(marker in value for marker in (
+        "ihre anschrift", "ihre adresse", "ihre straße", "ihre strasse",
+        "straße und hausnummer", "strasse und hausnummer", "your address", "your street",
+        "عنوانك", "твоя адреса", "διεύθυνσή σου", "διευθυνση σου",
+    )):
+        return "sender_address"
     if any(marker in value for marker in ("e-mail", "email", "البريد", "електрон", "ηλεκτρον")):
         return "email"
     if any(marker in value for marker in ("telefon", "phone", "mobile", "الهاتف", "телефон", "τηλέφων")):
@@ -490,7 +597,7 @@ def build_missing_fields_help(draft: str, *, conversation_language: str) -> str:
 
     lines = [headings[language]]
     if regular:
-        lines.extend(f"• {label}: {placeholder}" for label, placeholder in regular)
+        lines.extend(f"• {label}" for label, _ in regular)
     else:
         lines.append(none_messages[language])
     if sensitive:
@@ -499,6 +606,93 @@ def build_missing_fields_help(draft: str, *, conversation_language: str) -> str:
         lines.extend(["", template_intro[language], templates[language]])
         lines.extend(f"{label}: ..." for label, _ in regular)
     return "\n".join(lines).strip()
+
+def _meaningful_lines(value: str) -> tuple[str, ...]:
+    return tuple(
+        line.strip()
+        for line in _normalize_text(value).splitlines()
+        if line.strip()
+    )
+
+def _paragraphs(value: str) -> tuple[str, ...]:
+    return tuple(
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n+", _normalize_text(value))
+        if paragraph.strip()
+    )
+
+def _preserved_anchors(value: str) -> tuple[str, ...]:
+    anchors: set[str] = set()
+    text = _normalize_text(value)
+    for pattern in _PRESERVED_ANCHOR_PATTERNS:
+        for match in pattern.finditer(text):
+            anchor = match.group(0).strip().rstrip(".,;:")
+            if anchor:
+                anchors.add(anchor)
+    return tuple(sorted(anchors, key=lambda item: (-len(item), item.casefold())))
+
+def _translation_is_complete(source_draft: str, content: str, language: str) -> bool:
+    source = _normalize_text(source_draft)
+    translated = _normalize_text(content)
+    if not source or not translated:
+        return False
+
+    if any(pattern.search(translated) for pattern in _TRANSLATION_META_PATTERNS[language]):
+        return False
+
+    source_lines = _meaningful_lines(source)
+    translated_lines = _meaningful_lines(translated)
+    if len(source_lines) >= 4:
+        minimum_lines = max(3, (len(source_lines) + 1) // 2)
+        if len(translated_lines) < minimum_lines:
+            return False
+
+    source_paragraphs = _paragraphs(source)
+    translated_paragraphs = _paragraphs(translated)
+    if len(source_paragraphs) >= 4:
+        minimum_paragraphs = max(2, (len(source_paragraphs) + 1) // 2)
+        if len(translated_paragraphs) < minimum_paragraphs:
+            return False
+
+    source_placeholders = extract_draft_placeholders(source, limit=30)
+    translated_placeholders = extract_draft_placeholders(translated, limit=30)
+    if len(source_placeholders) != len(translated_placeholders):
+        return False
+
+    translated_folded = translated.casefold()
+    if any(anchor.casefold() not in translated_folded for anchor in _preserved_anchors(source)):
+        return False
+
+    return True
+
+def _duration_numbers(value: str) -> set[str]:
+    normalized = _normalize_text(value).translate(_OPTION_DIGIT_TRANSLATION)
+    return {match.group(1) for match in _NUMERIC_DURATION_PATTERN.finditer(normalized)}
+
+def _date_anchors(value: str) -> set[str]:
+    normalized = _normalize_text(value).translate(_OPTION_DIGIT_TRANSLATION)
+    return {match.group(0) for match in _DATE_ANCHOR_PATTERN.finditer(normalized)}
+
+def _steps_are_grounded(source_draft: str, content: str) -> bool:
+    source = _normalize_text(source_draft).translate(_OPTION_DIGIT_TRANSLATION)
+    steps = _normalize_text(content).translate(_OPTION_DIGIT_TRANSLATION)
+    if not source or not steps:
+        return False
+
+    source_has_duration = bool(_EXPLICIT_DURATION_PATTERN.search(source))
+    steps_have_duration = bool(_EXPLICIT_DURATION_PATTERN.search(steps))
+    if steps_have_duration and not source_has_duration:
+        return False
+    if steps_have_duration:
+        source_numbers = _duration_numbers(source)
+        step_numbers = _duration_numbers(steps)
+        if step_numbers and not step_numbers.issubset(source_numbers):
+            return False
+
+    if not _date_anchors(steps).issubset(_date_anchors(source)):
+        return False
+
+    return True
 
 def parse_draft_assistance_reply(
     value: str,
@@ -525,6 +719,22 @@ def parse_draft_assistance_reply(
         return None
 
     language = conversation_language if conversation_language in _SUPPORTED_LANGUAGES else "de"
+    context = _ACTIVE_DRAFT_ASSISTANCE.get()
+    if context is not None:
+        if context.action != action or context.conversation_language != language:
+            return None
+        if action == ASSISTANCE_TRANSLATE and not _translation_is_complete(
+            context.draft,
+            content,
+            language,
+        ):
+            return None
+        if action == ASSISTANCE_STEPS and not _steps_are_grounded(
+            context.draft,
+            content,
+        ):
+            return None
+
     headings = {
         ASSISTANCE_TRANSLATE: {
             "ar": "ترجمة للفهم فقط — لا ترسل هذه النسخة بدل المسودة الأصلية:",
