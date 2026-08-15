@@ -14,11 +14,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from draft_assistance import ASSISTANCE_EXPLAIN, detect_draft_assistance_action
-from journey_draft_grounding import (
-    classify_journey,
-    classify_journey_draft,
-    ground_journey_draft,
-)
 from journey_grounding_explanations import (
     build_journey_companion_summary,
     build_journey_plain_explanation,
@@ -27,6 +22,11 @@ from journey_grounding_patterns import (
     JOURNEY_APPOINTMENT,
     JOURNEY_CONTRACT,
     JOURNEY_REFUND,
+)
+from journey_grounding_policy import (
+    classify_journey,
+    classify_journey_draft,
+    ground_journey_draft,
 )
 from official_draft_delivery import (
     DRAFT_MARKER,
@@ -154,7 +154,7 @@ def _restore_profile_after_failure(
 def _failure_message(language: str) -> str:
     messages = {
         "ar": (
-            "لم أرسل المسودة لأن بعض الأرقام أو الادعاءات فيها لم تكن مدعومة "
+            "لم أعرض المسودة لأن بعض الأرقام أو الادعاءات فيها لم تكن مدعومة "
             "بالمعلومات المؤكدة التي أعطيتني إياها. لم أنفّذ أي إجراء خارجي. "
             "أرسل المعلومة الصحيحة أو اطلب إعادة صياغة المسودة."
         ),
