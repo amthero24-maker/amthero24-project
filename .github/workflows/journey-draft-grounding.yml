@@ -1,0 +1,86 @@
+name: Journey Draft Grounding
+
+on:
+  pull_request:
+    paths:
+      - "refund_contract.py"
+      - "appointment_contract.py"
+      - "contract_check_contract.py"
+      - "journey_grounding_patterns.py"
+      - "journey_draft_grounding.py"
+      - "journey_grounding_explanations.py"
+      - "journey_grounding_extensions.py"
+      - "cancellation_grounding_extensions.py"
+      - "draft_assistance.py"
+      - "official_draft_delivery.py"
+      - "official_draft_runtime_extension.py"
+      - "webhook_security.py"
+      - "tests/test_journey_draft_grounding.py"
+      - "tests/test_journey_grounding_runtime.py"
+      - "tests/test_official_draft_runtime_extension.py"
+      - ".github/workflows/journey-draft-grounding.yml"
+  push:
+    branches: [main]
+    paths:
+      - "refund_contract.py"
+      - "appointment_contract.py"
+      - "contract_check_contract.py"
+      - "journey_grounding_patterns.py"
+      - "journey_draft_grounding.py"
+      - "journey_grounding_explanations.py"
+      - "journey_grounding_extensions.py"
+      - "cancellation_grounding_extensions.py"
+      - "draft_assistance.py"
+      - "official_draft_delivery.py"
+      - "official_draft_runtime_extension.py"
+      - "webhook_security.py"
+      - "tests/test_journey_draft_grounding.py"
+      - "tests/test_journey_grounding_runtime.py"
+      - "tests/test_official_draft_runtime_extension.py"
+      - ".github/workflows/journey-draft-grounding.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: journey-draft-grounding-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  journey-draft-grounding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install exact test dependencies
+        run: python -m pip install --quiet -r requirements-dev.txt
+      - name: Compile journey grounding boundaries
+        run: >-
+          python -m compileall -q
+          refund_contract.py
+          appointment_contract.py
+          contract_check_contract.py
+          journey_grounding_patterns.py
+          journey_draft_grounding.py
+          journey_grounding_explanations.py
+          journey_grounding_extensions.py
+          cancellation_grounding_extensions.py
+          draft_assistance.py
+          official_draft_delivery.py
+          official_draft_runtime_extension.py
+          webhook_security.py
+          tests/test_journey_draft_grounding.py
+          tests/test_journey_grounding_runtime.py
+          tests/test_official_draft_runtime_extension.py
+      - name: Prove grounded refund appointment and contract drafts
+        run: >-
+          python -m pytest -q
+          tests/test_journey_draft_grounding.py
+          tests/test_journey_grounding_runtime.py
+          tests/test_official_draft_runtime_extension.py
