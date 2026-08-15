@@ -6,8 +6,10 @@ on:
       - "refund_contract.py"
       - "appointment_contract.py"
       - "contract_check_contract.py"
+      - "mvp_runtime_contract.py"
       - "journey_grounding_patterns.py"
       - "journey_draft_grounding.py"
+      - "journey_grounding_policy.py"
       - "journey_grounding_explanations.py"
       - "journey_grounding_extensions.py"
       - "cancellation_grounding_extensions.py"
@@ -16,8 +18,12 @@ on:
       - "official_draft_runtime_extension.py"
       - "webhook_security.py"
       - "tests/test_journey_draft_grounding.py"
+      - "tests/test_journey_grounding_policy.py"
       - "tests/test_journey_grounding_runtime.py"
+      - "tests/test_journey_grounding_extensions.py"
+      - "tests/test_cancellation_grounding_extensions.py"
       - "tests/test_official_draft_runtime_extension.py"
+      - "tests/test_mvp_journey_production_composition.py"
       - ".github/workflows/journey-draft-grounding.yml"
   push:
     branches: [main]
@@ -25,8 +31,10 @@ on:
       - "refund_contract.py"
       - "appointment_contract.py"
       - "contract_check_contract.py"
+      - "mvp_runtime_contract.py"
       - "journey_grounding_patterns.py"
       - "journey_draft_grounding.py"
+      - "journey_grounding_policy.py"
       - "journey_grounding_explanations.py"
       - "journey_grounding_extensions.py"
       - "cancellation_grounding_extensions.py"
@@ -35,8 +43,12 @@ on:
       - "official_draft_runtime_extension.py"
       - "webhook_security.py"
       - "tests/test_journey_draft_grounding.py"
+      - "tests/test_journey_grounding_policy.py"
       - "tests/test_journey_grounding_runtime.py"
+      - "tests/test_journey_grounding_extensions.py"
+      - "tests/test_cancellation_grounding_extensions.py"
       - "tests/test_official_draft_runtime_extension.py"
+      - "tests/test_mvp_journey_production_composition.py"
       - ".github/workflows/journey-draft-grounding.yml"
 
 permissions:
@@ -49,7 +61,7 @@ concurrency:
 jobs:
   journey-draft-grounding:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
         with:
@@ -66,8 +78,10 @@ jobs:
           refund_contract.py
           appointment_contract.py
           contract_check_contract.py
+          mvp_runtime_contract.py
           journey_grounding_patterns.py
           journey_draft_grounding.py
+          journey_grounding_policy.py
           journey_grounding_explanations.py
           journey_grounding_extensions.py
           cancellation_grounding_extensions.py
@@ -76,11 +90,19 @@ jobs:
           official_draft_runtime_extension.py
           webhook_security.py
           tests/test_journey_draft_grounding.py
+          tests/test_journey_grounding_policy.py
           tests/test_journey_grounding_runtime.py
+          tests/test_journey_grounding_extensions.py
+          tests/test_cancellation_grounding_extensions.py
           tests/test_official_draft_runtime_extension.py
-      - name: Prove grounded refund appointment and contract drafts
+          tests/test_mvp_journey_production_composition.py
+      - name: Prove grounded journeys and copy-safe composition
         run: >-
           python -m pytest -q
           tests/test_journey_draft_grounding.py
+          tests/test_journey_grounding_policy.py
           tests/test_journey_grounding_runtime.py
+          tests/test_journey_grounding_extensions.py
+          tests/test_cancellation_grounding_extensions.py
           tests/test_official_draft_runtime_extension.py
+          tests/test_mvp_journey_production_composition.py
