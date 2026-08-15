@@ -15,6 +15,7 @@ from typing import Any
 
 from draft_assistance import (
     ASSISTANCE_FIELDS,
+    ASSISTANCE_TRANSLATE,
     DraftAssistanceFormatError,
     activate_draft_assistance,
     build_draft_assistance_card,
@@ -23,6 +24,12 @@ from draft_assistance import (
     draft_assistance_uses_model,
     parse_draft_assistance_reply,
     reset_draft_assistance,
+)
+from draft_translation_protocol import (
+    activate_translation_protocol,
+    build_translation_failure_message,
+    parse_indexed_translation_reply,
+    reset_translation_protocol,
 )
 from official_draft_delivery import (
     CopySafeDraftFormatError,
@@ -221,20 +228,59 @@ def install(core: Any) -> None:
         assistance_state = _ACTIVE_ASSISTANCE_DELIVERY.get()
         if assistance_state is not None and recipient == assistance_state.sender:
             if assistance_state.failed or assistance_state.responded:
-                await original_send(recipient, text)
-                return
-            parsed_assistance = parse_draft_assistance_reply(
-                text,
-                action=assistance_state.action,
-                conversation_language=assistance_state.language,
-            )
-            if parsed_assistance is None:
-                assistance_state.failed = True
-                logger.error(
-                    "Draft assistance reply violated its private envelope",
+                logger.warning(
+                    "Additional draft assistance delivery suppressed",
                     extra={"message_id": assistance_state.message_id},
                 )
+                return
+
+            rejection_reason: str | None = None
+            parsed_assistance: str | None = None
+            if assistance_state.action == ASSISTANCE_TRANSLATE:
+                indexed = parse_indexed_translation_reply(
+                    text,
+                    draft=assistance_state.draft,
+                    conversation_language=assistance_state.language,
+                )
+                if indexed.protocol_detected:
+                    parsed_assistance = indexed.text
+                    rejection_reason = indexed.rejection_reason
+                else:
+                    parsed_assistance = parse_draft_assistance_reply(
+                        text,
+                        action=assistance_state.action,
+                        conversation_language=assistance_state.language,
+                    )
+                    if parsed_assistance is None:
+                        rejection_reason = "legacy-semantic-validation"
+            else:
+                parsed_assistance = parse_draft_assistance_reply(
+                    text,
+                    action=assistance_state.action,
+                    conversation_language=assistance_state.language,
+                )
+                if parsed_assistance is None:
+                    rejection_reason = "invalid-assistance-envelope"
+
+            if parsed_assistance is None:
+                assistance_state.failed = True
+                assistance_state.responded = True
+                logger.error(
+                    "Draft assistance reply rejected safely",
+                    extra={
+                        "message_id": assistance_state.message_id,
+                        "rejection_reason": rejection_reason or "unknown",
+                    },
+                )
+                if assistance_state.action == ASSISTANCE_TRANSLATE:
+                    await original_send(
+                        recipient,
+                        build_translation_failure_message(assistance_state.language),
+                    )
+                    core.store.update_message_status(assistance_state.message_id, "sent")
+                    return
                 raise DraftAssistanceFormatError("official_draft_assistance_reply_ambiguous")
+
             assistance_state.responded = True
             await original_send(recipient, parsed_assistance)
             core.store.update_message_status(assistance_state.message_id, "sent")
@@ -331,9 +377,19 @@ def install(core: Any) -> None:
                     draft=previous_draft,
                     conversation_language=language,
                 )
+                translation_token = (
+                    activate_translation_protocol(
+                        draft=previous_draft,
+                        conversation_language=language,
+                    )
+                    if assistance_action == ASSISTANCE_TRANSLATE
+                    else None
+                )
                 try:
                     await original_process(_assistance_message(message, language))
                 finally:
+                    if translation_token is not None:
+                        reset_translation_protocol(translation_token)
                     reset_draft_assistance(assistance_token)
                     _ACTIVE_ASSISTANCE_DELIVERY.reset(delivery_token)
                     try:

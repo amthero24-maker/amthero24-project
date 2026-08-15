@@ -52,6 +52,11 @@ Mit freundlichen Grüßen
 [Ihre Telefonnummer]
 [Ihre E-Mail-Adresse]"""
 
+_TIMED_DRAFT = _CLEAN_DRAFT.replace(
+    "Bitte bestätigen Sie mir schriftlich das Datum, zu dem das Vertragsverhältnis endet.",
+    "Bitte antworten Sie innerhalb von 14 Tagen schriftlich und bestätigen Sie das Vertragsende.",
+)
+
 _MODEL_REPLY = f"""{DRAFT_MARKER}
 *Entwurf – Kündigung des Fitnessstudio-Vertrags*
 
@@ -61,7 +66,42 @@ _MODEL_REPLY = f"""{DRAFT_MARKER}
 {END_MARKER}"""
 
 _TRANSLATION_REPLY = f"""{ASSISTANCE_MARKER}
-تطلب الرسالة إلغاء عقد العضوية ذي الرقم TEST-K-731 في أقرب موعد ممكن، كما تطلب تأكيد تاريخ انتهاء العقد خطيًا.
+MusterFit GmbH
+خدمة العملاء
+[عنوان MusterFit GmbH]
+
+الموضوع: إلغاء العقد رقم TEST-K-731
+
+السادة المحترمون،
+
+بموجب هذه الرسالة ألغي عقد عضويتي ذي الرقم TEST-K-731 في أقرب موعد ممكن.
+
+يرجى تأكيد التاريخ الذي تنتهي فيه العلاقة التعاقدية خطيًا.
+
+مع خالص التحية
+[الاسم الأول واسم العائلة]
+[العنوان]
+[رقم الهاتف]
+[البريد الإلكتروني]
+{ASSISTANCE_END_MARKER}"""
+
+_SUMMARY_TRANSLATION_REPLY = f"""{ASSISTANCE_MARKER}
+الرسالة هي نموذج إلغاء عقد عضوية صالة رياضية (MusterFit GmbH) برقم العقد TEST-K-731.
+المطلوب منك فقط تعديل الحقول التي لا تزال فارغة ثم إرسال الرسالة إلى الجهة المذكورة.
+
+الخطوة التالية: استبدل الأقواس بمعلوماتك الشخصية وتأكد من حفظ نسخة للمتابعة.
+{ASSISTANCE_END_MARKER}"""
+
+_UNGROUNDED_STEPS_REPLY = f"""{ASSISTANCE_MARKER}
+1. أكمل الحقول الظاهرة وراجع البيانات.
+2. استخدم قناة رسمية واحتفظ بإثبات الإرسال.
+3. إذا لم يصلك رد خلال أسبوعين، تواصل مرة ثانية لتأكيد الإلغاء.
+{ASSISTANCE_END_MARKER}"""
+
+_TIMED_STEPS_REPLY = f"""{ASSISTANCE_MARKER}
+1. أكمل الحقول الظاهرة وراجع البيانات.
+2. استخدم قناة رسمية واحتفظ بإثبات الإرسال.
+3. تابع خلال 14 يومًا إذا لم يصل الرد المكتوب.
 {ASSISTANCE_END_MARKER}"""
 
 
@@ -277,6 +317,10 @@ async def test_translation_choice_preserves_transient_draft_privacy_and_context(
     translation = send.await_args.args[1]
     assert translation.startswith("ترجمة للفهم فقط")
     assert "لا ترسل هذه النسخة بدل المسودة الأصلية" in translation
+    assert "السادة المحترمون" in translation
+    assert "يرجى تأكيد التاريخ" in translation
+    assert "[الاسم الأول واسم العائلة]" in translation
+    assert "[البريد الإلكتروني]" in translation
     assert ASSISTANCE_MARKER not in translation
     assert ASSISTANCE_END_MARKER not in translation
     assert len(seen_messages) == 1
@@ -290,6 +334,95 @@ async def test_translation_choice_preserves_transient_draft_privacy_and_context(
     assert profile["current_topic"] == "document"
     assert profile["conversation_summary"] == "safe prior summary"
     assert store.snapshot()["messages"]["translate-1"]["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_summary_shaped_translation_uses_safe_failure_without_losing_draft(tmp_path) -> None:
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_transient_clean_draft(store)
+    store.claim_message("translate-summary-1", "49123", "1")
+    send = AsyncMock()
+    core = _core(store, reply=_SUMMARY_TRANSLATION_REPLY, send=send)
+    install(core)
+
+    message = SimpleNamespace(
+        message_id="translate-summary-1",
+        sender="49123",
+        text="1",
+        message_type="text",
+        internal_context="",
+    )
+    await core.process_incoming(message)
+
+    send.assert_awaited_once()
+    failure = send.await_args.args[1]
+    assert "ما قدرت أتأكد أن الترجمة كاملة" in failure
+    assert "المسودة الأصلية بقيت محفوظة بدون تغيير" in failure
+    assert "خلل تقني" not in failure
+    profile = store.get_user("49123")
+    assert profile["session_last_reply"] == _CLEAN_DRAFT
+    assert profile["last_assistant_reply"] == "safe prior assistant reply"
+    assert profile["conversation_summary"] == "safe prior summary"
+    assert store.snapshot()["messages"]["translate-summary-1"]["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_ungrounded_fixed_follow_up_interval_fails_closed(tmp_path) -> None:
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_transient_clean_draft(store)
+    store.claim_message("steps-ungrounded-1", "49123", "4")
+    send = AsyncMock()
+    core = _core(store, reply=_UNGROUNDED_STEPS_REPLY, send=send)
+    install(core)
+
+    message = SimpleNamespace(
+        message_id="steps-ungrounded-1",
+        sender="49123",
+        text="4",
+        message_type="text",
+        internal_context="",
+    )
+    with pytest.raises(DraftAssistanceFormatError):
+        await core.process_incoming(message)
+
+    send.assert_not_awaited()
+    profile = store.get_user("49123")
+    assert profile["session_last_reply"] == _CLEAN_DRAFT
+    assert profile["last_assistant_reply"] == "safe prior assistant reply"
+
+
+@pytest.mark.anyio
+async def test_source_grounded_follow_up_interval_is_allowed(tmp_path) -> None:
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed(store)
+    store.update_user("49123", {
+        "session_last_reply": _TIMED_DRAFT,
+        "last_assistant_reply": _TIMED_DRAFT,
+        "session_topic": "cancellation",
+        "current_topic": "cancellation",
+        "conversation_summary": "safe prior summary",
+    })
+    store.claim_message("steps-grounded-1", "49123", "4")
+    send = AsyncMock()
+    core = _core(store, reply=_TIMED_STEPS_REPLY, send=send)
+    install(core)
+
+    message = SimpleNamespace(
+        message_id="steps-grounded-1",
+        sender="49123",
+        text="4",
+        message_type="text",
+        internal_context="",
+    )
+    await core.process_incoming(message)
+
+    send.assert_awaited_once()
+    steps = send.await_args.args[1]
+    assert steps.startswith("خطوات الإرسال والمتابعة")
+    assert "14 يومًا" in steps
+    profile = store.get_user("49123")
+    assert profile["session_last_reply"] == _TIMED_DRAFT
+    assert profile["last_assistant_reply"] == _TIMED_DRAFT
 
 
 @pytest.mark.anyio
@@ -320,8 +453,12 @@ async def test_missing_field_choice_keeps_transient_draft_out_of_reusable_memory
     send.assert_awaited_once()
     help_text = send.await_args.args[1]
     assert "الحقول التي تحتاج مراجعة أو تعبئة" in help_text
+    assert "العنوان البريدي للجهة المستلمة" in help_text
+    assert "عنوانك البريدي (الشارع ورقم المنزل)" in help_text
     assert "الاسم الكامل" in help_text
     assert "البريد الإلكتروني" in help_text
+    assert "[Adresse von MusterFit GmbH]" not in help_text
+    assert "[Ihre Anschrift]" not in help_text
     assert "عدّل المسودة بهذه البيانات:" in help_text
     profile = store.get_user("49123")
     assert profile["session_last_reply"] == _CLEAN_DRAFT
