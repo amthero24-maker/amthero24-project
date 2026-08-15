@@ -21,6 +21,10 @@ from encryption_policy import (
     support_api_token_status,
     support_encryption_status,
 )
+from recovery_pipeline_certification import (
+    assess_recovery_pipeline,
+    restore_certification_max_age_hours,
+)
 
 
 @dataclass(frozen=True)
@@ -209,17 +213,37 @@ def _backup_recovery_check(
             "The isolated restore certification time is in the future.",
             "Correct the certification time only after the owner-authorized isolated restore has completed.",
         )
-    if restore_certified_at < latest_backup_at:
+
+    certification_max_age_hours = restore_certification_max_age_hours(environment)
+    if certification_max_age_hours is None:
         return LaunchCheck(
             "production_backup_recovery",
             "blocked",
-            "The isolated restore certification predates the latest successful production backup.",
-            "Restore the actual latest persistent artifact, verify current schema and privacy-safe parity, then update the restore certification and UTC completion time.",
+            "The isolated restore certification validity window is invalid.",
+            "Set PRODUCTION_BACKUP_RESTORE_CERTIFICATION_MAX_AGE_HOURS to a reviewed value from 24 through 720 hours.",
         )
+    certification_age_seconds = int((current - restore_certified_at).total_seconds())
+    if certification_age_seconds > certification_max_age_hours * 3600:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The isolated restore certification has expired.",
+            "Restore the actual latest persistent encrypted artifact into a new isolated PostgreSQL target, verify current schema and privacy-safe parity, then record fresh approval evidence.",
+        )
+
+    pipeline = assess_recovery_pipeline()
+    if not pipeline.ready:
+        return LaunchCheck(
+            "production_backup_recovery",
+            "blocked",
+            "The current production recovery pipeline no longer matches the isolated restore-certified pipeline.",
+            "Keep launch blocked, restore the actual latest persistent encrypted artifact with the current pipeline into an isolated PostgreSQL target, then update the certified pipeline identities only after verification succeeds.",
+        )
+
     return LaunchCheck(
         "production_backup_recovery",
         "ready",
-        "The latest persistent encrypted production backup has a time-bound owner-approved isolated restore certification.",
+        "The recent persistent encrypted production backup uses an unchanged recovery pipeline covered by a current owner-approved isolated restore certification.",
     )
 
 
