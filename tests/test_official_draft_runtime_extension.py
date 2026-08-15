@@ -337,7 +337,7 @@ async def test_translation_choice_preserves_transient_draft_privacy_and_context(
 
 
 @pytest.mark.anyio
-async def test_summary_shaped_translation_fails_closed_without_losing_draft(tmp_path) -> None:
+async def test_summary_shaped_translation_uses_safe_failure_without_losing_draft(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
     _seed_transient_clean_draft(store)
     store.claim_message("translate-summary-1", "49123", "1")
@@ -352,14 +352,18 @@ async def test_summary_shaped_translation_fails_closed_without_losing_draft(tmp_
         message_type="text",
         internal_context="",
     )
-    with pytest.raises(DraftAssistanceFormatError):
-        await core.process_incoming(message)
+    await core.process_incoming(message)
 
-    send.assert_not_awaited()
+    send.assert_awaited_once()
+    failure = send.await_args.args[1]
+    assert "ما قدرت أتأكد أن الترجمة كاملة" in failure
+    assert "المسودة الأصلية بقيت محفوظة بدون تغيير" in failure
+    assert "خلل تقني" not in failure
     profile = store.get_user("49123")
     assert profile["session_last_reply"] == _CLEAN_DRAFT
     assert profile["last_assistant_reply"] == "safe prior assistant reply"
     assert profile["conversation_summary"] == "safe prior summary"
+    assert store.snapshot()["messages"]["translate-summary-1"]["status"] == "sent"
 
 
 @pytest.mark.anyio
