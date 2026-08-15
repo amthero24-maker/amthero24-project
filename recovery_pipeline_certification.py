@@ -62,7 +62,7 @@ class RecoveryPipelineAssessment:
 def _git_blob_sha(path: Path) -> str:
     data = path.read_bytes()
     payload = f"blob {len(data)}\0".encode("ascii") + data
-    return hashlib.sha1(payload).hexdigest()  # noqa: S324 - Git object identity contract.
+    return hashlib.sha1(payload, usedforsecurity=False).hexdigest()
 
 
 def assess_recovery_pipeline(
