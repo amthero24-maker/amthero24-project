@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import launch_readiness
 from launch_readiness import build_launch_report
+from recovery_pipeline_certification import RecoveryPipelineAssessment
 
 
 STRONG_ADMIN_TOKEN = "admin-token-2026-unique-8xK2mP7qR4vN"
@@ -46,6 +48,7 @@ def _healthy_env() -> dict[str, str]:
         "REMINDER_LEGACY_TOKEN_DECRYPTION_ENABLED": "false",
         "WHATSAPP_REMINDER_TEMPLATE": "amthero24_reminder",
         "HUMAN_SUPPORT_ENABLED": "false",
+        "PRODUCTION_BACKUP_RESTORE_CERTIFICATION_MAX_AGE_HOURS": "168",
         "PRODUCTION_BACKUP_RESTORE_CERTIFIED": "true",
         "PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT": (
             NOW - timedelta(minutes=30)
@@ -199,7 +202,7 @@ def test_future_restore_certification_time_blocks_launch() -> None:
     assert environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] not in str(report)
 
 
-def test_restore_certification_before_latest_backup_blocks_launch() -> None:
+def test_restore_certification_before_latest_backup_remains_valid_for_same_pipeline() -> None:
     environment = _healthy_env()
     environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] = (
         NOW - timedelta(hours=2)
@@ -211,12 +214,13 @@ def test_restore_certification_before_latest_backup_blocks_launch() -> None:
         if item["code"] == "production_backup_recovery"
     )
 
-    assert report["status"] == "blocked"
-    assert check["status"] == "blocked"
-    assert "predates" in check["detail"].casefold()
+    assert report["status"] == "ready"
+    assert check["status"] == "ready"
+    assert "unchanged recovery pipeline" in check["detail"].casefold()
+    assert environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] not in str(report)
 
 
-def test_newer_backup_invalidates_previous_restore_certification() -> None:
+def test_newer_daily_backup_does_not_invalidate_unchanged_pipeline_certification() -> None:
     environment = _healthy_env()
     overview = _healthy_overview()
 
@@ -233,16 +237,73 @@ def test_newer_backup_invalidates_previous_restore_certification() -> None:
             "age_seconds": 10 * 60,
         }
     )
-    blocked = build_launch_report(overview, env=environment, now=NOW)
-    blocked_check = next(
-        item for item in blocked["checks"]
+    still_ready = build_launch_report(overview, env=environment, now=NOW)
+    still_ready_check = next(
+        item for item in still_ready["checks"]
         if item["code"] == "production_backup_recovery"
     )
 
-    assert blocked["status"] == "blocked"
-    assert blocked_check["status"] == "blocked"
-    assert "predates" in blocked_check["detail"].casefold()
-    assert overview["backup_recovery"]["latest_event_at"] not in str(blocked)
+    assert still_ready["status"] == "ready"
+    assert still_ready_check["status"] == "ready"
+    assert "unchanged recovery pipeline" in still_ready_check["detail"].casefold()
+    assert overview["backup_recovery"]["latest_event_at"] not in str(still_ready)
+
+
+def test_expired_restore_certification_blocks_launch() -> None:
+    environment = _healthy_env()
+    environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] = (
+        NOW - timedelta(hours=169)
+    ).isoformat()
+
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert "expired" in check["detail"].casefold()
+    assert environment["PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT"] not in str(report)
+
+
+@pytest.mark.parametrize("value", ("", "not-a-number", "23", "721"))
+def test_invalid_restore_certification_window_blocks_launch(value: str) -> None:
+    environment = _healthy_env()
+    environment["PRODUCTION_BACKUP_RESTORE_CERTIFICATION_MAX_AGE_HOURS"] = value
+
+    report = build_launch_report(_healthy_overview(), env=environment, now=NOW)
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert "validity window" in check["detail"].casefold()
+    assert value not in str(report)
+
+
+def test_recovery_pipeline_drift_blocks_without_exposing_identity(monkeypatch) -> None:
+    monkeypatch.setattr(
+        launch_readiness,
+        "assess_recovery_pipeline",
+        lambda: RecoveryPipelineAssessment(
+            "blocked", "pipeline_drift", 4
+        ),
+    )
+
+    report = build_launch_report(_healthy_overview(), env=_healthy_env(), now=NOW)
+    check = next(
+        item for item in report["checks"]
+        if item["code"] == "production_backup_recovery"
+    )
+
+    assert report["status"] == "blocked"
+    assert check["status"] == "blocked"
+    assert "no longer matches" in check["detail"].casefold()
+    assert "pipeline_drift" not in str(report)
+    assert "54286df" not in str(report)
 
 
 def test_provider_outage_blocks_launch_and_high_latency_warns() -> None:
