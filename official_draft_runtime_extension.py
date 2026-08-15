@@ -108,12 +108,26 @@ def _session_expiry(core: Any, profile: dict[str, Any]) -> str:
     return str(profile.get("session_expires_at") or "")
 
 
-def _clean_draft_updates(core: Any, profile: dict[str, Any], draft: str) -> dict[str, Any]:
+def _draft_is_reusable(profile: dict[str, Any], draft: str) -> bool:
+    """Return true only when this exact draft was already reusable before assistance."""
+    return bool(
+        profile.get("memory_consent") == "granted"
+        and str(profile.get("last_assistant_reply") or "") == str(draft or "")
+    )
+
+
+def _clean_draft_updates(
+    core: Any,
+    profile: dict[str, Any],
+    draft: str,
+    *,
+    persist_reusable: bool,
+) -> dict[str, Any]:
     updates: dict[str, Any] = {"session_last_reply": draft}
     expiry = _session_expiry(core, profile)
     if expiry:
         updates["session_expires_at"] = expiry
-    if profile.get("memory_consent") == "granted":
+    if persist_reusable and profile.get("memory_consent") == "granted":
         updates["last_assistant_reply"] = draft
     return updates
 
@@ -129,7 +143,12 @@ def _retain_clean_draft_context(
         return
     core.store.update_user(
         message.sender,
-        _clean_draft_updates(core, profile, parsed.draft),
+        _clean_draft_updates(
+            core,
+            profile,
+            parsed.draft,
+            persist_reusable=True,
+        ),
     )
 
 
@@ -140,13 +159,14 @@ def _restore_profile_after_assistance(
     draft: str,
 ) -> None:
     """Undo synthetic processing metadata while keeping the clean draft available."""
+    persist_reusable = _draft_is_reusable(before, draft)
     removals = {
         field
         for field in _PROFILE_FIELDS_TO_RESTORE
         if field not in before
         and field not in {"session_last_reply", "last_assistant_reply"}
     }
-    if before.get("memory_consent") != "granted" and "last_assistant_reply" not in before:
+    if not persist_reusable and "last_assistant_reply" not in before:
         removals.add("last_assistant_reply")
     if removals:
         core.store.remove_user_fields(sender, removals)
@@ -156,7 +176,14 @@ def _restore_profile_after_assistance(
         for field in _PROFILE_FIELDS_TO_RESTORE
         if field in before
     }
-    updates.update(_clean_draft_updates(core, before, draft))
+    updates.update(
+        _clean_draft_updates(
+            core,
+            before,
+            draft,
+            persist_reusable=persist_reusable,
+        )
+    )
     core.store.update_user(sender, updates)
 
 
@@ -269,6 +296,7 @@ def install(core: Any) -> None:
 
         if assistance_action is not None:
             language = _conversation_language(core, message, profile)
+            persist_reusable = _draft_is_reusable(profile, previous_draft)
             if assistance_action == ASSISTANCE_FIELDS:
                 await original_send(
                     message.sender,
@@ -280,7 +308,12 @@ def install(core: Any) -> None:
                 core.store.update_message_status(message.message_id, "sent")
                 core.store.update_user(
                     message.sender,
-                    _clean_draft_updates(core, profile, previous_draft),
+                    _clean_draft_updates(
+                        core,
+                        profile,
+                        previous_draft,
+                        persist_reusable=persist_reusable,
+                    ),
                 )
                 return
 

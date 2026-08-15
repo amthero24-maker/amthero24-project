@@ -1,6 +1,6 @@
 # AmtHero24 Isolated Railway Restore Certification
 
-This runbook proves that one real encrypted production backup can be restored without modifying the production database or directing real traffic to the restored environment.
+This runbook proves that one real encrypted production backup can be restored without modifying the production database or directing real traffic to the restored environment. The successful drill also certifies the exact repository backup/restore/schema pipeline for a bounded period; it does not grant permanent approval to changed code or an unbounded sequence of backups.
 
 ## Scope and safety boundary
 
@@ -23,6 +23,7 @@ Before applying the restore profile, verify all of the following:
 4. A new isolated PostgreSQL service has been created for this drill.
 5. The isolated target is not referenced by the production bot and has no real-user traffic.
 6. The Backup service still has its production `DATABASE_URL` only so the restore guard can prove that the target identity is different.
+7. The recovery-critical repository files match the candidate commit that will be certified. Do not update the committed certified identities merely to make a gate pass.
 
 ## One-shot variables
 
@@ -71,6 +72,27 @@ The only acceptable terminal result is sanitized JSON containing:
 
 The output may also include the artifact filename, manifest filename, format, and schema version. It must not include URLs, credentials, hashes, ciphertext, or database contents.
 
+## Record the bounded certification
+
+Only after the isolated restore and schema verification succeed:
+
+1. Record the exact protected source commit used by the drill.
+2. Confirm that `recovery_pipeline_certification.py` contains the identities of the recovery-critical files from that exact source commit.
+3. Set `PRODUCTION_BACKUP_RESTORE_CERTIFIED=true`.
+4. Set `PRODUCTION_BACKUP_RESTORE_CERTIFIED_AT` to the timezone-aware UTC completion time of the successful drill.
+5. Keep `PRODUCTION_BACKUP_RESTORE_CERTIFICATION_MAX_AGE_HOURS=168` unless a separately reviewed operational policy selects another value within the enforced 24–720 hour range.
+
+The certification is deliberately both time-bound and pipeline-bound:
+
+- A newer normal daily backup does not invalidate the drill solely because its artifact timestamp is newer.
+- The latest production backup must still have a recent successful privacy-safe receipt.
+- The current image, schema identity, scripts, persistent-volume guard, and Railway backup/restore profiles must continue matching the exact pipeline used by the successful drill.
+- Any drift in a certified recovery-critical file blocks Launch Readiness immediately.
+- An expired certification blocks Launch Readiness even when the pipeline is unchanged.
+- After pipeline drift or expiry, restore the actual latest encrypted persistent artifact into a new isolated target and record fresh evidence before updating the certified identities or completion time.
+
+Never change the certified identities, approval flag, or completion time without a real successful isolated restore. Their purpose is to prevent a code-only or variable-only bypass.
+
 ## Restore normal Backup operation
 
 Immediately after the one-shot run:
@@ -80,6 +102,8 @@ Immediately after the one-shot run:
 3. Restore the service config to `railway.backup.json`.
 4. Confirm the daily cron remains `17 2 * * *` and restart policy remains `NEVER`.
 5. Do not delete the isolated target yet.
+
+Normal daily encrypted backups may continue under this profile. Launch Readiness remains valid only while the latest receipt is recent, the certified pipeline is unchanged, and the bounded restore certification has not expired.
 
 ## Restored application smoke
 
@@ -120,3 +144,5 @@ Record only:
 - isolated target deletion confirmation
 
 After evidence is recorded, delete the disposable application and PostgreSQL services. Keep the encrypted production backup according to the retention policy.
+
+Repeat the isolated restore before the certification window expires, after any recovery-pipeline change, and after the final production-affecting change used for a GO decision.
