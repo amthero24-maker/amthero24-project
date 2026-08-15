@@ -6,8 +6,8 @@ from journey_draft_grounding import (
     _extract_anchors,
     _fold,
     _selected_language,
-    classify_journey_draft,
 )
+from journey_grounding_policy import classify_journey_draft
 from journey_grounding_patterns import (
     JOURNEY_APPOINTMENT,
     JOURNEY_CONTRACT,
