@@ -1,0 +1,385 @@
+name: Website CI
+
+on:
+  pull_request:
+    paths:
+      - "website/**"
+      - ".github/workflows/website-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/website-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: website
+    env:
+      NEXT_PUBLIC_SITE_URL: https://amthero24.de
+      NEXT_PUBLIC_SITE_INDEXABLE: "false"
+      NEXT_PUBLIC_BETA_CTA_ENABLED: "false"
+      NEXT_PUBLIC_BETA_CTA_URL: ""
+      NEXT_PUBLIC_BETA_CAPACITY: "5"
+      NEXT_PUBLIC_BETA_NOTICE_VERSION: 2026-08-wave1-v2-ai-transparent
+      LEGAL_PRODUCTION_READY: "false"
+      LEGAL_OPERATOR_NAME: "AmtHero24 CI Test Operator"
+      LEGAL_TRADING_NAME: AmtHero24
+      LEGAL_OPERATOR_STATUS: "[REQUIRED]"
+      LEGAL_COUNTRY: "[REQUIRED]"
+      LEGAL_EMAIL_INFO: info@amthero24.de
+      LEGAL_EMAIL_SUPPORT: support@amthero24.de
+      LEGAL_PROVIDER_DPAS_CONFIRMED: "false"
+      LEGAL_META_TERMS_CONFIRMED: "false"
+      LEGAL_GROQ_ZDR_ENABLED: "false"
+      LEGAL_RAILWAY_REGION_CONFIRMED: "false"
+      LEGAL_WEBSITE_REVIEW_CONFIRMED: "false"
+      LEGAL_VSBG_REVIEW_CONFIRMED: "false"
+      DOMAIN_PRIMARY_TLS_CONFIRMED: "false"
+      DOMAIN_REDIRECTS_CONFIRMED: "false"
+      EMAIL_INBOUND_ROUTING_CONFIRMED: "false"
+      EMAIL_OUTBOUND_AUTH_CONFIRMED: "false"
+      BETA_NOTICE_OWNER_APPROVED: "false"
+      AI_TRANSPARENCY_REVIEW_CONFIRMED: "false"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Audit production npm dependencies
+        id: npm_audit
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high --json > npm-audit.json
+      - name: Generate production CycloneDX SBOM
+        id: npm_sbom
+        continue-on-error: true
+        run: npm sbom --omit=dev --sbom-format cyclonedx > npm-sbom.cdx.json
+      - name: Upload website supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: website-supply-chain-evidence
+          path: |
+            website/npm-audit.json
+            website/npm-sbom.cdx.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Enforce website supply-chain outcomes
+        if: always()
+        shell: bash
+        env:
+          NPM_AUDIT_OUTCOME: ${{ steps.npm_audit.outcome }}
+          NPM_SBOM_OUTCOME: ${{ steps.npm_sbom.outcome }}
+        run: |
+          test "$NPM_AUDIT_OUTCOME" = "success"
+          test "$NPM_SBOM_OUTCOME" = "success"
+      - name: Generate local synthetic media assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil fonts-dejavu-core
+          python3 scripts/generate-demo-assets.py
+      - name: Validate fail-closed legal and launch configuration
+        run: npm run legal:check
+      - name: Validate content, legal routes and local media
+        run: npm run content:check
+      - name: Lint website
+        run: npm run lint
+      - name: Prove strict GO remains blocked before owner/legal completion
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm run go:check; then
+            echo "Strict GO unexpectedly passed with pre-GO variables." >&2
+            exit 1
+          fi
+          echo "Expected fail-closed GO rejection confirmed."
+      - name: Prove GO requires complete synthetic legal facts and a safe WhatsApp CTA
+        shell: bash
+        env:
+          LEGAL_PRODUCTION_READY: "true"
+          LEGAL_OPERATOR_STATUS: "Synthetic CI test entity"
+          LEGAL_SERVICE_ADDRESS: "CI Test Address, 00000 Teststadt, Germany"
+          LEGAL_COUNTRY: Germany
+          LEGAL_PROVIDER_DPAS_CONFIRMED: "true"
+          LEGAL_META_TERMS_CONFIRMED: "true"
+          LEGAL_RAILWAY_REGION_CONFIRMED: "true"
+          LEGAL_WEBSITE_REVIEW_CONFIRMED: "true"
+          LEGAL_VSBG_REVIEW_CONFIRMED: "true"
+          NEXT_PUBLIC_SITE_INDEXABLE: "true"
+          NEXT_PUBLIC_BETA_CTA_ENABLED: "true"
+          NEXT_PUBLIC_BETA_CTA_URL: "https://wa.me/491000000000?text=AmtHero24%20Beta"
+          DOMAIN_PRIMARY_TLS_CONFIRMED: "true"
+          DOMAIN_REDIRECTS_CONFIRMED: "true"
+          EMAIL_INBOUND_ROUTING_CONFIRMED: "true"
+          EMAIL_OUTBOUND_AUTH_CONFIRMED: "true"
+          BETA_NOTICE_OWNER_APPROVED: "true"
+          AI_TRANSPARENCY_REVIEW_CONFIRMED: "true"
+        run: |
+          set -euo pipefail
+          npm run go:check
+          if LEGAL_SERVICE_ADDRESS='' npm run go:check; then
+            echo "GO unexpectedly accepted a missing service address." >&2
+            exit 1
+          fi
+          if LEGAL_OPERATOR_STATUS='[REQUIRED]' npm run go:check; then
+            echo "GO unexpectedly accepted a placeholder operator status." >&2
+            exit 1
+          fi
+          if LEGAL_PROVIDER_DPAS_CONFIRMED='false' npm run go:check; then
+            echo "GO unexpectedly accepted an unconfirmed processor/DPA gate." >&2
+            exit 1
+          fi
+          if NEXT_PUBLIC_BETA_CTA_URL='' npm run go:check; then
+            echo "GO unexpectedly accepted an enabled CTA without a target." >&2
+            exit 1
+          fi
+          if NEXT_PUBLIC_BETA_CTA_URL='https://example.com/join' npm run go:check; then
+            echo "GO unexpectedly accepted a non-WhatsApp CTA target." >&2
+            exit 1
+          fi
+          echo "Strict legal facts and safe actionable WhatsApp CTA contract confirmed."
+      - name: Build noindex preview artifact
+        run: npm run build
+      - name: Verify Next.js type configuration is stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- tsconfig.json next-env.d.ts
+      - name: Verify Railway and Docker context contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path('railway.json').read_text())
+          assert config['build']['builder'] == 'DOCKERFILE'
+          assert config['build']['dockerfilePath'] == 'Dockerfile'
+          assert config['deploy']['healthcheckPath'] == '/api/health'
+          assert config['deploy']['restartPolicyType'] == 'ON_FAILURE'
+          assert isinstance(config['deploy']['restartPolicyMaxRetries'], int)
+
+          ignore_lines = {
+              line.strip()
+              for line in Path('.dockerignore').read_text().splitlines()
+              if line.strip() and not line.lstrip().startswith('#')
+          }
+          required_ignores = {
+              'node_modules',
+              '.next',
+              'coverage',
+              'npm-audit.json',
+              'npm-sbom.cdx.json',
+              '*.log',
+              '*.tsbuildinfo',
+              '.env*',
+              '!.env.example',
+              '.DS_Store',
+          }
+          missing_ignores = sorted(required_ignores - ignore_lines)
+          assert not missing_ignores, f'missing required .dockerignore entries: {missing_ignores}'
+
+          protected_assets = {'public', 'public/**', 'public/media', 'public/media/**', '*.mp4'}
+          excluded_assets = sorted(protected_assets & ignore_lines)
+          assert not excluded_assets, f'launch media must remain in Docker context: {excluded_assets}'
+          PY
+          test -f Dockerfile
+          test -f .dockerignore
+          test -f app/api/health/route.js
+      - name: Build standalone Docker image
+        run: docker build --pull=false -t amthero24-website:ci .
+      - name: Verify runtime security and anti-cache headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_user="$(docker image inspect amthero24-website:ci --format '{{.Config.User}}')"
+          test "$image_user" = "nextjs"
+
+          container_id="$(docker run --detach --publish 127.0.0.1:3000:3000 amthero24-website:ci)"
+          cleanup() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/tmp/website-health.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if test "$ready" != "true"; then
+            docker logs "$container_id" >&2 || true
+            exit 1
+          fi
+
+          home_headers="$(mktemp)"
+          health_headers="$(mktemp)"
+          curl --fail --silent --show-error --dump-header "$home_headers" --output /tmp/website-home.html http://127.0.0.1:3000/
+          curl --fail --silent --show-error --dump-header "$health_headers" --output /tmp/website-health.json http://127.0.0.1:3000/api/health
+
+          python3 - "$home_headers" "$health_headers" <<'PY'
+          from pathlib import Path
+          import sys
+
+          def parse_headers(path: str) -> dict[str, str]:
+              result: dict[str, list[str]] = {}
+              for line in Path(path).read_text(encoding="utf-8").splitlines():
+                  if ":" not in line:
+                      continue
+                  key, value = line.split(":", 1)
+                  result.setdefault(key.strip().lower(), []).append(value.strip())
+              return {key: ", ".join(values) for key, values in result.items()}
+
+          home = parse_headers(sys.argv[1])
+          health = parse_headers(sys.argv[2])
+
+          expected_home = {
+              "x-content-type-options": "nosniff",
+              "referrer-policy": "strict-origin-when-cross-origin",
+              "x-frame-options": "DENY",
+              "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+          }
+          for name, expected in expected_home.items():
+              actual = home.get(name, "")
+              if actual != expected:
+                  raise SystemExit(f"Runtime header {name!r} mismatch: {actual!r}")
+
+          if "x-powered-by" in home:
+              raise SystemExit("Runtime must not expose X-Powered-By")
+
+          csp = home.get("content-security-policy", "")
+          required_directives = (
+              "default-src 'self'",
+              "img-src 'self' data:",
+              "media-src 'self'",
+              "script-src 'self'",
+              "connect-src 'self'",
+              "frame-ancestors 'none'",
+              "base-uri 'self'",
+              "form-action 'self'",
+          )
+          missing = [directive for directive in required_directives if directive not in csp]
+          if missing:
+              raise SystemExit(f"Runtime CSP missing directives: {missing}")
+          if "'unsafe-eval'" in csp or "*" in csp:
+              raise SystemExit("Runtime CSP contains an unsafe wildcard or unsafe-eval")
+
+          if "no-store" not in health.get("cache-control", "").lower():
+              raise SystemExit("Health route Cache-Control must include no-store")
+          if health.get("pragma", "").lower() != "no-cache":
+              raise SystemExit("Health route Pragma must be no-cache")
+          if health.get("expires", "") != "0":
+              raise SystemExit("Health route Expires must be 0")
+
+          print("Runtime security, non-disclosure and anti-cache headers verified.")
+          PY
+      - name: Verify runtime canonical routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --publish 127.0.0.1:3000:3000 amthero24-website:ci)"
+          cleanup() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/health >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if test "$ready" != "true"; then
+            docker logs "$container_id" >&2 || true
+            exit 1
+          fi
+
+          curl --fail --silent --show-error --output /tmp/canonical-home.html http://127.0.0.1:3000/
+          curl --fail --silent --show-error --output /tmp/canonical-impressum.html http://127.0.0.1:3000/impressum
+          curl --fail --silent --show-error --output /tmp/canonical-beta.html http://127.0.0.1:3000/beta
+
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urlsplit
+
+          class CanonicalParser(HTMLParser):
+              def __init__(self) -> None:
+                  super().__init__()
+                  self.urls: list[str] = []
+
+              def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                  if tag.casefold() != "link":
+                      return
+                  values = {key.casefold(): value or "" for key, value in attrs}
+                  rel = {item.casefold() for item in values.get("rel", "").split()}
+                  href = values.get("href", "").strip()
+                  if "canonical" in rel and href:
+                      self.urls.append(href)
+
+          def assert_canonical(path: str, expected_path: str) -> None:
+              parser = CanonicalParser()
+              parser.feed(Path(path).read_text(encoding="utf-8"))
+              if len(parser.urls) != 1:
+                  raise SystemExit(f"Expected one canonical URL in {path}, found {parser.urls!r}")
+              parsed = urlsplit(parser.urls[0])
+              actual_path = parsed.path or "/"
+              if (
+                  parsed.scheme != "https"
+                  or parsed.netloc != "amthero24.de"
+                  or actual_path != expected_path
+                  or parsed.query
+                  or parsed.fragment
+              ):
+                  raise SystemExit(
+                      f"Canonical mismatch for {path}: {parser.urls[0]!r}; expected https://amthero24.de{expected_path}"
+                  )
+
+          assert_canonical("/tmp/canonical-home.html", "/")
+          assert_canonical("/tmp/canonical-impressum.html", "/impressum")
+          assert_canonical("/tmp/canonical-beta.html", "/beta")
+          print("Runtime canonical routes verified for home, legal and Beta pages.")
+          PY
+      - name: Verify no backend admission activation was introduced
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R --line-number --exclude-dir=node_modules --exclude='.env.example' \
+            'CLOSED_BETA_ADMISSION_ENABLED[[:space:]]*=[[:space:]]*true' .; then
+            echo 'Website scope must not enable backend Closed Beta admission.' >&2
+            exit 1
+          fi
+      - name: Verify legal and robots routes exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/robots.js
+          test -f app/sitemap.js
+          test -f 'app/[legal]/page.jsx'
+          test -f app/beta/page.tsx
+          for route in impressum datenschutz agb widerruf kontakt cookie-einstellungen barrierefreiheit; do
+            grep -q "${route}" 'app/[legal]/page.jsx'
+          done
