@@ -69,6 +69,7 @@ class _JourneyDeliveryState:
     profile_before: dict[str, Any]
     responded: bool = False
     failed: bool = False
+    grounded_draft: str = ""
 
 
 _ACTIVE_JOURNEY_DELIVERY: ContextVar[_JourneyDeliveryState | None] = ContextVar(
@@ -115,6 +116,26 @@ def _retain_clean_draft_context(
     ):
         updates["last_assistant_reply"] = draft
     core.store.update_user(sender, updates)
+
+
+def _restore_profile_after_success(
+    core: Any,
+    sender: str,
+    before: dict[str, Any],
+    draft: str,
+) -> None:
+    """Remove raw model-summary state while retaining only the clean grounded draft."""
+    remove_fields = getattr(core.store, "remove_user_fields", None)
+    if "conversation_summary" in before:
+        core.store.update_user(
+            sender,
+            {"conversation_summary": before["conversation_summary"]},
+        )
+    elif callable(remove_fields):
+        remove_fields(sender, {"conversation_summary"})
+
+    current = core.store.get_user(sender)
+    _retain_clean_draft_context(core, sender, current, draft)
 
 
 def _restore_profile_after_failure(
@@ -258,6 +279,7 @@ def install(core: Any, official_runtime: Any) -> None:
             return
 
         state.responded = True
+        state.grounded_draft = grounded.draft
         envelope = (
             f"{DRAFT_MARKER}\n{grounded.draft}\n"
             f"{EXPLANATION_MARKER}\n{explanation}\n{END_MARKER}"
@@ -352,6 +374,21 @@ def install(core: Any, official_runtime: Any) -> None:
             except Exception:
                 logger.exception(
                     "Unable to restore draft context after grounded journey rejection",
+                    extra={"message_id": message.message_id},
+                )
+            return
+
+        if state.responded and state.grounded_draft:
+            try:
+                _restore_profile_after_success(
+                    core,
+                    message.sender,
+                    state.profile_before,
+                    state.grounded_draft,
+                )
+            except Exception:
+                logger.exception(
+                    "Unable to retain clean grounded journey draft context",
                     extra={"message_id": message.message_id},
                 )
 
