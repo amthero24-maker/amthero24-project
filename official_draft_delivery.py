@@ -5,6 +5,7 @@ It only detects explicit official-draft turns, builds a strict internal model en
 and validates/splits one model reply into a copy-ready draft plus a separate localized
 explanation.
 """
+
 from __future__ import annotations
 
 import re
@@ -14,11 +15,26 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 DRAFT_OUTPUT_KIND: Final[str] = "official_draft"
+
 ORDINARY_OUTPUT_KIND: Final[str] = "ordinary"
+
 DRAFT_MARKER: Final[str] = "<<<AMTHERO24_DRAFT>>>"
+
 EXPLANATION_MARKER: Final[str] = "<<<AMTHERO24_EXPLANATION>>>"
+
 END_MARKER: Final[str] = "<<<AMTHERO24_END>>>"
+
 _SUPPORTED_LANGUAGES: Final[frozenset[str]] = frozenset({"de", "ar", "en", "uk", "el"})
+
+class CopySafeDraftFormatError(RuntimeError):
+    """Raised when a draft-like reply cannot be separated without ambiguity."""
+
+@dataclass(frozen=True)
+class CopySafeDraftReply:
+    draft: str
+    explanation: str
+    conversation_language: str
+
 _ACTIVE_DRAFT_TURN: ContextVar[bool] = ContextVar(
     "amthero24_official_draft_turn_active",
     default=False,
@@ -94,6 +110,7 @@ _META_HEADING = re.compile(
     r"^(?:entwurf|draft|مسودة|чернетка|προσχέδιο)\b",
     re.IGNORECASE,
 )
+
 _EXPLANATION_HEADING = re.compile(
     r"(?im)^\s*[*_#]*\s*(?:"
     r"ما\s+يعنيه\s+النص|ماذا\s+يعني\s+النص|الشرح|شرح|الخطوة\s+التالية|"
@@ -104,26 +121,12 @@ _EXPLANATION_HEADING = re.compile(
     r")\s*:?\s*[*_#]*\s*$"
 )
 
-
-class CopySafeDraftFormatError(RuntimeError):
-    """Raised when a draft-like reply cannot be separated without ambiguity."""
-
-
-@dataclass(frozen=True)
-class CopySafeDraftReply:
-    draft: str
-    explanation: str
-    conversation_language: str
-
-
 def activate_official_draft_turn() -> Token[bool]:
     """Activate the prompt/delivery contract in the current async context only."""
     return _ACTIVE_DRAFT_TURN.set(True)
 
-
 def reset_official_draft_turn(token: Token[bool]) -> None:
     _ACTIVE_DRAFT_TURN.reset(token)
-
 
 def _normalize_text(value: str) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
@@ -135,17 +138,14 @@ def _normalize_text(value: str) -> str:
         or unicodedata.category(character) not in {"Cf", "Cs"}
     ).strip()
 
-
 def _instruction_prefix(text: str) -> str:
     normalized = _normalize_text(text)
     return re.split(r"\n\s*\n", normalized, maxsplit=1)[0][:900].strip()
-
 
 def _normalized_command(text: str) -> str:
     value = _normalize_text(text).casefold().strip()
     value = re.sub(r"[؟،؛!?.,:;]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
-
 
 def is_official_draft_turn(text: str, profile: dict[str, Any] | None = None) -> bool:
     """Return true only for an explicit draft request or a bounded draft revision."""
@@ -169,7 +169,6 @@ def is_official_draft_turn(text: str, profile: dict[str, Any] | None = None) -> 
         return True
     return any(pattern.search(prefix) for pattern in _REVISION_PATTERNS)
 
-
 def build_copy_safe_prompt_contract(*, active: bool, reply_language: str) -> str:
     """Build the internal envelope contract only for an official-draft turn."""
     if not active:
@@ -180,44 +179,26 @@ Return exactly this internal envelope and nothing outside it:
 {DRAFT_MARKER}
 [only the complete copy-ready official draft; no markdown fence, no `Entwurf`/`Draft` heading, no explanation, no translation, and no next-step guidance]
 {EXPLANATION_MARKER}
-[one to three short sentences in {reply_language}; state that the draft was not sent and may be reviewed before the user sends it]
+[one or two short sentences in {reply_language}: explain the draft's purpose in plain language and state that it was not sent; do not add a placeholder checklist, translation menu, or numbered sending steps because the application appends those deterministically]
 {END_MARKER}
 The markers are routing delimiters, not user-visible content. Never merge the explanation into the draft block. Never omit or rename a marker.
 """.strip()
 
-
 def default_draft_explanation(language: str) -> str:
     messages = {
-        "ar": (
-            "المسودة في الرسالة السابقة منفصلة وجاهزة للنسخ. لم يتم إرسالها؛ "
-            "راجع البيانات ثم أرسلها بنفسك إذا كانت مناسبة."
-        ),
-        "de": (
-            "Der Entwurf steht in der vorherigen Nachricht separat und kann direkt "
-            "kopiert werden. Er wurde nicht versendet; prüfe ihn vor dem eigenen Versand."
-        ),
-        "en": (
-            "The draft is in the previous message by itself and can be copied directly. "
-            "It was not sent; review it before sending it yourself."
-        ),
-        "uk": (
-            "Чернетка міститься окремо в попередньому повідомленні, тому її можна "
-            "скопіювати. Її не надіслано; перевір її перед самостійним надсиланням."
-        ),
-        "el": (
-            "Το προσχέδιο βρίσκεται μόνο του στο προηγούμενο μήνυμα και μπορεί να "
-            "αντιγραφεί. Δεν έχει σταλεί· έλεγξέ το πριν το στείλεις εσύ."
-        ),
+        "ar": "المسودة في الرسالة السابقة منفصلة ولم يتم إرسالها. راجعها قبل أن ترسلها بنفسك.",
+        "de": "Der Entwurf steht separat in der vorherigen Nachricht und wurde nicht versendet. Prüfe ihn vor dem eigenen Versand.",
+        "en": "The draft is separate in the previous message and was not sent. Review it before sending it yourself.",
+        "uk": "Чернетка міститься окремо в попередньому повідомленні й не була надіслана. Перевір її перед самостійним надсиланням.",
+        "el": "Το προσχέδιο βρίσκεται ξεχωριστά στο προηγούμενο μήνυμα και δεν έχει σταλεί. Έλεγξέ το πριν το στείλεις εσύ.",
     }
     return messages.get(language, messages["de"])
-
 
 def _strip_outer_code_fence(text: str) -> str:
     lines = text.splitlines()
     if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
         return "\n".join(lines[1:-1]).strip()
     return text.strip()
-
 
 def _strip_meta_heading(text: str) -> str:
     lines = _strip_outer_code_fence(text).splitlines()
@@ -235,12 +216,10 @@ def _strip_meta_heading(text: str) -> str:
         lines = lines[blank_index + 1:] if blank_index is not None else lines[1:]
     return "\n".join(lines).strip()
 
-
 def _strip_first_explanation_heading(text: str) -> str:
     value = text.strip()
     match = _EXPLANATION_HEADING.match(value)
     return value[match.end():].lstrip() if match else value
-
 
 def _looks_like_official_draft(text: str) -> bool:
     lowered = text.casefold()
@@ -260,6 +239,9 @@ def _looks_like_official_draft(text: str) -> bool:
         and any(marker in lowered for marker in closings)
     )
 
+def looks_like_official_draft(text: str) -> bool:
+    """Public bounded check used by the runtime follow-up router."""
+    return _looks_like_official_draft(_strip_meta_heading(_normalize_text(text)))
 
 def draft_reply_requires_fail_closed(value: str) -> bool:
     """Identify malformed marker or draft-like output that must never be sent mixed."""
@@ -275,7 +257,6 @@ def draft_reply_requires_fail_closed(value: str) -> bool:
     cleaned = _strip_meta_heading(text)
     return bool(_EXPLANATION_HEADING.search(text) or _looks_like_official_draft(cleaned))
 
-
 def _marker_split(text: str) -> tuple[str, str] | None:
     pattern = re.compile(
         rf"^\s*{re.escape(DRAFT_MARKER)}\s*(.*?)\s*"
@@ -288,7 +269,6 @@ def _marker_split(text: str) -> tuple[str, str] | None:
         return None
     return match.group(1), match.group(2)
 
-
 def _legacy_split(text: str) -> tuple[str, str] | None:
     for match in _EXPLANATION_HEADING.finditer(text):
         if match.start() < 60:
@@ -298,7 +278,6 @@ def _legacy_split(text: str) -> tuple[str, str] | None:
         if draft and explanation:
             return draft, explanation
     return None
-
 
 def parse_copy_safe_draft_reply(
     value: str,
