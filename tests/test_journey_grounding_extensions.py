@@ -300,7 +300,7 @@ async def test_unsupported_refund_amount_fails_closed_without_persisting_model_d
 
     send.assert_awaited_once()
     failure = send.await_args.args[1]
-    assert failure.startswith("لم أعرض المسودة")
+    assert failure.startswith("لم أرسل المسودة")
     assert "لم أنفّذ أي إجراء خارجي" in failure
     assert "99,90 EUR" not in failure
     assert "MusterShop GmbH" not in failure
