@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from draft_assistance import build_draft_assistance_card
 from pasted_document_grounding import PastedInvoiceFacts, extract_pasted_invoice_facts
 
 logger = logging.getLogger("amthero24.writing_grounding")
@@ -252,13 +253,18 @@ async def _deliver_copy_safe_reply(
     message: Any,
     reply: GroundedWritingReply,
 ) -> None:
-    """Make the primary draft retry-safe; the explanatory message is secondary."""
+    """Make the primary draft retry-safe; the understanding companion is secondary."""
+    companion = build_draft_assistance_card(
+        reply.draft,
+        reply.explanation,
+        conversation_language=reply.conversation_language,
+    )
     await core._finish(message.message_id, reply.draft, message.sender)
     try:
-        await core.send_whatsapp_message(message.sender, reply.explanation)
+        await core.send_whatsapp_message(message.sender, companion)
     except Exception:
         logger.warning(
-            "Secondary grounded draft explanation delivery failed",
+            "Secondary grounded draft companion delivery failed",
             extra={"message_id": message.message_id},
         )
 
