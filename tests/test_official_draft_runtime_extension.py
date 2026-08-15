@@ -87,6 +87,18 @@ def _seed_clean_draft(store: JsonDataStore) -> None:
     })
 
 
+def _seed_transient_clean_draft(store: JsonDataStore) -> None:
+    """Model the grounded document path: session draft, older reusable reply."""
+    _seed(store)
+    store.update_user("49123", {
+        "session_last_reply": _CLEAN_DRAFT,
+        "last_assistant_reply": "safe prior assistant reply",
+        "session_topic": "document",
+        "current_topic": "document",
+        "conversation_summary": "safe prior summary",
+    })
+
+
 def _core(
     store: JsonDataStore,
     *,
@@ -238,9 +250,9 @@ async def test_malformed_draft_envelope_is_not_delivered_mixed(tmp_path) -> None
 
 
 @pytest.mark.anyio
-async def test_translation_choice_is_isolated_and_preserves_clean_draft_context(tmp_path) -> None:
+async def test_translation_choice_preserves_transient_draft_privacy_and_context(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
-    _seed_clean_draft(store)
+    _seed_transient_clean_draft(store)
     store.claim_message("translate-1", "49123", "1")
     send = AsyncMock()
     seen_messages: list[object] = []
@@ -273,17 +285,17 @@ async def test_translation_choice_is_isolated_and_preserves_clean_draft_context(
 
     profile = store.get_user("49123")
     assert profile["session_last_reply"] == _CLEAN_DRAFT
-    assert profile["last_assistant_reply"] == _CLEAN_DRAFT
-    assert profile["session_topic"] == "cancellation"
-    assert profile["current_topic"] == "cancellation"
+    assert profile["last_assistant_reply"] == "safe prior assistant reply"
+    assert profile["session_topic"] == "document"
+    assert profile["current_topic"] == "document"
     assert profile["conversation_summary"] == "safe prior summary"
     assert store.snapshot()["messages"]["translate-1"]["status"] == "sent"
 
 
 @pytest.mark.anyio
-async def test_missing_field_choice_is_deterministic_and_does_not_call_model(tmp_path) -> None:
+async def test_missing_field_choice_keeps_transient_draft_out_of_reusable_memory(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
-    _seed_clean_draft(store)
+    _seed_transient_clean_draft(store)
     store.claim_message("fields-1", "49123", "الخيار ٣")
     send = AsyncMock()
     model_process = AsyncMock()
@@ -313,14 +325,44 @@ async def test_missing_field_choice_is_deterministic_and_does_not_call_model(tmp
     assert "عدّل المسودة بهذه البيانات:" in help_text
     profile = store.get_user("49123")
     assert profile["session_last_reply"] == _CLEAN_DRAFT
-    assert profile["last_assistant_reply"] == _CLEAN_DRAFT
+    assert profile["last_assistant_reply"] == "safe prior assistant reply"
     assert store.snapshot()["messages"]["fields-1"]["status"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_reusable_draft_remains_reusable_after_field_help(tmp_path) -> None:
+    store = JsonDataStore(tmp_path / "store.json")
+    _seed_clean_draft(store)
+    store.claim_message("fields-reusable-1", "49123", "3")
+    send = AsyncMock()
+    model_process = AsyncMock()
+    core = SimpleNamespace(
+        store=store,
+        detect_language=detect_language,
+        send_whatsapp_message=send,
+        process_incoming=model_process,
+    )
+    install(core)
+
+    message = SimpleNamespace(
+        message_id="fields-reusable-1",
+        sender="49123",
+        text="3",
+        message_type="text",
+        internal_context="",
+    )
+    await core.process_incoming(message)
+
+    model_process.assert_not_awaited()
+    profile = store.get_user("49123")
+    assert profile["session_last_reply"] == _CLEAN_DRAFT
+    assert profile["last_assistant_reply"] == _CLEAN_DRAFT
 
 
 @pytest.mark.anyio
 async def test_malformed_assistance_envelope_fails_closed_without_losing_draft(tmp_path) -> None:
     store = JsonDataStore(tmp_path / "store.json")
-    _seed_clean_draft(store)
+    _seed_transient_clean_draft(store)
     store.claim_message("assist-bad-1", "49123", "اشرحلي")
     send = AsyncMock()
     core = _core(
@@ -343,7 +385,7 @@ async def test_malformed_assistance_envelope_fails_closed_without_losing_draft(t
     send.assert_not_awaited()
     profile = store.get_user("49123")
     assert profile["session_last_reply"] == _CLEAN_DRAFT
-    assert profile["last_assistant_reply"] == _CLEAN_DRAFT
+    assert profile["last_assistant_reply"] == "safe prior assistant reply"
 
 
 def test_production_wiring_keeps_narrow_grounding_outside_generic_runtime() -> None:
