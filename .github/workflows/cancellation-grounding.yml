@@ -5,6 +5,7 @@ on:
     paths:
       - "cancellation_contract.py"
       - "cancellation_draft_grounding.py"
+      - "cancellation_grounding_refinements.py"
       - "cancellation_grounding_extensions.py"
       - "draft_assistance.py"
       - "official_draft_delivery.py"
@@ -19,6 +20,7 @@ on:
     paths:
       - "cancellation_contract.py"
       - "cancellation_draft_grounding.py"
+      - "cancellation_grounding_refinements.py"
       - "cancellation_grounding_extensions.py"
       - "draft_assistance.py"
       - "official_draft_delivery.py"
@@ -55,6 +57,7 @@ jobs:
           python -m compileall -q
           cancellation_contract.py
           cancellation_draft_grounding.py
+          cancellation_grounding_refinements.py
           cancellation_grounding_extensions.py
           draft_assistance.py
           official_draft_delivery.py
