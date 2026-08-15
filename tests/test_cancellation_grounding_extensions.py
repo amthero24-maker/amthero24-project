@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 import official_draft_runtime_extension as official_runtime
-from cancellation_draft_grounding import (
+from cancellation_grounding_extensions import install as install_cancellation_grounding
+from cancellation_grounding_refinements import (
     build_cancellation_missing_fields_help,
     build_cancellation_plain_explanation,
     ground_cancellation_draft,
 )
-from cancellation_grounding_extensions import install as install_cancellation_grounding
 from conversation_intelligence import detect_language
 from data_store import JsonDataStore
 from official_draft_delivery import DRAFT_MARKER, END_MARKER, EXPLANATION_MARKER
@@ -204,7 +204,7 @@ async def test_runtime_delivers_only_grounded_draft_then_role_specific_companion
     assert EXPLANATION_MARKER not in draft
     assert END_MARKER not in draft
 
-    assert companion.startswith("هذه مسودة لإلغاء العقد مع MusterFit GmbH")
+    assert companion.startswith("المسودة تطلب إلغاء الاشتراك مع MusterFit GmbH")
     assert "العنوان البريدي للجهة المستلمة (الشارع ورقم المنزل)" in companion
     assert "الرمز البريدي والمدينة للجهة المستلمة" in companion
     assert "عنوانك البريدي (الشارع ورقم المنزل)" in companion
@@ -307,6 +307,7 @@ async def test_option_three_uses_distinct_recipient_and_sender_postal_roles(tmp_
     assert "العنوان البريدي للجهة المستلمة (الشارع ورقم المنزل)" in fields
     assert "عنوانك البريدي (الشارع ورقم المنزل)" in fields
     assert "تاريخ كتابة الرسالة" in fields
+    assert "عدّل المسودة بهذه البيانات:" in fields
     assert "[Postleitzahl und Ort]" not in fields
     assert "[Ihre Postleitzahl und Ihr Ort]" not in fields
     assert seen_messages == []
